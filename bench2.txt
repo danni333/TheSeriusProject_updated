@@ -1,0 +1,21 @@
+--- MATMUL BENCHMARK ---
+
+CPU Info:
+  AVX2 Support:   Yes
+  AVX512 Support: Yes
+----------------------------------------
+Benchmarking matrix size: 256x256
+  Naive / Scalar : 11.96 ms
+  SIMD (Dispatch): 0.40 ms
+  Speedup        : 30.22x
+----------------------------------------
+Benchmarking matrix size: 512x512
+  Naive / Scalar : 105.77 ms
+  SIMD (Dispatch): 4.64 ms
+  Speedup        : 22.77x
+----------------------------------------
+Benchmarking matrix size: 1024x1024
+  Naive / Scalar : 1899.81 ms
+  SIMD (Dispatch): 38.33 ms
+  Speedup        : 49.57x
+----------------------------------------

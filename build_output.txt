@@ -1,0 +1,88 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest.lib
+  gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest_main.lib
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  dataloader.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,28): error C2398: Elemento '1': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,28): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,28): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,28): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,28): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,46): error C2398: Elemento '2': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,46): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,46): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,46): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(83,46): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,29): error C2398: Elemento '1': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,29): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,29): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,29): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,29): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,47): error C2398: Elemento '2': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,47): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,47): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,47): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(84,47): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,31): error C2398: Elemento '1': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,31): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,31): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,31): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,31): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,49): error C2398: Elemento '2': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,49): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,49): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,49): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(85,49): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,36): error C2398: Elemento '1': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,36): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,36): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,36): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,36): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,44): error C2398: Elemento '2': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,44): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,44): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,44): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(100,44): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,39): error C2398: Elemento '1': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,39): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,39): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,39): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,39): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,47): error C2398: Elemento '2': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,47): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,47): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,47): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(101,47): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,37): error C2398: Elemento '1': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,37): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,37): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,37): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,37): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,47): error C2398: Elemento '2': la conversione da 'int' a '_Ty' richiede una conversione verso un tipo di dati pi├╣ piccolo [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,47): error C2398:         with [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,47): error C2398:         [ [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,47): error C2398:             _Ty=size_t [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(104,47): error C2398:         ] [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,31): error C2512: 'serius::Batch': non ├¿ disponibile alcun costruttore predefinito appropriato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,31):
+      Inizializzazione aggregata non valida
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+          'serius::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato
+              C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+              'serius::Tensor::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato
+                  C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+                  durante la ricerca di corrispondenza con l'elenco di argomenti '()'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+          'serius::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato
+              C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+              'serius::Tensor::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato
+                  C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+                  durante la ricerca di corrispondenza con l'elenco di argomenti '()'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+          'serius::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato
+              C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+              'serius::Tensor::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato
+                  C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\data\dataloader.cpp(117,38):
+                  durante la ricerca di corrispondenza con l'elenco di argomenti '()'
+  

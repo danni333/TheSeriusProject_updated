@@ -1,0 +1,51 @@
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+build/
+out/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.suo
+*.sln
+*.vcxproj*
+*.user
+compile_commands.json
+.vs/
+
+# Object Files / Libraries / Binaries
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.lib
+*.exe
+*.pdb
+*.ilk
+*.exp
+bin/
+lib/
+
+# Models and Data
+models/
+data/
+*.gguf
+*.safetensors
+*.bin
+
+# Logs / Test Output
+*.log
+test_output*.txt
+build_error*.log
+
+# Misc
+.DS_Store
+Thumbs.db
+*.tmp
+.gemini/

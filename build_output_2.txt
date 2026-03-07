@@ -1,0 +1,23 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest.lib
+  gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest_main.lib
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  bpe.cpp
+  dataloader.cpp
+  Generazione del codice in corso...
+  matmul_avx2.cpp
+  matmul_avx512.cpp
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  Building Custom Rule C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/tests/CMakeLists.txt
+  test_tokenizer.cpp
+  test_tokenizer.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_tokenizer.exe
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest.lib
+  gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest_main.lib
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  Building Custom Rule C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/tests/CMakeLists.txt
+  test_dataloader.cpp
+  test_dataloader.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_dataloader.exe

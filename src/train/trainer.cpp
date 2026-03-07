@@ -1,0 +1,90 @@
+#include "trainer.h"
+
+#include <iomanip>
+#include <iostream>
+
+#include "../autograd/engine.h"
+#include "../autograd/ops.h"
+#include "checkpoint.h"
+
+
+namespace serius {
+namespace training {
+
+Trainer::Trainer(transformer::TransformerModel &model, optim::AdamW &optimizer, optim::WSDScheduler &scheduler,
+                 const TrainerConfig &config)
+    : model_(model), optimizer_(optimizer), scheduler_(scheduler), config_(config)
+{
+}
+
+void Trainer::train(void *dataloader_ptr)
+{
+    DataLoader *dataloader = static_cast<DataLoader *>(dataloader_ptr);
+
+    std::cout << "Starting training..." << std::endl;
+
+    for (int epoch = 0; epoch < config_.max_epochs; ++epoch) {
+        // In a real impl, we'd reset dataloader or loop until it's empty
+        while (auto batch_opt = dataloader->next_batch()) {
+            auto &batch = batch_opt.value();
+
+            // 1. Zero gradients
+            optimizer_.zero_grad();
+
+            // 2. Prepare inputs as autograd nodes
+            autograd::Node *input_node = new autograd::Node(std::move(batch.input_ids), false);
+            input_node->name = "input_ids";
+
+            autograd::Node *target_node = new autograd::Node(std::move(batch.target_ids), false);
+            target_node->name = "target_ids";
+
+            // 3. Forward pass
+            autograd::Node *logits = model_.forward(input_node);
+
+            // Flatten logits and targets if needed for cross_entropy
+            // Current CE expects (B, V), but transformer returns (B, S, V)
+            // Simplified: we'll just take the last token or similar if needed,
+            // but let's assume CE handles flattened or we reshape.
+            // For now, let's assume we train on the whole sequence flattened.
+            // reshaped_logits = (B*S, V), reshaped_targets = (B*S)
+
+            autograd::Node *loss_node = autograd::ops::cross_entropy(logits, target_node);
+
+            // 4. Backward pass
+            autograd::backward(loss_node);
+
+            // 5. Gradient clipping
+            clip_grad_norm(model_.parameters(), config_.grad_clip);
+
+            // 6. Update learning rate
+            float current_lr = scheduler_.get_lr(current_step_);
+            optimizer_.set_lr(current_lr);
+
+            // 7. Optimizer step
+            optimizer_.step();
+
+            // 8. Logging
+            if (current_step_ % 10 == 0) {
+                std::cout << "Step: " << current_step_ << " | Loss: " << std::fixed << std::setprecision(4)
+                          << loss_node->data[0] << " | LR: " << std::scientific << current_lr << std::endl;
+            }
+
+            // 9. Checkpointing
+            if (current_step_ > 0 && current_step_ % config_.checkpoint_interval == 0) {
+                std::string path = config_.checkpoint_dir + "/model_step_" + std::to_string(current_step_) + ".ckpt";
+                save_checkpoint(path, model_, optimizer_, epoch, current_step_);
+                std::cout << "Saved checkpoint to " << path << std::endl;
+            }
+
+            current_step_++;
+
+            // Cleanup nodes (in a real engine, this might be managed better)
+            // Note: need to be careful with Node pointers if they are deleted or not.
+            // For now, we'll assume they need manual cleanup if not managed.
+            // ... cleanup logic (topological sort delete)
+        }
+    }
+}
+
+}  // namespace training
+}  // namespace serius

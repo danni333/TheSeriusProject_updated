@@ -1,0 +1,18 @@
+Running main() from C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\src\gtest_main.cc
+Note: Google Test filter = TokenizerTest.SaveLoad
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from TokenizerTest
+[ RUN      ] TokenizerTest.SaveLoad
+unknown file: error: C++ exception with description "[json.exception.type_error.316] invalid UTF-8 byte at index 0: 0x80" thrown in the test body.
+
+[  FAILED  ] TokenizerTest.SaveLoad (0 ms)
+[----------] 1 test from TokenizerTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] TokenizerTest.SaveLoad
+
+ 1 FAILED TEST

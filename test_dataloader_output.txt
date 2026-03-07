@@ -1,0 +1,15 @@
+Running main() from C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\src\gtest_main.cc
+[==========] Running 3 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 3 tests from DataLoaderTest
+[ RUN      ] DataLoaderTest.BasicBatch
+[       OK ] DataLoaderTest.BasicBatch (107 ms)
+[ RUN      ] DataLoaderTest.TargetShift
+[       OK ] DataLoaderTest.TargetShift (103 ms)
+[ RUN      ] DataLoaderTest.Stopper
+[       OK ] DataLoaderTest.Stopper (102 ms)
+[----------] 3 tests from DataLoaderTest (313 ms total)
+
+[----------] Global test environment tear-down
+[==========] 3 tests from 1 test suite ran. (313 ms total)
+[  PASSED  ] 3 tests.

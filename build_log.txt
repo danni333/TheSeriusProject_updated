@@ -1,0 +1,19 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  bench_matmul.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_matmul.exe
+  bench_memory.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_memory.exe
+  gmock.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gmock.lib
+  gmock_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gmock_main.lib
+  gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest.lib
+  gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest_main.lib
+  test_autograd.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_autograd.exe
+  test_blas.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_blas.exe
+  test_dummy.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_dummy.exe
+  test_memory.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_memory.exe
+  test_tensor.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_tensor.exe
+serius_core.lib(attention.obj) : error LNK2019: riferimento al simbolo esterno "class serius::Tensor __cdecl serius::blas::batched_matmul(class serius::Tensor const &,class serius::Tensor const &)" (?batched_matmul@blas@serius@@YA?AVTensor@2@AEBV32@0@Z) non risolto nella funzione "public: class serius::Tensor __cdecl serius::transformer::MultiHeadAttention::forward(class serius::Tensor const &)const " (?forward@MultiHeadAttention@transformer@serius@@QEBA?AVTensor@3@AEBV43@@Z) [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_transformer.vcxproj]
+serius_core.lib(ffn.obj) : error LNK2001: simbolo esterno "class serius::Tensor __cdecl serius::blas::batched_matmul(class serius::Tensor const &,class serius::Tensor const &)" (?batched_matmul@blas@serius@@YA?AVTensor@2@AEBV32@0@Z) non risolto [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_transformer.vcxproj]
+serius_core.lib(model.obj) : error LNK2001: simbolo esterno "class serius::Tensor __cdecl serius::blas::batched_matmul(class serius::Tensor const &,class serius::Tensor const &)" (?batched_matmul@blas@serius@@YA?AVTensor@2@AEBV32@0@Z) non risolto [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_transformer.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_transformer.exe : fatal error LNK1120: 1 esterni non risolti [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_transformer.vcxproj]

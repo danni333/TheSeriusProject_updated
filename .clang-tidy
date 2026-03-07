@@ -1,0 +1,4 @@
+Checks: '-*,readability-*,bugprone-*,performance-*,modernize-*,-modernize-use-trailing-return-type'
+WarningsAsErrors: 'return-type'
+HeaderFilterRegex: '.*'
+FormatStyle: file
