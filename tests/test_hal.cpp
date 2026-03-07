@@ -3,9 +3,8 @@
 #include <iostream>
 #include <vector>
 
-#include "../src/hal/device.h"
-#include "../src/tensor/tensor.h"
-
+#include "hal/device.h"
+#include "tensor/tensor.h"
 
 using namespace serius;
 

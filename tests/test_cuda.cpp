@@ -3,13 +3,12 @@
 #include <iostream>
 #include <vector>
 
-#include "../src/blas/blas.h"
-#include "../src/hal/device.h"
-#include "../src/tensor/tensor.h"
-
+#include "blas/blas.h"
+#include "hal/device.h"
+#include "tensor/tensor.h"
 
 #ifdef SERIUS_USE_CUDA
-#include "../src/blas/matmul_cuda.h"
+#include "blas/matmul_cuda.h"
 #endif
 
 using namespace serius;

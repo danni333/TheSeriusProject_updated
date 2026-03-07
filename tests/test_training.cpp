@@ -1,19 +1,15 @@
 #include <gtest/gtest.h>
 
-#include <cmath>
 #include <vector>
 
-#include "../src/autograd/engine.h"
-#include "../src/autograd/ops.h"
-#include "../src/data/dataloader.h"
-#include "../src/optim/adamw.h"
-#include "../src/optim/lr_schedule.h"
-#include "../src/tensor/tensor.h"
-#include "../src/train/checkpoint.h"
-#include "../src/train/dataset.h"
-#include "../src/train/trainer.h"
-#include "../src/transformer/config.h"
-#include "../src/transformer/model.h"
+#include "autograd/engine.h"
+#include "autograd/ops.h"
+#include "optim/adamw.h"
+#include "optim/lr_schedule.h"
+#include "tensor/tensor.h"
+#include "train/trainer.h"
+#include "transformer/config.h"
+#include "transformer/model.h"
 
 using namespace serius;
 using namespace serius::transformer;
