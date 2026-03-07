@@ -235,51 +235,78 @@ Node *softmax(Node *input_node, int dimension)
 
 Node *cross_entropy(Node *input_logits, Node *input_targets)
 {
-    // logits: (B, V), targets: (B,)
-    size_t batch_size = input_logits->data.shape()[0];
-    size_t vocab_size = input_logits->data.shape()[1];
+    // input_logits: (B, V) or (B, S, V)
+    // input_targets: (B,) or (B, S)
+    size_t ndim = input_logits->data.ndim();
+    size_t batch_size = 0;
+    size_t seq_len = 1;
+    size_t vocab_size = 0;
 
+    if (ndim == 3) {
+        batch_size = input_logits->data.shape()[0];
+        seq_len = input_logits->data.shape()[1];
+        vocab_size = input_logits->data.shape()[2];
+    } else {
+        batch_size = input_logits->data.shape()[0];
+        vocab_size = input_logits->data.shape()[1];
+    }
+
+    size_t total_elements = batch_size * seq_len;
     Tensor prob_tensor(input_logits->data.shape());
     float total_loss = 0.0F;
 
     const float OFFSET_EPS = 1e-12F;
     const float M_INF = -1e30F;
 
-    for (size_t b_idx = 0; b_idx < batch_size; ++b_idx) {
+    // Let's rewrite with better flat loops for performance and 3D support
+    const float *logits_raw = input_logits->data.data();
+    const float *targets_raw = input_targets->data.data();
+    float *probs_raw = prob_tensor.data();
+
+    for (size_t i = 0; i < total_elements; ++i) {
+        const float *logits_slice = logits_raw + (i * vocab_size);
+        float *probs_slice = probs_raw + (i * vocab_size);
+
         float max_l = M_INF;
         for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
-            max_l = std::max(max_l, input_logits->data.at(b_idx, v_idx));
+            max_l = std::max(max_l, logits_slice[v_idx]);
         }
 
         float sum_e = 0.0F;
         for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
-            float e_val = std::exp(input_logits->data.at(b_idx, v_idx) - max_l);
-            prob_tensor.at(b_idx, v_idx) = e_val;
+            float e_val = std::exp(logits_slice[v_idx] - max_l);
+            probs_slice[v_idx] = e_val;
             sum_e += e_val;
         }
 
         for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
-            prob_tensor.at(b_idx, v_idx) /= sum_e;
+            probs_slice[v_idx] /= sum_e;
         }
 
-        size_t target_idx = static_cast<size_t>(input_targets->data[b_idx]);
-        total_loss += -std::log(std::max(prob_tensor.at(b_idx, target_idx), OFFSET_EPS));
+        size_t target_idx = static_cast<size_t>(targets_raw[i]);
+        total_loss += -std::log(std::max(probs_slice[target_idx], OFFSET_EPS));
     }
 
     Node *out = new Node(Tensor({1}));
-    out->data[0] = total_loss / static_cast<float>(batch_size);
+    out->data[0] = total_loss / static_cast<float>(total_elements);
     out->children = {input_logits};
     out->name = "cross_entropy";
 
-    out->backward_fn = [input_logits, input_targets, out, prob_tensor, batch_size, vocab_size]() {
+    out->backward_fn = [input_logits, input_targets, out, prob_tensor, total_elements, vocab_size]() {
         if (input_logits->requires_grad) {
-            float scale_val = out->grad[0] / static_cast<float>(batch_size);
-            for (size_t b_idx = 0; b_idx < batch_size; ++b_idx) {
-                size_t target_idx = static_cast<size_t>(input_targets->data[b_idx]);
+            float scale_val = out->grad[0] / static_cast<float>(total_elements);
+            const float *targets_raw = input_targets->data.data();
+            const float *probs_raw = prob_tensor.data();
+            float *grad_raw = input_logits->grad.data();
+
+            for (size_t i = 0; i < total_elements; ++i) {
+                size_t target_idx = static_cast<size_t>(targets_raw[i]);
+                const float *probs_slice = probs_raw + (i * vocab_size);
+                float *grad_slice = grad_raw + (i * vocab_size);
+
                 for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
-                    float p_val = prob_tensor.at(b_idx, v_idx);
                     float target_val = (v_idx == target_idx) ? 1.0F : 0.0F;
-                    input_logits->grad.at(b_idx, v_idx) += scale_val * (p_val - target_val);
+                    grad_slice[v_idx] += scale_val * (probs_slice[v_idx] - target_val);
                 }
             }
         }
@@ -327,8 +354,11 @@ Node *transpose(Node *input_node, size_t dim0, size_t dim1)
 Node *masked_fill(Node *input_node, const Tensor &mask_tensor, float fill_value)
 {
     Tensor res = input_node->data.copy();
-    for (size_t i = 0; i < input_node->data.size(); ++i) {
-        if (mask_tensor[i] != 0.0F) {
+    size_t input_size = input_node->data.size();
+    size_t mask_size = mask_tensor.size();
+
+    for (size_t i = 0; i < input_size; ++i) {
+        if (mask_tensor[i % mask_size] != 0.0F) {
             res[i] = fill_value;
         }
     }
@@ -338,8 +368,10 @@ Node *masked_fill(Node *input_node, const Tensor &mask_tensor, float fill_value)
 
     out->backward_fn = [input_node, out, mask_tensor]() {
         if (input_node->requires_grad) {
-            for (size_t i = 0; i < input_node->data.size(); ++i) {
-                if (mask_tensor[i] == 0.0F) {
+            size_t input_size = input_node->data.size();
+            size_t mask_size = mask_tensor.size();
+            for (size_t i = 0; i < input_size; ++i) {
+                if (mask_tensor[i % mask_size] == 0.0F) {
                     input_node->grad[i] += out->grad[i];
                 }
             }
@@ -432,34 +464,52 @@ void apply_rope_backward_impl(Node *input_node, Node *out, size_t batch_size, si
 }
 
 Node *apply_rope_impl(Node *input_node, size_t batch_size, size_t seq_len, size_t d_head, bool is_batched,
-                      bool is_query)
+                      bool is_query, float rope_base)
 {
-    const float ROPE_BASE = 10000.0F;
     Tensor rot_data = input_node->data.copy();
     size_t d_model = is_batched ? input_node->data.shape()[2] : input_node->data.shape()[1];
 
-    apply_rope_to_data(rot_data, batch_size, seq_len, d_head, d_model, is_batched, ROPE_BASE);
+    apply_rope_to_data(rot_data, batch_size, seq_len, d_head, d_model, is_batched, rope_base);
 
     Node *out = new Node(std::move(rot_data));
     out->name = is_query ? "rope_q" : "rope_k";
     out->children = {input_node};
 
-    out->backward_fn = [input_node, out, batch_size, seq_len, d_head, d_model, is_batched, ROPE_BASE]() {
-        apply_rope_backward_impl(input_node, out, batch_size, seq_len, d_head, d_model, is_batched, ROPE_BASE);
+    out->backward_fn = [input_node, out, batch_size, seq_len, d_head, d_model, is_batched, rope_base]() {
+        apply_rope_backward_impl(input_node, out, batch_size, seq_len, d_head, d_model, is_batched, rope_base);
     };
     return out;
 }
 
-RoPEResult rope(Node *query_node, Node *key_node, size_t d_head)
+RoPEResult rope(Node *query_node, Node *key_node, size_t d_head, float rope_base)
 {
     bool is_batched = (query_node->data.ndim() == 3);
     size_t batch_size = is_batched ? query_node->data.shape()[0] : 1;
     size_t seq_len = is_batched ? query_node->data.shape()[1] : query_node->data.shape()[0];
 
-    Node *out_q = apply_rope_impl(query_node, batch_size, seq_len, d_head, is_batched, true);
-    Node *out_k = apply_rope_impl(key_node, batch_size, seq_len, d_head, is_batched, false);
+    Node *out_q = apply_rope_impl(query_node, batch_size, seq_len, d_head, is_batched, true, rope_base);
+    Node *out_k = apply_rope_impl(key_node, batch_size, seq_len, d_head, is_batched, false, rope_base);
 
     return {out_q, out_k};
+}
+
+Node *contiguous(Node *input_node)
+{
+    if (input_node->data.is_contiguous()) {
+        return input_node;
+    }
+
+    Node *res = new Node(input_node->data.copy(), input_node->requires_grad);
+    res->name = "contiguous(" + input_node->name + ")";
+    res->children.push_back(input_node);
+
+    res->backward_fn = [input_node, res]() {
+        if (input_node->requires_grad) {
+            input_node->grad += res->grad;
+        }
+    };
+
+    return res;
 }
 
 }  // namespace ops

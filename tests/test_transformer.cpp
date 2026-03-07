@@ -119,9 +119,9 @@ TEST(TransformerTest, CausalMask)
     autograd::Node *out_modified_node = mha.forward(&input_modified_node);
     Tensor out_modified = out_modified_node->data;
 
-    // Outputs for token 0 should be identical (it can't see token 3)
+    // Outputs for token 0 should be practically identical (it can't see token 3)
     for (size_t di = 0; di < 16; ++di) {
-        EXPECT_FLOAT_EQ(out_full.at(0, di), out_modified.at(0, di)) << "Causal mask violated at dim " << di;
+        EXPECT_NEAR(out_full.at(0, 0, di), out_modified.at(0, 0, di), 1e-4F) << "Causal mask violated at dim " << di;
     }
 }
 

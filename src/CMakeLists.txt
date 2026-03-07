@@ -22,7 +22,27 @@ add_library(serius_core
     optim/lr_schedule.cpp
     train/checkpoint.cpp
     train/trainer.cpp
+    hal/cpu_backend.cpp
 )
+
+if(SERIUS_USE_CUDA)
+    target_sources(serius_core PRIVATE 
+        hal/cuda_backend.cu
+        blas/matmul_cuda.cu
+    )
+endif()
+
+if(SERIUS_USE_VULKAN)
+    target_sources(serius_core PRIVATE 
+        hal/vulkan_backend.cpp
+    )
+endif()
+
+if(SERIUS_USE_METAL)
+    target_sources(serius_core PRIVATE 
+        hal/metal_backend.cpp
+    )
+endif()
 
 if(OpenMP_CXX_FOUND)
     target_link_libraries(serius_core PUBLIC OpenMP::OpenMP_CXX)

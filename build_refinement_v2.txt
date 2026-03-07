@@ -1,0 +1,13 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  ops.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\autograd\ops.cpp(262,16): error C2220: l'avviso seguente ├¿ considerato come errore [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\autograd\ops.cpp(262,16): warning C4189: 'b_idx': variabile locale inizializzata ma senza riferimenti [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+  attention.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\transformer\attention.cpp(98,49): error C2220: l'avviso seguente ├¿ considerato come errore [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\transformer\attention.cpp(98,49): warning C4245: 'argomento': conversione da 'int' a 'size_t'. Errore di corrispondenza tra signed e unsigned. [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\transformer\attention.cpp(98,45): warning C4245: 'argomento': conversione da 'int' a 'size_t'. Errore di corrispondenza tra signed e unsigned. [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
+  dataloader.cpp
+  trainer.cpp
+  Generazione del codice in corso...

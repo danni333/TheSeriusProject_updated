@@ -3,14 +3,13 @@
 #include "../autograd/node.h"
 #include "../tensor/tensor.h"
 
-
 namespace serius {
 namespace transformer {
 
 class MultiHeadAttention
 {
    public:
-    MultiHeadAttention(size_t d_model, size_t n_heads);
+    MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat = 0);
     ~MultiHeadAttention();
 
     /// Forward pass
@@ -30,6 +29,8 @@ class MultiHeadAttention
     size_t n_heads_;
     size_t d_head_;
     size_t d_c_;  // compressed latent dimension
+    mutable Tensor cached_mask_;
+    mutable size_t mask_seq_len_ = 0;
 };
 
 }  // namespace transformer

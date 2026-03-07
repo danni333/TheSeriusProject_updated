@@ -40,5 +40,44 @@ endif()
 
 enable_testing()
 
+# --- Optional Hardware Backends ---
+
+option(SERIUS_USE_CUDA "Enable CUDA backend" OFF)
+option(SERIUS_USE_VULKAN "Enable Vulkan backend" OFF)
+option(SERIUS_USE_METAL "Enable Metal backend" OFF)
+
+if(SERIUS_USE_CUDA)
+    enable_language(CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        add_compile_definitions(SERIUS_USE_CUDA=1)
+        message(STATUS "CUDA backend enabled.")
+    else()
+        message(WARNING "CUDA compiler not found, disabling CUDA backend.")
+        set(SERIUS_USE_CUDA OFF)
+    endif()
+endif()
+
+if(SERIUS_USE_VULKAN)
+    find_package(Vulkan)
+    if(Vulkan_FOUND)
+        add_compile_definitions(SERIUS_USE_VULKAN=1)
+        message(STATUS "Vulkan backend enabled.")
+    else()
+        message(WARNING "Vulkan SDK not found, disabling Vulkan backend.")
+        set(SERIUS_USE_VULKAN OFF)
+    endif()
+endif()
+
+if(SERIUS_USE_METAL)
+    if(APPLE)
+        add_compile_definitions(SERIUS_USE_METAL=1)
+        # Would need to link "-framework Metal -framework Foundation" 
+        message(STATUS "Metal backend enabled.")
+    else()
+        message(WARNING "Metal is only supported on Apple platforms. Disabling.")
+        set(SERIUS_USE_METAL OFF)
+    endif()
+endif()
+
 add_subdirectory(src)
 add_subdirectory(tests)

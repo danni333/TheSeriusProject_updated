@@ -1,6 +1,10 @@
 #include <stdexcept>
 
-#include "blas.h"
+#include "../hal/device.h"
+
+#ifdef SERIUS_USE_CUDA
+#include "matmul_cuda.h"
+#endif
 
 // Platform specific includes for CPUID
 #if defined(_MSC_VER)
@@ -89,6 +93,25 @@ void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
 
     auto info = get_cpu_info();
 
+    // GPU Dispatch
+#ifdef SERIUS_USE_CUDA
+    size_t flops = 2 * rows_m * cols_n * inner_k;
+    hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
+    // Use GPU for relatively large matrices
+    if (backend && backend->is_available() && flops > 1000000) {
+        mat_a.syncToDevice();
+        mat_b.syncToDevice();
+        mat_c.syncToDevice();
+        matmul_cuda(mat_a.data_gpu(), mat_b.data_gpu(), mat_c.data_gpu(), rows_m, cols_n, inner_k, lda, ldb, ldc);
+
+        // When done, mark C's device data as the most recent
+        // We simulate this by forcing a sync back to host immediately for simplicity,
+        // though ideally we'd tracking location_ properly.
+        mat_c.syncToHost();
+        return;
+    }
+#endif
+
     if (info.has_avx512f) {
         matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
     } else if (info.has_avx2) {
@@ -162,6 +185,26 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
     size_t ldc = mat_c.strides()[1];
 
     auto info = get_cpu_info();
+
+#ifdef SERIUS_USE_CUDA
+    size_t total_flops = 2 * batch_size * rows_m * cols_n * inner_k;
+    hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
+    if (backend && backend->is_available() && total_flops > 1000000) {
+        mat_a.syncToDevice();
+        mat_b.syncToDevice();
+        mat_c.syncToDevice();
+
+        size_t stride_a = mat_a.strides()[0];
+        size_t stride_b = (mat_b.ndim() == 3) ? mat_b.strides()[0] : 0;  // 0 stride if broadcasting 2D B
+        size_t stride_c = mat_c.strides()[0];
+
+        batched_matmul_cuda(mat_a.data_gpu(), mat_b.data_gpu(), mat_c.data_gpu(), batch_size, rows_m, cols_n, inner_k,
+                            lda, ldb, ldc, stride_a, stride_b, stride_c);
+
+        mat_c.syncToHost();
+        return;
+    }
+#endif
 
     for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
         const float *a_ptr = mat_a.data() + (batch_idx * mat_a.strides()[0]);  // Use A.strides()[0] for batch stride

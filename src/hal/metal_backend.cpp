@@ -1,0 +1,64 @@
+#include "metal_backend.h"
+
+#ifdef SERIUS_USE_METAL
+
+#include <iostream>
+#include <stdexcept>
+
+namespace serius {
+namespace hal {
+
+void *MetalBackend::malloc(size_t size)
+{
+    if (size == 0) return nullptr;
+    // TODO: Implement Metal MTLBuffer allocation
+    return nullptr;
+}
+
+void MetalBackend::free(void *ptr)
+{
+    if (!ptr) return;
+    // TODO: Implement Metal buffer release
+}
+
+void MetalBackend::memcpy_h2d(void *dst, const void *src, size_t size)
+{
+    if (dst && src && size > 0) {
+        // Unified Memory allows direct memcpy for Shared buffers usually!
+    }
+}
+
+void MetalBackend::memcpy_d2h(void *dst, const void *src, size_t size)
+{
+    if (dst && src && size > 0) {
+        // Unified Memory allows direct memcpy
+    }
+}
+
+void MetalBackend::memcpy_d2d(void *dst, const void *src, size_t size)
+{
+    if (dst && src && size > 0) {
+        // TODO: Metal BlitCommandEncoder
+    }
+}
+
+bool MetalBackend::is_available() const
+{
+    // Ensure MTLCreateSystemDefaultDevice() works
+    return false;  // Stub
+}
+
+static MetalBackend *g_metal_backend = nullptr;
+
+IBackend *get_metal_backend()
+{
+    if (!g_metal_backend) {
+        g_metal_backend = new MetalBackend();
+    }
+    return g_metal_backend;
+}
+
+}  // namespace hal
+}  // namespace serius
+
+#endif  // SERIUS_USE_METAL

@@ -1,10 +1,9 @@
 #pragma once
 
-#include "../data/dataloader.h"  // Assuming it exists from Phase 4
+#include "../data/dataloader.h"
 #include "../optim/adamw.h"
 #include "../optim/lr_schedule.h"
 #include "../transformer/model.h"
-
 
 namespace serius {
 namespace training {
@@ -13,7 +12,7 @@ struct TrainerConfig
 {
     int max_epochs = 10;
     int checkpoint_interval = 1000;  // steps
-    float grad_clip = 1.0f;
+    float grad_clip = 1.0F;
     std::string checkpoint_dir = "checkpoints";
 };
 
@@ -24,7 +23,7 @@ class Trainer
             const TrainerConfig &config = TrainerConfig());
 
     /// Run the training loop
-    void train(void *dataloader);  // Dataloader type placeholder as I need to check its API
+    void train(DataLoader &dataloader);
 
    private:
     transformer::TransformerModel &model_;

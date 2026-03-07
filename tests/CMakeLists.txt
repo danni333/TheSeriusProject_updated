@@ -33,13 +33,24 @@ gtest_discover_tests(test_blas)
 gtest_discover_tests(test_autograd)
 gtest_discover_tests(test_transformer)
 
+# Tokenizer Tests
 add_executable(test_tokenizer test_tokenizer.cpp)
-target_link_libraries(test_tokenizer PRIVATE gtest_main serius_core)
-gtest_discover_tests(test_tokenizer)
+target_link_libraries(test_tokenizer PRIVATE serius_core catch2_main)
+add_test(NAME test_tokenizer COMMAND test_tokenizer)
 
+# DataLoader Tests
 add_executable(test_dataloader test_dataloader.cpp)
-target_link_libraries(test_dataloader PRIVATE gtest_main serius_core)
-gtest_discover_tests(test_dataloader)
+target_link_libraries(test_dataloader PRIVATE serius_core catch2_main)
+add_test(NAME test_dataloader COMMAND test_dataloader)
+
+# HAL / GPU Tests
+add_executable(test_hal test_hal.cpp)
+target_link_libraries(test_hal PRIVATE serius_core)
+add_test(NAME test_hal COMMAND test_hal)
+
+add_executable(test_cuda test_cuda.cpp)
+target_link_libraries(test_cuda PRIVATE serius_core)
+add_test(NAME test_cuda COMMAND test_cuda)
 
 add_executable(test_training test_training.cpp)
 target_link_libraries(test_training PRIVATE gtest_main serius_core)

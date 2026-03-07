@@ -8,9 +8,11 @@
 namespace serius {
 namespace transformer {
 
-MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads)
-    : d_model_(d_model), n_heads_(n_heads), d_head_(d_model / n_heads), d_c_(d_model / 4)
+MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat)
+    : d_model_(d_model), n_heads_(n_heads), d_head_(d_model / n_heads), cached_mask_({0})
 {
+    // If d_lat is 0, default to d_model / 4 as a sensible heuristic
+    d_c_ = (d_lat == 0) ? (d_model / 4) : d_lat;
     if (d_model % n_heads != 0) {
         throw std::runtime_error("d_model must be divisible by n_heads");
     }
@@ -80,9 +82,9 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input) const
     autograd::Node *v_split = reshape(values, {batch_size, seq_len, n_heads, d_head});
 
     // Transpose: (B, S, H, D_h) -> (B, H, S, D_h)
-    autograd::Node *q_heads = transpose(q_split, 1, 2);
-    autograd::Node *k_heads = transpose(k_split, 1, 2);
-    autograd::Node *v_heads = transpose(v_split, 1, 2);
+    autograd::Node *q_heads = contiguous(transpose(q_split, 1, 2));
+    autograd::Node *k_heads = contiguous(transpose(k_split, 1, 2));
+    autograd::Node *v_heads = contiguous(transpose(v_split, 1, 2));
 
     // Flatten: (B, H, S, D_h) -> (B*H, S, D_h)
     size_t batch_heads = batch_size * n_heads;
@@ -93,23 +95,25 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input) const
     // --- Scaled Dot-Product Attention ---
 
     // 1. Scores = (Q * K^T) / sqrt(d_k)
-    autograd::Node *k_t = transpose(k_flat, -2, -1);
+    autograd::Node *k_t = contiguous(transpose(k_flat, 1, 2));
     autograd::Node *scores = matmul(q_flat, k_t);
 
     float scale_factor = 1.0F / std::sqrt(static_cast<float>(d_head));
     autograd::Node *scores_scaled = mul_scalar(scores, scale_factor);
 
-    // 2. Causal Masking
-    Tensor full_mask({batch_heads, seq_len, seq_len});
-    for (size_t b_idx = 0; b_idx < batch_heads; ++b_idx) {
+    // 2. Causal Masking (Optimized: reuse cached mask if possible)
+    if (mask_seq_len_ != seq_len) {
+        cached_mask_ = Tensor({seq_len, seq_len});
         for (size_t r_idx = 0; r_idx < seq_len; ++r_idx) {
             for (size_t c_idx = r_idx + 1; c_idx < seq_len; ++c_idx) {
-                full_mask.at(b_idx, r_idx, c_idx) = 1.0F;
+                cached_mask_.at(r_idx, c_idx) = 1.0F;
             }
         }
+        mask_seq_len_ = seq_len;
     }
+
     const float mask_value = -1e30F;
-    autograd::Node *scores_masked = masked_fill(scores_scaled, full_mask, mask_value);
+    autograd::Node *scores_masked = masked_fill(scores_scaled, cached_mask_, mask_value);
 
     // 3. Softmax
     autograd::Node *attn_probs = softmax(scores_masked, -1);
@@ -119,7 +123,7 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input) const
 
     // --- Unflatten and Merge ---
     autograd::Node *context_heads = reshape(context_flat, {batch_size, n_heads, seq_len, d_head});
-    autograd::Node *context_transposed = transpose(context_heads, 1, 2);
+    autograd::Node *context_transposed = contiguous(transpose(context_heads, 1, 2));
     autograd::Node *context_merged = reshape(context_transposed, {batch_size, seq_len, d_model_});
 
     // --- Output Projection ---

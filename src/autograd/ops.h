@@ -18,13 +18,16 @@ Node *reshape(Node *input_node, const std::vector<size_t> &new_shape);
 Node *transpose(Node *input_node, size_t dim0 = static_cast<size_t>(-2), size_t dim1 = static_cast<size_t>(-1));
 Node *masked_fill(Node *input_node, const Tensor &mask_tensor, float fill_value);
 Node *mul_scalar(Node *input_node, float scalar_value);
+Node *contiguous(Node *input_node);
 
 struct RoPEResult
 {
     Node *queries;
     Node *keys;
 };
-RoPEResult rope(Node *query_node, Node *key_node, size_t d_head);
+
+constexpr float DEFAULT_ROPE_BASE = 10000.0F;
+RoPEResult rope(Node *query_node, Node *key_node, size_t d_head, float rope_base = DEFAULT_ROPE_BASE);
 
 }  // namespace ops
 }  // namespace autograd

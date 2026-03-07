@@ -1,0 +1,65 @@
+Running main() from C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\src\gtest_main.cc
+Note: Google Test filter = TransformerTest.CausalMask
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from TransformerTest
+[ RUN      ] TransformerTest.CausalMask
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: Expected equality of these values:
+  out_full.at(0, di)
+    Which is: -0.091844745
+  out_modified.at(0, di)
+    Which is: 0.55092072
+Causal mask violated at dim 0
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: Expected equality of these values:
+  out_full.at(0, di)
+    Which is: -0.091844745
+  out_modified.at(0, di)
+    Which is: 0.56743085
+Causal mask violated at dim 1
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: Expected equality of these values:
+  out_full.at(0, di)
+    Which is: -0.091844745
+  out_modified.at(0, di)
+    Which is: 0.50913131
+Causal mask violated at dim 3
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: Expected equality of these values:
+  out_full.at(0, di)
+    Which is: 1
+  out_modified.at(0, di)
+    Which is: 0
+Causal mask violated at dim 5
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: Expected equality of these values:
+  out_full.at(0, di)
+    Which is: 1
+  out_modified.at(0, di)
+    Which is: 0
+Causal mask violated at dim 6
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: Expected equality of these values:
+  out_full.at(0, di)
+    Which is: 1
+  out_modified.at(0, di)
+    Which is: 0
+Causal mask violated at dim 7
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: Expected equality of these values:
+  out_full.at(0, di)
+    Which is: 99
+  out_modified.at(0, di)
+    Which is: 0
+Causal mask violated at dim 8
+
+[  FAILED  ] TransformerTest.CausalMask (0 ms)
+[----------] 1 test from TransformerTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] TransformerTest.CausalMask
+
+ 1 FAILED TEST

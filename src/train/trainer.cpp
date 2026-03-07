@@ -7,7 +7,6 @@
 #include "../autograd/ops.h"
 #include "checkpoint.h"
 
-
 namespace serius {
 namespace training {
 
@@ -17,15 +16,12 @@ Trainer::Trainer(transformer::TransformerModel &model, optim::AdamW &optimizer, 
 {
 }
 
-void Trainer::train(void *dataloader_ptr)
+void Trainer::train(DataLoader &dataloader)
 {
-    DataLoader *dataloader = static_cast<DataLoader *>(dataloader_ptr);
-
-    std::cout << "Starting training..." << std::endl;
+    std::cout << "Starting training...\n";
 
     for (int epoch = 0; epoch < config_.max_epochs; ++epoch) {
-        // In a real impl, we'd reset dataloader or loop until it's empty
-        while (auto batch_opt = dataloader->next_batch()) {
+        while (auto batch_opt = dataloader.next_batch()) {
             auto &batch = batch_opt.value();
 
             // 1. Zero gradients
@@ -38,16 +34,10 @@ void Trainer::train(void *dataloader_ptr)
             autograd::Node *target_node = new autograd::Node(std::move(batch.target_ids), false);
             target_node->name = "target_ids";
 
-            // 3. Forward pass
+            // Forward pass
             autograd::Node *logits = model_.forward(input_node);
 
-            // Flatten logits and targets if needed for cross_entropy
-            // Current CE expects (B, V), but transformer returns (B, S, V)
-            // Simplified: we'll just take the last token or similar if needed,
-            // but let's assume CE handles flattened or we reshape.
-            // For now, let's assume we train on the whole sequence flattened.
-            // reshaped_logits = (B*S, V), reshaped_targets = (B*S)
-
+            // Cross entropy handles (B, S, V) and (B, S) natively.
             autograd::Node *loss_node = autograd::ops::cross_entropy(logits, target_node);
 
             // 4. Backward pass
@@ -64,16 +54,17 @@ void Trainer::train(void *dataloader_ptr)
             optimizer_.step();
 
             // 8. Logging
-            if (current_step_ % 10 == 0) {
+            const int LOG_INTERVAL = 10;
+            if (current_step_ % LOG_INTERVAL == 0) {
                 std::cout << "Step: " << current_step_ << " | Loss: " << std::fixed << std::setprecision(4)
-                          << loss_node->data[0] << " | LR: " << std::scientific << current_lr << std::endl;
+                          << loss_node->data[0] << " | LR: " << std::scientific << current_lr << "\n";
             }
 
             // 9. Checkpointing
             if (current_step_ > 0 && current_step_ % config_.checkpoint_interval == 0) {
                 std::string path = config_.checkpoint_dir + "/model_step_" + std::to_string(current_step_) + ".ckpt";
                 save_checkpoint(path, model_, optimizer_, epoch, current_step_);
-                std::cout << "Saved checkpoint to " << path << std::endl;
+                std::cout << "Saved checkpoint to " << path << "\n";
             }
 
             current_step_++;

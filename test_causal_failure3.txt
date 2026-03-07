@@ -1,0 +1,76 @@
+Running main() from C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\src\gtest_main.cc
+Note: Google Test filter = TransformerTest.CausalMask
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from TransformerTest
+[ RUN      ] TransformerTest.CausalMask
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 11.404690556228161, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to -0.091844744980335236,
+out_modified.at(0, di) evaluates to -11.496535301208496, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 3
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 7.3035726337396907e+22, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 0,
+out_modified.at(0, di) evaluates to 7.3035726337396907e+22, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 5
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 0.99999729979390395, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 1,
+out_modified.at(0, di) evaluates to 2.7002060960512608e-06, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 6
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 1, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 1,
+out_modified.at(0, di) evaluates to 2.0616468641512666e-19, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 7
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 0.99999999748067503, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 1,
+out_modified.at(0, di) evaluates to 2.5193249708621579e-09, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 8
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 98.99999934368833, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 99,
+out_modified.at(0, di) evaluates to 6.5631166989987832e-07, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 9
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 1, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 1,
+out_modified.at(0, di) evaluates to 0, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 11
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 1, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 1,
+out_modified.at(0, di) evaluates to 0, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 12
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 1, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 1,
+out_modified.at(0, di) evaluates to 0, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 13
+
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_transformer.cpp(124): error: The difference between out_full.at(0, di) and out_modified.at(0, di) is 99, which exceeds 1e-4F, where
+out_full.at(0, di) evaluates to 99,
+out_modified.at(0, di) evaluates to 0, and
+1e-4F evaluates to 9.9999997473787516e-05.
+Causal mask violated at dim 14
+
+[  FAILED  ] TransformerTest.CausalMask (0 ms)
+[----------] 1 test from TransformerTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (0 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] TransformerTest.CausalMask
+
+ 1 FAILED TEST

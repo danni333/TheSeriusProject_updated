@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <initializer_list>
 #include <numeric>
@@ -131,8 +132,24 @@ class Tensor
     /// Human-readable string
     std::string to_string() const;
 
+    enum class DataLocation : std::uint8_t { CPU, GPU, SYNCED };
+
+    const float *data_gpu() const { return static_cast<const float *>(data_gpu_); }
+    float *data_gpu() { return static_cast<float *>(data_gpu_); }
+
+    DataLocation location() const { return location_; }
+
+    /// Synchronize data to the compute device (GPU if available)
+    void syncToDevice() const;
+
+    /// Synchronize data back to the host (CPU)
+    void syncToHost() const;
+
    private:
-    float *data_;
+    float *data_;                    // Host pointer
+    void *data_gpu_;                 // Device pointer
+    mutable DataLocation location_;  // Where is the most recent data?
+
     std::vector<size_t> shape_;
     std::vector<size_t> strides_;
     size_t size_;

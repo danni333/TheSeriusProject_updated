@@ -1,8 +1,8 @@
-# Fase 6 — Architettura Ibrida Universale (CPU + HAL: CUDA/ROCm/Metal)
+# Fase 6 — Architettura Ibrida Universale (CPU + HAL: CUDA/Metal/Vulkan)
 
 > La CPU gestisce la logica complessa, il caricamento dati e i layer piccoli.
-> La GPU macina le enormi moltiplicazioni di matrici dell'Attention.
-> L'obiettivo è **dividere il carico** in modo ottimale.
+> Le **GPU (NVIDIA, AMD, Apple Silicon, Intel)** macinano le enormi moltiplicazioni di matrici dell'Attention attraverso un livello di astrazione (HAL).
+> L'obiettivo è **dividere il carico** in modo ottimale su *qualsiasi* hardware disponibile.
 
 ---
 
@@ -22,7 +22,7 @@ cudaMallocManaged(&data, size * sizeof(float));
 ```
 
 | Pro | Contro |
-|---|---|
+| --- | --- |
 | Semplicità di codice | Overhead da page migration |
 | Nessun sync manuale | Meno controllo sui trasferimenti |
 
@@ -125,7 +125,7 @@ matmul_kernel<<<grid, block>>>(A, B, C, M, N, K);
 ### Ottimizzazioni GPU
 
 | Tecnica | Descrizione |
-|---|---|
+| --- | --- |
 | **Shared Memory Tiling** | I blocchi caricano tile in shared memory (più veloce della global) |
 | **Coalesced Access** | Thread adiacenti accedono a indirizzi contigui |
 | **Warp-level Primitives** | `__shfl_sync` per riduzione veloce dentro un warp |
@@ -173,7 +173,7 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
 
 ### Ibrido 3 — Overlap I/O
 
-```
+```text
 Timeline:
 ─────────────────────────────────────────────▶ tempo
 
@@ -188,7 +188,7 @@ Nessun tempo morto!
 
 Per modelli molto profondi, split dei layer tra dispositivi:
 
-```
+```text
 GPU 0:  Layer 0-5  (Forward → invia a GPU 1)
 GPU 1:  Layer 6-11 (Forward → invia a CPU per loss)
 CPU:    Loss + Backward start → invia gradiente a GPU 1
@@ -199,7 +199,7 @@ CPU:    Loss + Backward start → invia gradiente a GPU 1
 ## 5. Struttura File
 
 | File | Contenuto |
-|---|---|
+| --- | --- |
 | `src/device/device.h` | Enum `Device {CPU, CUDA}`, detection |
 | `src/device/cuda_utils.h/.cu` | Helper CUDA (error check, stream mgmt) |
 | `src/device/tensor_cuda.cu` | `syncToDevice()`, `syncToHost()`, allocazione GPU |
@@ -214,7 +214,7 @@ CPU:    Loss + Backward start → invia gradiente a GPU 1
 ## 6. Piano di Verifica
 
 | Test | Verifica |
-|---|---|
+| --- | --- |
 | `test_sync` | `syncToDevice → syncToHost`: i dati sono identici |
 | `test_matmul_cuda` | matmul GPU vs CPU: risultati ≈ uguali (atol 1e-5) |
 | `test_dispatcher` | Tensori piccoli → CPU, tensori grandi → GPU |
@@ -224,7 +224,7 @@ CPU:    Loss + Backward start → invia gradiente a GPU 1
 ### Benchmark ibrido
 
 | Benchmark | Cosa misura |
-|---|---|
+| --- | --- |
 | `bench_cpu_vs_gpu` | Matmul 1024×1024: speedup GPU vs CPU |
 | `bench_pipeline` | Throughput training con overlap I/O vs sequenziale |
 | `bench_dispatcher` | Overhead del dispatch automatico |
@@ -282,16 +282,15 @@ public:
 
 ---
 
-## 8. Requisiti aggiuntivi
+## 8. Requisiti Hardware Opzionali
 
-| Requisito | Minimo |
-|---|---|
-| GPU NVIDIA | Compute Capability ≥ 6.0 (Pascal) |
-| CUDA Toolkit | 11.0+ |
-| Driver NVIDIA | 450+ |
-| CMake CUDA | `enable_language(CUDA)` in CMakeLists.txt |
+| Requisito | Dettaglio |
+| --- | --- |
+| GPU NVIDIA | Compute Capability ≥ 6.0 (Pascal), CUDA Toolkit 11.0+ |
+| GPU AMD / Intel | Driver aggiornati, Vulkan SDK installato |
+| Apple Silicon | macOS Monterrey o superiore (Metal 3 consigliato) |
+| Architettura Generale | La libreria è disegnata per adattarsi dinamicamente all'hardware al runtime. |
 
 > [!CAUTION]
-> La Fase 6 è **opzionale** se non si dispone di una GPU NVIDIA.
-> Il modello funziona interamente su CPU con le Fasi 1-5.
-> La GPU accelera il training di 10-100x ma non è strettamente necessaria.
+> La Fase 6 (accelerazione hardware) è **opzionale**. Il modello funziona interamente su CPU (Fasi 1-5).
+> L'estensione ibrida scala le performance in presenza di GPU compatibili (NVIDIA, AMD, Apple Silicon, Intel) offrendo speedup di 10x-100x sul training, ma in loro assenza ripiega in modo trasparente e automatico sulla CPU.
