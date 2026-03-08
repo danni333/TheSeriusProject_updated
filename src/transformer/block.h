@@ -5,7 +5,6 @@
 #include "ffn.h"
 #include "layernorm.h"
 
-
 namespace serius {
 namespace transformer {
 
@@ -16,7 +15,7 @@ class TransformerBlock
 
     /// Forward pass (pre-norm architecture)
     /// Input: (seq_len, d_model) or (batch_size, seq_len, d_model)
-    autograd::Node *forward(autograd::Node *input) const;
+    autograd::Node *forward(autograd::Node *input, KVCache *cache = nullptr) const;
 
     // Sub-layers
     LayerNorm norm1;

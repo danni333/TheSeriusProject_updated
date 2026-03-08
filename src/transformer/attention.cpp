@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "../autograd/ops.h"
+#include "kv_cache.h"
 
 namespace serius {
 namespace transformer {
@@ -51,7 +52,7 @@ MultiHeadAttention::~MultiHeadAttention()
     delete w_o;
 }
 
-autograd::Node *MultiHeadAttention::forward(autograd::Node *input) const
+autograd::Node *MultiHeadAttention::forward(autograd::Node *input, KVCache *cache) const
 {
     using namespace autograd::ops;
 
@@ -66,7 +67,9 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input) const
     autograd::Node *values = matmul(c_t, w_uv);
 
     // --- RoPE (Differentiable) ---
-    autograd::ops::RoPEResult rope_out = autograd::ops::rope(queries, keys, d_head_);
+    size_t pos_offset = cache ? cache->current_len() : 0;
+    autograd::ops::RoPEResult rope_out =
+        autograd::ops::rope(queries, keys, d_head_, autograd::ops::DEFAULT_ROPE_BASE, pos_offset);
     autograd::Node *q_rot = rope_out.queries;
     autograd::Node *k_rot = rope_out.keys;
 
@@ -86,11 +89,31 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input) const
     autograd::Node *k_heads = contiguous(transpose(k_split, 1, 2));
     autograd::Node *v_heads = contiguous(transpose(v_split, 1, 2));
 
+    // --- KV Caching Integration ---
+    if (cache != nullptr) {
+        // Update cache with CURRENT step rotated keys and values
+        // k_heads: (B, H, S, D_h), v_heads: (B, H, S, D_h)
+        cache->update(k_heads->data, v_heads->data);
+
+        // Get FULL sequence from cache
+        Tensor full_k = cache->get_keys();
+        Tensor full_v = cache->get_values();
+
+        // Create new nodes for cached data (gradient flow stops here for cache for now)
+        k_heads = new autograd::Node(std::move(full_k));
+        v_heads = new autograd::Node(std::move(full_v));
+
+        k_heads = contiguous(k_heads);
+        v_heads = contiguous(v_heads);
+    }
+
+    size_t total_seq_len = (cache != nullptr) ? cache->current_len() : seq_len;
+
     // Flatten: (B, H, S, D_h) -> (B*H, S, D_h)
     size_t batch_heads = batch_size * n_heads;
     autograd::Node *q_flat = reshape(q_heads, {batch_heads, seq_len, d_head});
-    autograd::Node *k_flat = reshape(k_heads, {batch_heads, seq_len, d_head});
-    autograd::Node *v_flat = reshape(v_heads, {batch_heads, seq_len, d_head});
+    autograd::Node *k_flat = reshape(k_heads, {batch_heads, total_seq_len, d_head});
+    autograd::Node *v_flat = reshape(v_heads, {batch_heads, total_seq_len, d_head});
 
     // --- Scaled Dot-Product Attention ---
 
@@ -102,18 +125,25 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input) const
     autograd::Node *scores_scaled = mul_scalar(scores, scale_factor);
 
     // 2. Causal Masking (Optimized: reuse cached mask if possible)
-    if (mask_seq_len_ != seq_len) {
-        cached_mask_ = Tensor({seq_len, seq_len});
-        for (size_t r_idx = 0; r_idx < seq_len; ++r_idx) {
-            for (size_t c_idx = r_idx + 1; c_idx < seq_len; ++c_idx) {
+    // In incremental mode (cache provided), seq_len is typically 1, but we need full attn mask relative to
+    // total_seq_len
+    if (mask_seq_len_ != total_seq_len) {
+        cached_mask_ = Tensor({total_seq_len, total_seq_len});
+        for (size_t r_idx = 0; r_idx < total_seq_len; ++r_idx) {
+            for (size_t c_idx = r_idx + 1; c_idx < total_seq_len; ++c_idx) {
                 cached_mask_.at(r_idx, c_idx) = 1.0F;
             }
         }
-        mask_seq_len_ = seq_len;
+        mask_seq_len_ = total_seq_len;
     }
 
+    // Slice mask for current queries: [seq_len, total_seq_len]
+    // If seq_len=1 (inference), we need row [pos_offset] from mask
+    Tensor current_mask = cached_mask_.slice(0, pos_offset, pos_offset + seq_len);
+    current_mask = current_mask.slice(1, 0, total_seq_len);  // [seq_len, total_seq_len]
+
     const float mask_value = -1e30F;
-    autograd::Node *scores_masked = masked_fill(scores_scaled, cached_mask_, mask_value);
+    autograd::Node *scores_masked = masked_fill(scores_scaled, current_mask, mask_value);
 
     // 3. Softmax
     autograd::Node *attn_probs = softmax(scores_masked, -1);

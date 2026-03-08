@@ -19,6 +19,9 @@ target_link_libraries(test_blas PRIVATE gtest_main serius_core)
 add_executable(test_autograd test_autograd.cpp)
 target_link_libraries(test_autograd PRIVATE gtest_main serius_core)
 
+add_executable(test_kv_cache_logic test_kv_cache_logic.cpp)
+target_link_libraries(test_kv_cache_logic PRIVATE gtest_main serius_core)
+
 add_executable(test_transformer test_transformer.cpp)
 target_link_libraries(test_transformer PRIVATE gtest_main serius_core)
 

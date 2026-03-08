@@ -2,7 +2,6 @@
 
 #include "../autograd/ops.h"
 
-
 namespace serius {
 namespace transformer {
 
@@ -11,13 +10,13 @@ TransformerBlock::TransformerBlock(size_t d_model, size_t n_heads, size_t d_ff)
 {
 }
 
-autograd::Node *TransformerBlock::forward(autograd::Node *input) const
+autograd::Node *TransformerBlock::forward(autograd::Node *input, KVCache *cache) const
 {
     using namespace autograd::ops;
 
     // Pre-Norm: x + Attention(LayerNorm(x))
     autograd::Node *normed1 = norm1.forward(input);
-    autograd::Node *attn_out = attention.forward(normed1);
+    autograd::Node *attn_out = attention.forward(normed1, cache);
 
     // Residual connection
     autograd::Node *residual1 = add(input, attn_out);

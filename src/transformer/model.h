@@ -36,7 +36,7 @@ class TransformerModel
     /// Forward pass
     /// Input: token indices as flat array of size seq_len (stored in a Node of shape {seq_len})
     /// Returns: logits of shape (seq_len, vocab_size) as autograd::Node*
-    autograd::Node *forward(autograd::Node *token_ids) const;
+    autograd::Node *forward(autograd::Node *token_ids, std::vector<KVCache *> *caches = nullptr) const;
 
     /// Retrieve all trainable parameters
     std::vector<autograd::Node *> parameters() const;

@@ -112,7 +112,7 @@ void TransformerModel::do_embedding_backward(autograd::Node *token_ids, const Em
     }
 }
 
-autograd::Node *TransformerModel::forward(autograd::Node *token_ids) const
+autograd::Node *TransformerModel::forward(autograd::Node *token_ids, std::vector<KVCache *> *caches) const
 {
     using namespace autograd::ops;
 
@@ -120,8 +120,9 @@ autograd::Node *TransformerModel::forward(autograd::Node *token_ids) const
     autograd::Node *hidden = embedding_lookup(token_ids);
 
     // Pass through transformer blocks
-    for (auto *block : blocks) {
-        hidden = block->forward(hidden);
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        KVCache *cache = (caches != nullptr && i < caches->size()) ? (*caches)[i] : nullptr;
+        hidden = blocks[i]->forward(hidden, cache);
     }
 
     // Final layer norm

@@ -45,42 +45,46 @@ size_t Tensor::compute_offset(const std::vector<size_t> &indices) const
 
 // --- Constructors ---
 
-Tensor::Tensor(const std::vector<size_t> &shape)
+Tensor::Tensor(const std::vector<size_t> &shape, hal::DType dtype)
     : data_(nullptr),
       data_gpu_(nullptr),
       location_(DataLocation::CPU),
       shape_(shape),
       strides_(compute_strides(shape)),
       size_(shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>())),
+      dtype_(dtype),
       owns_data_(true),
       pool_(nullptr)  // This constructor does not use a pool directly
 {
     if (size_ > 0) {
         // Use backend allocator directly if no pool
         hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
-        data_ = static_cast<float *>(backend->malloc(size_ * sizeof(float)));
-        std::memset(data_, 0, size_ * sizeof(float));
+        size_t bytes = size_ * element_size();
+        data_ = static_cast<float *>(backend->malloc(bytes));
+        std::memset(data_, 0, bytes);
     }
 }
 
-Tensor::Tensor(const std::vector<size_t> &shape, memory::MemoryPool *pool)
+Tensor::Tensor(const std::vector<size_t> &shape, memory::MemoryPool *pool, hal::DType dtype)
     : data_(nullptr),  // Initialize data_ to nullptr
       data_gpu_(nullptr),
       location_(DataLocation::CPU),
       shape_(shape),
       strides_(compute_strides(shape)),
       size_(shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>())),
+      dtype_(dtype),
       owns_data_(true),
       pool_(pool)
 {
     if (size_ > 0) {
+        size_t bytes = size_ * element_size();
         if (pool_ != nullptr) {
-            data_ = static_cast<float *>(pool_->allocate(size_ * sizeof(float)));
+            data_ = static_cast<float *>(pool_->allocate(bytes));
         } else {
             hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
-            data_ = static_cast<float *>(backend->malloc(size_ * sizeof(float)));
+            data_ = static_cast<float *>(backend->malloc(bytes));
         }
-        std::memset(data_, 0, size_ * sizeof(float));
+        std::memset(data_, 0, bytes);
     }
 }
 
@@ -91,6 +95,7 @@ Tensor::Tensor(float *data_ptr, const std::vector<size_t> &shape)
       shape_(shape),
       strides_(compute_strides(shape)),
       size_(shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>())),
+      dtype_(hal::DType::Float32),
       owns_data_(false),
       pool_(nullptr)
 {
@@ -103,6 +108,7 @@ Tensor::Tensor(float *data_ptr, const std::vector<size_t> &shape, const std::vec
       shape_(shape),
       strides_(strides),
       size_(shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>())),
+      dtype_(hal::DType::Float32),
       owns_data_(false),
       pool_(nullptr)
 {
@@ -117,19 +123,21 @@ Tensor::Tensor(const Tensor &other)
       shape_(other.shape_),
       strides_(compute_strides(other.shape_)),
       size_(other.size_),
+      dtype_(other.dtype_),
       owns_data_(true),
       pool_(nullptr)  // Copy constructor does not inherit pool ownership
 {
     if (size_ > 0) {
         hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
-        data_ = static_cast<float *>(backend->malloc(size_ * sizeof(float)));
+        size_t bytes = size_ * element_size();
+        data_ = static_cast<float *>(backend->malloc(bytes));
 
         // Copy CPU data
         if (data_ != nullptr && other.data_ != nullptr) {
             // Ensure other's CPU data is up-to-date if it was on GPU
             other.syncToHost();
             if (other.is_contiguous()) {
-                std::memcpy(data_, other.data_, size_ * sizeof(float));
+                std::memcpy(data_, other.data_, bytes);
             } else {
                 // Element-by-element copy for non-contiguous tensors
                 for (size_t i = 0; i < size_; ++i) {
@@ -153,9 +161,10 @@ Tensor::Tensor(const Tensor &other)
         if (other.data_gpu_ != nullptr) {
             hal::IBackend *gpu_backend = hal::get_gpu_backend();
             if (gpu_backend != nullptr && gpu_backend->is_available()) {
-                data_gpu_ = gpu_backend->malloc(size_ * sizeof(float));
+                bytes = size_ * element_size();
+                data_gpu_ = gpu_backend->malloc(bytes);
                 if (data_gpu_ != nullptr) {
-                    gpu_backend->memcpy_d2d(data_gpu_, other.data_gpu_, size_ * sizeof(float));
+                    gpu_backend->memcpy_d2d(data_gpu_, other.data_gpu_, bytes);
                 }
             }
         }
@@ -169,6 +178,7 @@ Tensor::Tensor(Tensor &&other) noexcept
       shape_(std::move(other.shape_)),
       strides_(std::move(other.strides_)),
       size_(other.size_),
+      dtype_(other.dtype_),
       owns_data_(other.owns_data_),
       pool_(other.pool_)
 {
@@ -212,6 +222,7 @@ Tensor &Tensor::operator=(Tensor &&other) noexcept
         shape_ = std::move(other.shape_);
         strides_ = std::move(other.strides_);
         size_ = other.size_;
+        dtype_ = other.dtype_;
         owns_data_ = other.owns_data_;
         pool_ = other.pool_;
 
@@ -309,7 +320,9 @@ Tensor Tensor::reshape(const std::vector<size_t> &new_shape) const
         throw std::invalid_argument("Cannot reshape non-contiguous tensor (make a copy first)");
     }
     // Return a view with new shape
-    return Tensor(data_, new_shape);
+    Tensor res = Tensor(data_, new_shape);
+    res.dtype_ = dtype_;
+    return res;
 }
 
 Tensor Tensor::slice(size_t dim, size_t start, size_t end) const
@@ -325,9 +338,12 @@ Tensor Tensor::slice(size_t dim, size_t start, size_t end) const
     new_shape[dim] = end - start;
 
     // Offset the data pointer by start * stride along the sliced dimension
-    float *new_data = data_ + start * strides_[dim];
+    size_t offset = start * strides_[dim];
+    float *new_data = data_ + offset;
 
-    return Tensor(new_data, new_shape, strides_);
+    Tensor res = Tensor(new_data, new_shape, strides_);
+    res.dtype_ = dtype_;
+    return res;
 }
 
 Tensor Tensor::transpose() const
@@ -368,7 +384,9 @@ Tensor Tensor::permute(const std::vector<size_t> &dims) const
         new_strides[i] = strides_[dims[i]];
     }
 
-    return Tensor(data_, new_shape, new_strides);
+    Tensor res = Tensor(data_, new_shape, new_strides);
+    res.dtype_ = dtype_;
+    return res;
 }
 
 Tensor Tensor::copy() const
@@ -392,7 +410,7 @@ Tensor Tensor::sum(size_t dim) const
         new_shape = {1};  // Return (1,) for scalar sum of 1D
     }
 
-    Tensor res(new_shape);
+    Tensor res(new_shape, nullptr, dtype_);
     res.zeros();
 
     std::vector<size_t> indices(shape_.size(), 0);
@@ -457,12 +475,12 @@ void Tensor::ones()
 Tensor Tensor::zeros(const std::vector<size_t> &shape, memory::MemoryPool *pool)
 {
     // Constructor zero-initializes memory already.
-    return pool != nullptr ? Tensor(shape, pool) : Tensor(shape);
+    return pool != nullptr ? Tensor(shape, pool, hal::DType::Float32) : Tensor(shape, hal::DType::Float32);
 }
 
 Tensor Tensor::ones(const std::vector<size_t> &shape, memory::MemoryPool *pool)
 {
-    Tensor t = pool != nullptr ? Tensor(shape, pool) : Tensor(shape);
+    Tensor t = pool != nullptr ? Tensor(shape, pool, hal::DType::Float32) : Tensor(shape, hal::DType::Float32);
     t.ones();
     return t;
 }
@@ -498,6 +516,23 @@ std::string Tensor::to_string() const
     oss << ", owns_data=" << (owns_data_ ? "true" : "false");
     oss << ")";
     return oss.str();
+}
+
+size_t Tensor::element_size() const
+{
+    switch (dtype_) {
+        case hal::DType::Float32:
+            return 4;
+        case hal::DType::Float16:
+        case hal::DType::BFloat16:
+            return 2;
+        case hal::DType::Int8:
+            return 1;
+        case hal::DType::Int4:
+            return 1;  // Packed
+        default:
+            return 4;
+    }
 }
 
 // --- Operators ---
@@ -536,7 +571,7 @@ Tensor &Tensor::operator+=(const Tensor &other)
 Tensor Tensor::operator+(const Tensor &other) const
 {
     if (shape_ == other.shape_) {
-        Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_) : Tensor(shape_);
+        Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
         if (is_contiguous() && other.is_contiguous()) {
             for (size_t i = 0; i < size_; ++i) {
                 result.data_[i] = data_[i] + other.data_[i];
@@ -557,7 +592,7 @@ Tensor Tensor::operator+(const Tensor &other) const
 
     if (ndim() > other.ndim() && shape_.back() == other.shape_.back() && other.ndim() == 1) {
         // Broadcasting: (..., D) + (D,)
-        Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_) : Tensor(shape_);
+        Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
         size_t d = shape_.back();
         size_t n = size_ / d;
         for (size_t i = 0; i < n; ++i) {
@@ -576,7 +611,7 @@ Tensor Tensor::operator*(const Tensor &other) const
     if (shape_ != other.shape_) {
         throw std::invalid_argument("Shapes must match for operator*");
     }
-    Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_) : Tensor(shape_);
+    Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
     if (is_contiguous() && other.is_contiguous()) {
         for (size_t i = 0; i < size_; ++i) {
             result.data_[i] = data_[i] * other.data_[i];
@@ -612,11 +647,11 @@ void Tensor::syncToDevice() const
 
     if (data_gpu_ == nullptr) {
         // We cast const away here to modify internal state safely
-        const_cast<Tensor *>(this)->data_gpu_ = backend->malloc(size_ * sizeof(float));
+        const_cast<Tensor *>(this)->data_gpu_ = backend->malloc(size_ * element_size());
     }
 
     if (data_ != nullptr && data_gpu_ != nullptr) {
-        backend->memcpy_h2d(data_gpu_, data_, size_ * sizeof(float));
+        backend->memcpy_h2d(data_gpu_, data_, size_ * element_size());
         const_cast<Tensor *>(this)->location_ = DataLocation::SYNCED;
     }
 }
@@ -633,7 +668,7 @@ void Tensor::syncToHost() const
     }
 
     if (data_ != nullptr && data_gpu_ != nullptr) {
-        backend->memcpy_d2h(data_, data_gpu_, size_ * sizeof(float));
+        backend->memcpy_d2h(data_, data_gpu_, size_ * element_size());
         const_cast<Tensor *>(this)->location_ = DataLocation::SYNCED;
     }
 }

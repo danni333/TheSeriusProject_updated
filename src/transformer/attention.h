@@ -6,6 +6,8 @@
 namespace serius {
 namespace transformer {
 
+class KVCache;
+
 class MultiHeadAttention
 {
    public:
@@ -15,7 +17,7 @@ class MultiHeadAttention
     /// Forward pass
     /// Input: (seq_len, d_model)
     /// Returns: (seq_len, d_model)
-    autograd::Node *forward(autograd::Node *input) const;
+    autograd::Node *forward(autograd::Node *input, KVCache *cache = nullptr) const;
 
     // Weight matrices for Multi-Head Latent Attention (MLA)
     autograd::Node *w_q;    // (d_model, d_model)

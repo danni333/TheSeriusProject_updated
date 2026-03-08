@@ -27,7 +27,8 @@ struct RoPEResult
 };
 
 constexpr float DEFAULT_ROPE_BASE = 10000.0F;
-RoPEResult rope(Node *query_node, Node *key_node, size_t d_head, float rope_base = DEFAULT_ROPE_BASE);
+RoPEResult rope(Node *query_node, Node *key_node, size_t d_head, float rope_base = DEFAULT_ROPE_BASE,
+                size_t pos_offset = 0);
 
 }  // namespace ops
 }  // namespace autograd

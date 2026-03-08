@@ -8,6 +8,7 @@ namespace hal {
 
 // Forward declarations of common types to avoid pulling heavy headers
 enum class DeviceType : std::uint8_t { CPU, CUDA, VULKAN, METAL };
+enum class DType : std::uint8_t { Float32, Float16, BFloat16, Int8, Int4 };
 
 class IBackend
 {

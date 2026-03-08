@@ -14,6 +14,7 @@ add_library(serius_core
     transformer/positional.cpp
     transformer/attention.cpp
     transformer/ffn.cpp
+    transformer/kv_cache.cpp
     transformer/block.cpp
     transformer/model.cpp
     tokenizer/bpe.cpp
@@ -23,6 +24,7 @@ add_library(serius_core
     train/checkpoint.cpp
     train/trainer.cpp
     hal/cpu_backend.cpp
+    quant/conversions.cpp
 )
 
 if(SERIUS_USE_CUDA)

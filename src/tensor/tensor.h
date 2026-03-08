@@ -10,6 +10,9 @@
 #include <string>
 #include <vector>
 
+#include "../hal/device.h"
+
+
 namespace serius {
 
 // Forward declaration
@@ -23,10 +26,10 @@ class Tensor
     // --- Constructors ---
 
     /// Create a tensor with the given shape, zero-initialized
-    explicit Tensor(const std::vector<size_t> &shape);
+    explicit Tensor(const std::vector<size_t> &shape, hal::DType dtype = hal::DType::Float32);
 
     /// Create a tensor with the given shape, using memory pool
-    Tensor(const std::vector<size_t> &shape, memory::MemoryPool *pool);
+    Tensor(const std::vector<size_t> &shape, memory::MemoryPool *pool, hal::DType dtype = hal::DType::Float32);
 
     /// Create a view on external data (does NOT own the data)
     Tensor(float *data_ptr, const std::vector<size_t> &shape);
@@ -128,6 +131,8 @@ class Tensor
     size_t ndim() const { return shape_.size(); }
     bool owns_data() const { return owns_data_; }
     bool is_contiguous() const;
+    hal::DType dtype() const { return dtype_; }
+    size_t element_size() const;
 
     /// Human-readable string
     std::string to_string() const;
@@ -153,6 +158,7 @@ class Tensor
     std::vector<size_t> shape_;
     std::vector<size_t> strides_;
     size_t size_;
+    hal::DType dtype_;
     bool owns_data_;
     memory::MemoryPool *pool_;  // nullptr if heap-allocated
 
