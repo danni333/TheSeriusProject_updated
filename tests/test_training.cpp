@@ -98,7 +98,7 @@ TEST_F(TrainingTest, FullTrainingStep)
     autograd::Node *loss = autograd::ops::cross_entropy(logits_node, target_node);
 
     const float ZERO_LOSS = 0.0F;
-    float initial_loss = loss->data.get({0});
+    float initial_loss = loss->data.at({0});
     EXPECT_GT(initial_loss, ZERO_LOSS);
 
     autograd::backward(loss);

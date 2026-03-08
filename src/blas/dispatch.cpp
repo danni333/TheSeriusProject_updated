@@ -1,6 +1,8 @@
 #include <stdexcept>
 
 #include "../hal/device.h"
+#include "blas.h"
+
 
 #ifdef SERIUS_USE_CUDA
 #include "matmul_cuda.h"

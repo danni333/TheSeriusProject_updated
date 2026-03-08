@@ -1,0 +1,63 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Debug\spdlogd.lib
+  tensor.cpp
+  dispatch.cpp
+  Generazione del codice in corso...
+  matmul_avx2.cpp
+  matmul_avx512.cpp
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Debug\serius_core.lib
+  bench_matmul.cpp
+  bench_matmul.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\bench_matmul.exe
+  bench_memory.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\bench_memory.exe
+  gmock.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Debug\gmock.lib
+  gmock_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Debug\gmock_main.lib
+  gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Debug\gtest.lib
+  gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Debug\gtest_main.lib
+  test_autograd.cpp
+  test_autograd.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_autograd.exe
+  test_blas.cpp
+  test_blas.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_blas.exe
+  Building Custom Rule C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/tests/CMakeLists.txt
+  test_cuda.cpp
+  test_cuda.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_cuda.exe
+  test_dataloader.cpp
+  test_dataloader.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_dataloader.exe
+  test_dummy.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_dummy.exe
+  Building Custom Rule C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/tests/CMakeLists.txt
+  test_hal.cpp
+  test_hal.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_hal.exe
+  test_memory.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_memory.exe
+  CMake Error at C:/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/GoogleTestAddTests.cmake:132 (message):
+    Error running test executable.
+  
+      Path: 'C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Debug/test_memory.exe'
+      Working directory: 'C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests'
+      Result: Process terminated due to timeout
+      Output:
+        
+  
+  Call Stack (most recent call first):
+    C:/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/GoogleTestAddTests.cmake:275 (gtest_discover_tests_impl)
+  
+  
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: uscita dal comando "setlocal [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: C:\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe -D TEST_TARGET=test_memory -D TEST_EXECUTABLE=C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Debug/test_memory.exe -D TEST_EXECUTOR= -D TEST_WORKING_DIR=C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests -D TEST_EXTRA_ARGS= -D TEST_PROPERTIES= -D TEST_PREFIX= -D TEST_SUFFIX= -D TEST_FILTER= -D NO_PRETTY_TYPES=FALSE -D NO_PRETTY_VALUES=FALSE -D TEST_LIST=test_memory_TESTS -D CTEST_FILE=C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/test_memory[1]_tests.cmake -D TEST_DISCOVERY_TIMEOUT=5 -D TEST_DISCOVERY_EXTRA_ARGS= -D TEST_XML_OUTPUT_DIR= -P C:/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/GoogleTestAddTests.cmake [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: if %errorlevel% neq 0 goto :cmEnd [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: :cmEnd [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: :cmErrorLevel [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: exit /b %1 [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: :cmDone [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: if %errorlevel% neq 0 goto :VCEnd [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+C:\BuildTools\MSBuild\Microsoft\VC\v170\Microsoft.CppCommon.targets(166,5): error MSB3073: :VCEnd" con codice 1. [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_memory.vcxproj]
+  test_tensor.cpp
+  test_tensor.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_tensor.exe
+  test_tokenizer.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_tokenizer.exe
+  test_training.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_training.cpp(101,37): error C2039: 'get': non ├¿ un membro di 'serius::Tensor' [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_training.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(20,7):
+      vedere la dichiarazione di 'serius::Tensor'
+  
+  test_transformer.cpp
+  test_transformer.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Debug\test_transformer.exe

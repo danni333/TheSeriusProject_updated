@@ -115,7 +115,7 @@ Tensor::Tensor(const Tensor &other)
       data_gpu_(nullptr),
       location_(other.location_),  // Copy location from other
       shape_(other.shape_),
-      strides_(other.strides_),  // Copy strides directly, as they are already computed for 'other'
+      strides_(compute_strides(other.shape_)),
       size_(other.size_),
       owns_data_(true),
       pool_(nullptr)  // Copy constructor does not inherit pool ownership
@@ -151,11 +151,11 @@ Tensor::Tensor(const Tensor &other)
 
         // Copy GPU data if present in 'other'
         if (other.data_gpu_ != nullptr) {
-            hal::IBackend *backend = hal::get_gpu_backend();
-            if (backend != nullptr && backend->is_available()) {
-                data_gpu_ = backend->malloc(size_ * sizeof(float));
+            hal::IBackend *gpu_backend = hal::get_gpu_backend();
+            if (gpu_backend != nullptr && gpu_backend->is_available()) {
+                data_gpu_ = gpu_backend->malloc(size_ * sizeof(float));
                 if (data_gpu_ != nullptr) {
-                    backend->memcpy_d2d(data_gpu_, other.data_gpu_, size_ * sizeof(float));
+                    gpu_backend->memcpy_d2d(data_gpu_, other.data_gpu_, size_ * sizeof(float));
                 }
             }
         }
