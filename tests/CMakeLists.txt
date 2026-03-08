@@ -32,6 +32,9 @@ target_link_libraries(bench_matmul PRIVATE serius_core)
 add_executable(bench_memory bench_memory.cpp)
 target_link_libraries(bench_memory PRIVATE serius_core)
 
+add_executable(bench_mixed_precision bench_mixed_precision.cpp)
+target_link_libraries(bench_mixed_precision PRIVATE serius_core)
+
 include(GoogleTest)
 gtest_discover_tests(test_dummy)
 gtest_discover_tests(test_memory)
@@ -66,3 +69,13 @@ add_test(NAME test_cuda COMMAND test_cuda)
 add_executable(test_training test_training.cpp)
 target_link_libraries(test_training PRIVATE gtest_main serius_core)
 gtest_discover_tests(test_training)
+
+# Fused CUDA Tests
+add_executable(test_fused_cuda test_fused_cuda.cpp)
+target_link_libraries(test_fused_cuda PRIVATE gtest_main serius_core)
+gtest_discover_tests(test_fused_cuda)
+
+# Quantization Tests (INT4, FP16/BF16, KV Cache enhancements)
+add_executable(test_quant test_quant.cpp)
+target_link_libraries(test_quant PRIVATE gtest_main serius_core)
+gtest_discover_tests(test_quant)

@@ -3,7 +3,6 @@
 #include "../autograd/node.h"
 #include "../tensor/tensor.h"
 
-
 namespace serius {
 namespace transformer {
 
@@ -20,10 +19,10 @@ class LayerNorm
     // Learnable parameters (managed by the layer)
     autograd::Node *gamma;  // scale, shape: (d_model,)
     autograd::Node *beta;   // shift, shape: (d_model,)
+    float eps;
 
    private:
     size_t d_model_;
-    float eps_;
 };
 
 }  // namespace transformer

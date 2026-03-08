@@ -25,12 +25,16 @@ add_library(serius_core
     train/trainer.cpp
     hal/cpu_backend.cpp
     quant/conversions.cpp
+    quant/int4.cpp
+    quant/dequant_matmul.cpp
 )
 
 if(SERIUS_USE_CUDA)
     target_sources(serius_core PRIVATE 
         hal/cuda_backend.cu
+        hal/fused_kernels.cu
         blas/matmul_cuda.cu
+        quant/dequant_matmul.cu
     )
 endif()
 
@@ -52,9 +56,15 @@ endif()
 
 # Set specific compiler flags for SIMD files
 if(MSVC)
+    target_compile_options(serius_core PRIVATE 
+        $<$<COMPILE_LANGUAGE:CXX>:/W4 /WX>
+    )
     set_source_files_properties(blas/matmul_avx2.cpp PROPERTIES COMPILE_FLAGS "/arch:AVX2")
     set_source_files_properties(blas/matmul_avx512.cpp PROPERTIES COMPILE_FLAGS "/arch:AVX512")
 else()
+    target_compile_options(serius_core PRIVATE 
+        $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic -Werror=return-type>
+    )
     set_source_files_properties(blas/matmul_avx2.cpp PROPERTIES COMPILE_FLAGS "-mavx2 -mfma")
     set_source_files_properties(blas/matmul_avx512.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mfma")
 endif()

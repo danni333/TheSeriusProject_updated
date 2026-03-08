@@ -122,8 +122,6 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input, KVCache *cach
     autograd::Node *scores = matmul(q_flat, k_t);
 
     float scale_factor = 1.0F / std::sqrt(static_cast<float>(d_head));
-    autograd::Node *scores_scaled = mul_scalar(scores, scale_factor);
-
     // 2. Causal Masking (Optimized: reuse cached mask if possible)
     // In incremental mode (cache provided), seq_len is typically 1, but we need full attn mask relative to
     // total_seq_len
@@ -142,11 +140,8 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input, KVCache *cach
     Tensor current_mask = cached_mask_.slice(0, pos_offset, pos_offset + seq_len);
     current_mask = current_mask.slice(1, 0, total_seq_len);  // [seq_len, total_seq_len]
 
-    const float mask_value = -1e30F;
-    autograd::Node *scores_masked = masked_fill(scores_scaled, current_mask, mask_value);
-
-    // 3. Softmax
-    autograd::Node *attn_probs = softmax(scores_masked, -1);
+    // 2. Fused Masked Softmax (scaling, masking, and softmax in one step)
+    autograd::Node *attn_probs = fused_masked_softmax(scores, current_mask, scale_factor);
 
     // 4. Context = Attn * V
     autograd::Node *context_flat = matmul(attn_probs, v_flat);

@@ -21,8 +21,14 @@ void batched_matmul(const Tensor &A, const Tensor &B, Tensor &C);
 // C = A + B
 void element_wise_add(const Tensor &A, const Tensor &B, Tensor &C);
 
+// C = A - B
+void element_wise_sub(const Tensor &A, const Tensor &B, Tensor &C);
+
 // C = A * B (element-wise multiplication)
 void element_wise_mul(const Tensor &A, const Tensor &B, Tensor &C);
+
+// C = A / B (element-wise division)
+void element_wise_div(const Tensor &A, const Tensor &B, Tensor &C);
 
 // B = alpha * A
 void scale(const Tensor &A, float alpha, Tensor &B);
@@ -54,7 +60,9 @@ Tensor matmul(const Tensor &A, const Tensor &B);
 Tensor batched_matmul(const Tensor &A, const Tensor &B);
 Tensor matvec(const Tensor &A, const Tensor &x);
 Tensor element_wise_add(const Tensor &A, const Tensor &B);
+Tensor element_wise_sub(const Tensor &A, const Tensor &B);
 Tensor element_wise_mul(const Tensor &A, const Tensor &B);
+Tensor element_wise_div(const Tensor &A, const Tensor &B);
 Tensor scale(const Tensor &A, float alpha);
 Tensor element_wise_apply(const Tensor &A, float (*func)(float));
 

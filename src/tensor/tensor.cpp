@@ -8,6 +8,7 @@
 
 #include "../hal/device.h"
 #include "../memory/memory_pool.h"
+#include "../quant/conversions.h"
 
 #ifdef _MSC_VER
 #include <malloc.h>
@@ -60,7 +61,7 @@ Tensor::Tensor(const std::vector<size_t> &shape, hal::DType dtype)
         // Use backend allocator directly if no pool
         hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
         size_t bytes = size_ * element_size();
-        data_ = static_cast<float *>(backend->malloc(bytes));
+        data_ = backend->malloc(bytes);
         std::memset(data_, 0, bytes);
     }
 }
@@ -79,16 +80,16 @@ Tensor::Tensor(const std::vector<size_t> &shape, memory::MemoryPool *pool, hal::
     if (size_ > 0) {
         size_t bytes = size_ * element_size();
         if (pool_ != nullptr) {
-            data_ = static_cast<float *>(pool_->allocate(bytes));
+            data_ = pool_->allocate(bytes);
         } else {
             hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
-            data_ = static_cast<float *>(backend->malloc(bytes));
+            data_ = backend->malloc(bytes);
         }
         std::memset(data_, 0, bytes);
     }
 }
 
-Tensor::Tensor(float *data_ptr, const std::vector<size_t> &shape)
+Tensor::Tensor(void *data_ptr, const std::vector<size_t> &shape)
     : data_(data_ptr),
       data_gpu_(nullptr),
       location_(DataLocation::CPU),
@@ -101,17 +102,18 @@ Tensor::Tensor(float *data_ptr, const std::vector<size_t> &shape)
 {
 }
 
-Tensor::Tensor(float *data_ptr, const std::vector<size_t> &shape, const std::vector<size_t> &strides)
+Tensor::Tensor(void *data_ptr, const std::vector<size_t> &shape, const std::vector<size_t> &strides)
     : data_(data_ptr),
       data_gpu_(nullptr),
       location_(DataLocation::CPU),
       shape_(shape),
       strides_(strides),
-      size_(shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>())),
       dtype_(hal::DType::Float32),
       owns_data_(false),
       pool_(nullptr)
 {
+    size_ = 1;
+    for (auto dim : shape) size_ *= dim;
 }
 
 // --- Copy/Move ---
@@ -130,7 +132,7 @@ Tensor::Tensor(const Tensor &other)
     if (size_ > 0) {
         hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
         size_t bytes = size_ * element_size();
-        data_ = static_cast<float *>(backend->malloc(bytes));
+        data_ = backend->malloc(bytes);
 
         // Copy CPU data
         if (data_ != nullptr && other.data_ != nullptr) {
@@ -152,7 +154,7 @@ Tensor::Tensor(const Tensor &other)
                         indices[d] = remainder / stride_val;
                         remainder %= stride_val;
                     }
-                    data_[i] = other.at(indices);
+                    this->set_item(i, other.item(indices));
                 }
             }
         }
@@ -262,51 +264,171 @@ Tensor::~Tensor()
 
 float &Tensor::operator[](size_t idx)
 {
-    return data_[idx];
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("operator[] requires Float32");
+    return static_cast<float *>(data_)[idx];
 }
 
 const float &Tensor::operator[](size_t idx) const
 {
-    return data_[idx];
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("operator[] requires Float32");
+    return static_cast<const float *>(data_)[idx];
 }
 
 float &Tensor::at(const std::vector<size_t> &indices)
 {
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
     if (indices.size() != shape_.size()) {
         throw std::invalid_argument("Number of indices doesn't match tensor dimensions");
     }
-    return data_[compute_offset(indices)];
+    return static_cast<float *>(data_)[compute_offset(indices)];
 }
 
 const float &Tensor::at(const std::vector<size_t> &indices) const
 {
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
     if (indices.size() != shape_.size()) {
         throw std::invalid_argument("Number of indices doesn't match tensor dimensions");
     }
-    return data_[compute_offset(indices)];
+    return static_cast<const float *>(data_)[compute_offset(indices)];
 }
 
 float &Tensor::at(size_t row, size_t col)
 {
-    return data_[(row * strides_[0]) + (col * strides_[1])];
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    return static_cast<float *>(data_)[(row * strides_[0]) + (col * strides_[1])];
 }
 
 const float &Tensor::at(size_t row, size_t col) const
 {
-    return data_[(row * strides_[0]) + (col * strides_[1])];
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    return static_cast<const float *>(data_)[(row * strides_[0]) + (col * strides_[1])];
 }
 
 float &Tensor::at(size_t dim0, size_t dim1, size_t dim2)
 {
-    return data_[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2])];
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    if (shape_.size() != 3) throw std::runtime_error("Tensor is not 3D");
+    return static_cast<float *>(data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2])];
 }
 
 const float &Tensor::at(size_t dim0, size_t dim1, size_t dim2) const
 {
-    return data_[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2])];
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    if (shape_.size() != 3) throw std::runtime_error("Tensor is not 3D");
+    return static_cast<const float *>(data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2])];
+}
+
+float &Tensor::at(size_t dim0, size_t dim1, size_t dim2, size_t dim3)
+{
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    if (shape_.size() != 4) throw std::runtime_error("Tensor is not 4D");
+    return static_cast<float *>(
+        data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2]) + (dim3 * strides_[3])];
+}
+
+const float &Tensor::at(size_t dim0, size_t dim1, size_t dim2, size_t dim3) const
+{
+    if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    if (shape_.size() != 4) throw std::runtime_error("Tensor is not 4D");
+    return static_cast<const float *>(
+        data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2]) + (dim3 * strides_[3])];
+}
+
+float Tensor::item(size_t idx) const
+{
+    switch (dtype_) {
+        case hal::DType::Float32:
+            return static_cast<const float *>(data_)[idx];
+        case hal::DType::Float16:
+            return quant::half_to_float(static_cast<const uint16_t *>(data_)[idx]);
+        case hal::DType::BFloat16:
+            return quant::bf16_to_float(static_cast<const uint16_t *>(data_)[idx]);
+        default:
+            throw std::runtime_error("Unsupported DType in item()");
+    }
+}
+
+void Tensor::set_item(size_t idx, float val)
+{
+    switch (dtype_) {
+        case hal::DType::Float32:
+            static_cast<float *>(data_)[idx] = val;
+            break;
+        case hal::DType::Float16:
+            static_cast<uint16_t *>(data_)[idx] = quant::float_to_half(val);
+            break;
+        case hal::DType::BFloat16:
+            static_cast<uint16_t *>(data_)[idx] = quant::float_to_bf16(val);
+            break;
+        default:
+            throw std::runtime_error("Unsupported DType in set_item()");
+    }
+}
+
+float Tensor::item(const std::vector<size_t> &indices) const
+{
+    return item(compute_offset(indices));
+}
+
+void Tensor::set_item(const std::vector<size_t> &indices, float val)
+{
+    set_item(compute_offset(indices), val);
 }
 
 // --- Shape Operations ---
+
+Tensor Tensor::contiguous() const
+{
+    if (is_contiguous()) {
+        return Tensor(data_, shape_);  // Return a view
+    }
+
+    Tensor result(shape_, pool_, dtype_);
+
+    // Decompose and copy element by element
+    std::vector<size_t> indices(shape_.size(), 0);
+    for (size_t i = 0; i < size_; ++i) {
+        result.set_item(i, this->item(indices));
+        for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+            indices[d]++;
+            if (indices[d] < shape_[d]) break;
+            indices[d] = 0;
+        }
+    }
+    return result;
+}
+
+Tensor Tensor::expand(const std::vector<size_t> &new_shape) const
+{
+    if (new_shape.size() < shape_.size()) {
+        throw std::invalid_argument("Cannot expand to fewer dimensions");
+    }
+
+    std::vector<size_t> new_strides(new_shape.size(), 0);
+    int offset = static_cast<int>(new_shape.size() - shape_.size());
+
+    for (size_t i = 0; i < new_shape.size(); ++i) {
+        if (i < static_cast<size_t>(offset)) {
+            // New prepended dimensions are broadcasted (stride 0)
+            new_strides[i] = 0;
+        } else {
+            size_t orig_idx = i - offset;
+            if (shape_[orig_idx] == 1 && new_shape[i] > 1) {
+                // Expanding dimension 1 to N -> stride 0
+                new_strides[i] = 0;
+            } else if (shape_[orig_idx] == new_shape[i]) {
+                // Keep original stride
+                new_strides[i] = strides_[orig_idx];
+            } else {
+                throw std::invalid_argument("Incompatible dimensions for expand");
+            }
+        }
+    }
+
+    Tensor res(data_, new_shape, new_strides);
+    res.dtype_ = dtype_;
+    return res;
+}
 
 Tensor Tensor::reshape(const std::vector<size_t> &new_shape) const
 {
@@ -337,9 +459,9 @@ Tensor Tensor::slice(size_t dim, size_t start, size_t end) const
     std::vector<size_t> new_shape = shape_;
     new_shape[dim] = end - start;
 
-    // Offset the data pointer by start * stride along the sliced dimension
-    size_t offset = start * strides_[dim];
-    float *new_data = data_ + offset;
+    // Offset the data pointer by (start * stride) elements
+    size_t element_offset = start * strides_[dim];
+    void *new_data = static_cast<uint8_t *>(data_) + element_offset * element_size();
 
     Tensor res = Tensor(new_data, new_shape, strides_);
     res.dtype_ = dtype_;
@@ -422,9 +544,9 @@ Tensor Tensor::sum(size_t dim) const
             }
         }
         if (res_indices.empty()) {
-            res[0] += this->at(indices);
+            res.set_item(0, res.item(0) + this->item(indices));
         } else {
-            res.at(res_indices) += this->at(indices);
+            res.set_item(res_indices, res.item(res_indices) + this->item(indices));
         }
 
         // Increment indices
@@ -443,22 +565,16 @@ Tensor Tensor::sum(size_t dim) const
 
 void Tensor::fill(float value)
 {
-    if (is_contiguous()) {
-        for (size_t i = 0; i < size_; ++i) {
-            data_[i] = value;
-        }
+    if (location_ == DataLocation::GPU) {
+        syncToHost();
+    }
+
+    if (dtype_ == hal::DType::Float32) {
+        std::fill(static_cast<float *>(data_), static_cast<float *>(data_) + size_, value);
     } else {
-        // Non-contiguous fill
-        std::vector<size_t> indices(shape_.size(), 0);
-        for (size_t i = 0; i < size_; ++i) {
-            data_[compute_offset(indices)] = value;
-            // Increment indices
-            for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
-                indices[d]++;
-                if (indices[d] < shape_[d]) break;
-                indices[d] = 0;
-            }
-        }
+        uint16_t h_val = (dtype_ == hal::DType::Float16) ? quant::float_to_half(value) : quant::float_to_bf16(value);
+        uint16_t *h_ptr = static_cast<uint16_t *>(data_);
+        std::fill(h_ptr, h_ptr + size_, h_val);
     }
 }
 
@@ -487,11 +603,12 @@ Tensor Tensor::ones(const std::vector<size_t> &shape, memory::MemoryPool *pool)
 
 void Tensor::rand()
 {
+    syncToHost();
     const uint32_t SEED = 42;
     static std::mt19937 gen(SEED);
     std::uniform_real_distribution<float> dist(0.0F, 1.0F);
     for (size_t i = 0; i < size_; ++i) {
-        data_[i] = dist(gen);
+        this->set_item(i, dist(gen));
     }
 }
 
@@ -539,14 +656,16 @@ size_t Tensor::element_size() const
 
 Tensor &Tensor::operator+=(const Tensor &other)
 {
-    if (shape_ == other.shape_ && is_contiguous() && other.is_contiguous()) {
+    if (shape_ == other.shape_ && is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
+        float *t_ptr = static_cast<float *>(data_);
+        float *o_ptr = static_cast<float *>(other.data_);
         for (size_t i = 0; i < size_; ++i) {
-            data_[i] += other.data_[i];
+            t_ptr[i] += o_ptr[i];
         }
     } else if (shape_ == other.shape_) {
         std::vector<size_t> indices(shape_.size(), 0);
         for (size_t i = 0; i < size_; ++i) {
-            this->at(indices) += other.at(indices);
+            this->set_item(indices, this->item(indices) + other.item(indices));
             for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
                 indices[d]++;
                 if (indices[d] < shape_[d]) break;
@@ -559,7 +678,7 @@ Tensor &Tensor::operator+=(const Tensor &other)
         size_t n = size_ / d;
         for (size_t i = 0; i < n; ++i) {
             for (size_t j = 0; j < d; ++j) {
-                data_[i * d + j] += other.at({j});
+                this->set_item(i * d + j, this->item(i * d + j) + other.item(j));
             }
         }
     } else {
@@ -572,14 +691,17 @@ Tensor Tensor::operator+(const Tensor &other) const
 {
     if (shape_ == other.shape_) {
         Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
-        if (is_contiguous() && other.is_contiguous()) {
+        if (is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
+            float *r_ptr = static_cast<float *>(result.data_);
+            float *t_ptr = static_cast<float *>(data_);
+            float *o_ptr = static_cast<float *>(other.data_);
             for (size_t i = 0; i < size_; ++i) {
-                result.data_[i] = data_[i] + other.data_[i];
+                r_ptr[i] = t_ptr[i] + o_ptr[i];
             }
         } else {
             std::vector<size_t> indices(shape_.size(), 0);
             for (size_t i = 0; i < size_; ++i) {
-                result.at(indices) = this->at(indices) + other.at(indices);
+                result.set_item(indices, this->item(indices) + other.item(indices));
                 for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
                     indices[d]++;
                     if (indices[d] < shape_[d]) break;
@@ -597,7 +719,7 @@ Tensor Tensor::operator+(const Tensor &other) const
         size_t n = size_ / d;
         for (size_t i = 0; i < n; ++i) {
             for (size_t j = 0; j < d; ++j) {
-                result.data_[i * d + j] = data_[i * d + j] + other.at({j});
+                result.set_item(i * d + j, this->item(i * d + j) + other.item(j));
             }
         }
         return result;
@@ -612,14 +734,17 @@ Tensor Tensor::operator*(const Tensor &other) const
         throw std::invalid_argument("Shapes must match for operator*");
     }
     Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
-    if (is_contiguous() && other.is_contiguous()) {
+    if (is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
+        float *r_ptr = static_cast<float *>(result.data_);
+        float *t_ptr = static_cast<float *>(data_);
+        float *o_ptr = static_cast<float *>(other.data_);
         for (size_t i = 0; i < size_; ++i) {
-            result.data_[i] = data_[i] * other.data_[i];
+            r_ptr[i] = t_ptr[i] * o_ptr[i];
         }
     } else {
         std::vector<size_t> indices(shape_.size(), 0);
         for (size_t i = 0; i < size_; ++i) {
-            result.at(indices) = this->at(indices) * other.at(indices);
+            result.set_item(indices, this->item(indices) * other.item(indices));
             for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
                 indices[d]++;
                 if (indices[d] < shape_[d]) break;
@@ -628,6 +753,181 @@ Tensor Tensor::operator*(const Tensor &other) const
         }
     }
     return result;
+}
+
+Tensor &Tensor::operator-=(const Tensor &other)
+{
+    if (shape_ == other.shape_ && is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
+        float *t_ptr = static_cast<float *>(data_);
+        float *o_ptr = static_cast<float *>(other.data_);
+        for (size_t i = 0; i < size_; ++i) {
+            t_ptr[i] -= o_ptr[i];
+        }
+    } else if (shape_ == other.shape_) {
+        std::vector<size_t> indices(shape_.size(), 0);
+        for (size_t i = 0; i < size_; ++i) {
+            this->set_item(indices, this->item(indices) - other.item(indices));
+            for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < shape_[d]) break;
+                indices[d] = 0;
+            }
+        }
+    } else if (ndim() > other.ndim() && shape_.back() == other.shape_.back() && other.ndim() == 1) {
+        size_t d = shape_.back();
+        size_t n = size_ / d;
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < d; ++j) {
+                this->set_item(i * d + j, this->item(i * d + j) - other.item(j));
+            }
+        }
+    } else {
+        throw std::invalid_argument("Shapes must match or be broadcastable for operator-=");
+    }
+    return *this;
+}
+
+Tensor Tensor::operator-(const Tensor &other) const
+{
+    if (shape_ == other.shape_) {
+        Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
+        if (is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
+            float *r_ptr = static_cast<float *>(result.data_);
+            float *t_ptr = static_cast<float *>(data_);
+            float *o_ptr = static_cast<float *>(other.data_);
+            for (size_t i = 0; i < size_; ++i) {
+                r_ptr[i] = t_ptr[i] - o_ptr[i];
+            }
+        } else {
+            std::vector<size_t> indices(shape_.size(), 0);
+            for (size_t i = 0; i < size_; ++i) {
+                result.set_item(indices, this->item(indices) - other.item(indices));
+                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                    indices[d]++;
+                    if (indices[d] < shape_[d]) break;
+                    indices[d] = 0;
+                }
+            }
+        }
+        return result;
+    }
+
+    if (ndim() > other.ndim() && shape_.back() == other.shape_.back() && other.ndim() == 1) {
+        Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
+        size_t d = shape_.back();
+        size_t n = size_ / d;
+        for (size_t i = 0; i < n; ++i) {
+            for (size_t j = 0; j < d; ++j) {
+                result.set_item(i * d + j, this->item(i * d + j) - other.item(j));
+            }
+        }
+        return result;
+    }
+
+    throw std::invalid_argument("Shapes must match or be broadcastable for operator-");
+}
+
+Tensor Tensor::operator/(const Tensor &other) const
+{
+    if (shape_ != other.shape_) {
+        throw std::invalid_argument("Shapes must match for operator/");
+    }
+    Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
+    if (is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
+        float *r_ptr = static_cast<float *>(result.data_);
+        float *t_ptr = static_cast<float *>(data_);
+        float *o_ptr = static_cast<float *>(other.data_);
+        for (size_t i = 0; i < size_; ++i) {
+            r_ptr[i] = t_ptr[i] / (o_ptr[i] == 0.0f ? 1e-7f : o_ptr[i]);
+        }
+    } else {
+        std::vector<size_t> indices(shape_.size(), 0);
+        for (size_t i = 0; i < size_; ++i) {
+            float denom = other.item(indices);
+            result.set_item(indices, this->item(indices) / (denom == 0.0f ? 1e-7f : denom));
+            for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < shape_[d]) break;
+                indices[d] = 0;
+            }
+        }
+    }
+    return result;
+}
+
+Tensor Tensor::operator+(float scalar) const
+{
+    Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
+    if (is_contiguous() && dtype_ == hal::DType::Float32) {
+        float *r_ptr = static_cast<float *>(result.data_);
+        float *t_ptr = static_cast<float *>(data_);
+        for (size_t i = 0; i < size_; ++i) {
+            r_ptr[i] = t_ptr[i] + scalar;
+        }
+    } else {
+        std::vector<size_t> indices(shape_.size(), 0);
+        for (size_t i = 0; i < size_; ++i) {
+            result.set_item(indices, this->item(indices) + scalar);
+            for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < shape_[d]) break;
+                indices[d] = 0;
+            }
+        }
+    }
+    return result;
+}
+
+Tensor Tensor::operator-(float scalar) const
+{
+    Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
+    if (is_contiguous() && dtype_ == hal::DType::Float32) {
+        float *r_ptr = static_cast<float *>(result.data_);
+        float *t_ptr = static_cast<float *>(data_);
+        for (size_t i = 0; i < size_; ++i) {
+            r_ptr[i] = t_ptr[i] - scalar;
+        }
+    } else {
+        std::vector<size_t> indices(shape_.size(), 0);
+        for (size_t i = 0; i < size_; ++i) {
+            result.set_item(indices, this->item(indices) - scalar);
+            for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < shape_[d]) break;
+                indices[d] = 0;
+            }
+        }
+    }
+    return result;
+}
+
+Tensor Tensor::operator*(float scalar) const
+{
+    Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
+    if (is_contiguous() && dtype_ == hal::DType::Float32) {
+        float *r_ptr = static_cast<float *>(result.data_);
+        float *t_ptr = static_cast<float *>(data_);
+        for (size_t i = 0; i < size_; ++i) {
+            r_ptr[i] = t_ptr[i] * scalar;
+        }
+    } else {
+        std::vector<size_t> indices(shape_.size(), 0);
+        for (size_t i = 0; i < size_; ++i) {
+            result.set_item(indices, this->item(indices) * scalar);
+            for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < shape_[d]) break;
+                indices[d] = 0;
+            }
+        }
+    }
+    return result;
+}
+
+Tensor Tensor::operator/(float scalar) const
+{
+    float inv_scalar = 1.0f / (scalar == 0.0f ? 1e-7f : scalar);
+    return *this * inv_scalar;
 }
 
 // --- Device Synchronization ---

@@ -3,7 +3,6 @@
 #include "../hal/device.h"
 #include "blas.h"
 
-
 #ifdef SERIUS_USE_CUDA
 #include "matmul_cuda.h"
 #endif
@@ -89,30 +88,33 @@ void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
     size_t ldb = mat_b.strides()[0];
     size_t ldc = mat_c.strides()[0];
 
-    const float *a_ptr = mat_a.data();
-    const float *b_ptr = mat_b.data();
-    float *c_ptr = mat_c.data();
-
     auto info = get_cpu_info();
 
     // GPU Dispatch
 #ifdef SERIUS_USE_CUDA
     size_t flops = 2 * rows_m * cols_n * inner_k;
     hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
-    // Use GPU for relatively large matrices
-    if (backend && backend->is_available() && flops > 1000000) {
+    // Use GPU for relatively large matrices or non-float32
+    if (backend && backend->is_available() && (flops > 1000000 || mat_a.dtype() != hal::DType::Float32)) {
         mat_a.syncToDevice();
         mat_b.syncToDevice();
         mat_c.syncToDevice();
-        matmul_cuda(mat_a.data_gpu(), mat_b.data_gpu(), mat_c.data_gpu(), rows_m, cols_n, inner_k, lda, ldb, ldc);
+        matmul_cuda(mat_a.data_gpu(), mat_b.data_gpu(), mat_c.data_gpu(), rows_m, cols_n, inner_k, lda, ldb, ldc,
+                    mat_a.dtype());
 
-        // When done, mark C's device data as the most recent
-        // We simulate this by forcing a sync back to host immediately for simplicity,
-        // though ideally we'd tracking location_ properly.
+        mat_c.mark_dirty(Tensor::DataLocation::GPU);
         mat_c.syncToHost();
         return;
     }
 #endif
+
+    if (mat_a.dtype() != hal::DType::Float32) {
+        throw std::runtime_error("BLAS::matmul CPU path only supports Float32");
+    }
+
+    const float *a_ptr = mat_a.data();
+    const float *b_ptr = mat_b.data();
+    float *c_ptr = mat_c.data();
 
     if (info.has_avx512f) {
         matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
@@ -143,6 +145,26 @@ void matvec(const Tensor &mat_a, const Tensor &vec_x, Tensor &vec_y)
     size_t lda = mat_a.strides()[0];
     size_t ldx = vec_x.strides()[0];  // Stride for x (vector)
     size_t ldy = vec_y.strides()[0];  // Stride for y (vector)
+
+#ifdef SERIUS_USE_CUDA
+    hal::IBackend *gpu_backend = hal::get_gpu_backend();
+    if (gpu_backend && gpu_backend->is_available() &&
+        (rows_m * inner_k > 1000000 || mat_a.dtype() != hal::DType::Float32)) {
+        mat_a.syncToDevice();
+        vec_x.syncToDevice();
+        vec_y.syncToDevice();
+
+        matmul_cuda(mat_a.data_gpu(), vec_x.data_gpu(), vec_y.data_gpu(), rows_m, 1, inner_k, lda, 1, 1, mat_a.dtype());
+
+        vec_y.mark_dirty(Tensor::DataLocation::GPU);
+        vec_y.syncToHost();
+        return;
+    }
+#endif
+
+    if (mat_a.dtype() != hal::DType::Float32) {
+        throw std::runtime_error("BLAS::matvec CPU path only supports Float32");
+    }
 
     const float *a_ptr = mat_a.data();
     const float *x_ptr = vec_x.data();
@@ -191,7 +213,7 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
 #ifdef SERIUS_USE_CUDA
     size_t total_flops = 2 * batch_size * rows_m * cols_n * inner_k;
     hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
-    if (backend && backend->is_available() && total_flops > 1000000) {
+    if (backend && backend->is_available() && (total_flops > 1000000 || mat_a.dtype() != hal::DType::Float32)) {
         mat_a.syncToDevice();
         mat_b.syncToDevice();
         mat_c.syncToDevice();
@@ -201,12 +223,17 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
         size_t stride_c = mat_c.strides()[0];
 
         batched_matmul_cuda(mat_a.data_gpu(), mat_b.data_gpu(), mat_c.data_gpu(), batch_size, rows_m, cols_n, inner_k,
-                            lda, ldb, ldc, stride_a, stride_b, stride_c);
+                            lda, ldb, ldc, stride_a, stride_b, stride_c, mat_a.dtype());
 
+        mat_c.mark_dirty(Tensor::DataLocation::GPU);
         mat_c.syncToHost();
         return;
     }
 #endif
+
+    if (mat_a.dtype() != hal::DType::Float32) {
+        throw std::runtime_error("BLAS::batched_matmul CPU path only supports Float32");
+    }
 
     for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
         const float *a_ptr = mat_a.data() + (batch_idx * mat_a.strides()[0]);  // Use A.strides()[0] for batch stride
@@ -238,7 +265,7 @@ Tensor matmul(const Tensor &mat_a, const Tensor &mat_b)
     }
     size_t cols_n = mat_b.shape()[1];
 
-    Tensor mat_c({rows_m, cols_n});
+    Tensor mat_c({rows_m, cols_n}, mat_a.dtype());
     matmul(mat_a, mat_b, mat_c);
     return mat_c;
 }
@@ -249,7 +276,7 @@ Tensor matvec(const Tensor &mat_a, const Tensor &vec_x)
         throw std::invalid_argument("matvec expects A(2D), x(1D)");
     }
 
-    Tensor vec_y({mat_a.shape()[0]});
+    Tensor vec_y({mat_a.shape()[0]}, mat_a.dtype());
     matvec(mat_a, vec_x, vec_y);
     return vec_y;
 }
@@ -267,7 +294,7 @@ Tensor batched_matmul(const Tensor &mat_a, const Tensor &mat_b)
     size_t rows_m = mat_a.shape()[1];
     size_t cols_n = (mat_b.ndim() == 3) ? mat_b.shape()[2] : mat_b.shape()[1];
 
-    Tensor mat_c({batch_size, rows_m, cols_n});
+    Tensor mat_c({batch_size, rows_m, cols_n}, mat_a.dtype());
     batched_matmul(mat_a, mat_b, mat_c);
     return mat_c;
 }

@@ -5,12 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# Warning rigorosi
-if(MSVC)
-    add_compile_options(/W4 /WX)
-else()
-    add_compile_options(-Wall -Wextra -Wpedantic -Werror=return-type)
-endif()
+# Warning rigorosi handled in src/CMakeLists.txt
 
 # Release con simboli di debug
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG -march=native")
@@ -34,9 +29,7 @@ FetchContent_Declare(httplib
 FetchContent_MakeAvailable(json spdlog googletest httplib)
 
 find_package(OpenMP)
-if(OpenMP_CXX_FOUND)
-    add_compile_options(${OpenMP_CXX_FLAGS})
-endif()
+# OpenMP is handled per-target to avoid NVCC compatibility issues
 
 enable_testing()
 

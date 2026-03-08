@@ -5,6 +5,9 @@
 #include <cmath>
 
 #include "../blas/blas.h"
+#ifdef SERIUS_USE_CUDA
+#include "../hal/fused_kernels.h"
+#endif
 
 namespace serius {
 namespace autograd {
@@ -516,6 +519,250 @@ Node *contiguous(Node *input_node)
     };
 
     return res;
+}
+
+Node *layernorm(Node *input, Node *gamma, Node *beta, float eps)
+{
+    const Tensor &in_data = input->data;
+    Tensor output_data(in_data.shape(), in_data.dtype());
+    bool handled = false;
+
+#ifdef SERIUS_USE_CUDA
+    if (in_data.is_gpu()) {
+        size_t d_model = in_data.shape().back();
+        size_t batch_seq = in_data.size() / d_model;
+
+        in_data.syncToDevice();
+        gamma->data.syncToDevice();
+        beta->data.syncToDevice();
+        output_data.syncToDevice();
+
+        // Copy input to output since the kernel is in-place on x
+        hal::get_backend(hal::DeviceType::CUDA)
+            ->memcpy_d2d(output_data.data_gpu(), in_data.data_gpu(), in_data.size() * in_data.element_size());
+
+        hal::fused_layernorm_residual(output_data.data_gpu(), nullptr, gamma->data.data_gpu(), beta->data.data_gpu(),
+                                      d_model, batch_seq, eps, in_data.dtype());
+        output_data.syncToHost();
+        handled = true;
+    }
+#endif
+
+    if (!handled) {
+        // CPU Implementation (simplified for brevity, assuming float32)
+        size_t d_model = in_data.shape().back();
+        size_t batch_seq = in_data.size() / d_model;
+        for (size_t b = 0; b < batch_seq; ++b) {
+            float sum = 0.0f;
+            for (size_t i = 0; i < d_model; ++i) sum += in_data.data()[b * d_model + i];
+            float mean = sum / d_model;
+            float var_sum = 0.0f;
+            for (size_t i = 0; i < d_model; ++i) {
+                float diff = in_data.data()[b * d_model + i] - mean;
+                var_sum += diff * diff;
+            }
+            float inv_std = 1.0f / std::sqrt(var_sum / d_model + eps);
+            for (size_t i = 0; i < d_model; ++i) {
+                float x_hat = (in_data.data()[b * d_model + i] - mean) * inv_std;
+                output_data.data()[b * d_model + i] = gamma->data[i] * x_hat + beta->data[i];
+            }
+        }
+    }
+
+    Node *out = new Node(std::move(output_data));
+    out->children = {input, gamma, beta};
+    out->name = "layernorm";
+
+    out->backward_fn = [input, gamma, beta, out, eps]() {
+        if (!input->requires_grad && !gamma->requires_grad && !beta->requires_grad) return;
+        // Simplified LayerNorm backward (assuming CPU float32 for grad calculation)
+        const Tensor &x = input->data;
+        const Tensor &dy = out->grad;
+        size_t d_model = x.shape().back();
+        size_t batch_seq = x.size() / d_model;
+
+        for (size_t b = 0; b < batch_seq; ++b) {
+            float sum_x = 0.0f;
+            for (size_t i = 0; i < d_model; ++i) sum_x += x.data()[b * d_model + i];
+            float mean = sum_x / d_model;
+            float var_sum = 0.0f;
+            for (size_t i = 0; i < d_model; ++i) {
+                float diff = x.data()[b * d_model + i] - mean;
+                var_sum += diff * diff;
+            }
+            float inv_std = 1.0f / std::sqrt(var_sum / d_model + eps);
+
+            float sum_dy = 0.0f;
+            float sum_dy_xhat = 0.0f;
+            for (size_t i = 0; i < d_model; ++i) {
+                float xhat = (x.data()[b * d_model + i] - mean) * inv_std;
+                float dyi = dy.data()[b * d_model + i];
+                if (gamma->requires_grad) gamma->grad[i] += dyi * xhat;
+                if (beta->requires_grad) beta->grad[i] += dyi;
+                sum_dy += dyi;
+                sum_dy_xhat += dyi * xhat;
+            }
+
+            if (input->requires_grad) {
+                for (size_t i = 0; i < d_model; ++i) {
+                    float xhat = (x.data()[b * d_model + i] - mean) * inv_std;
+                    float dyi = dy.data()[b * d_model + i];
+                    float dx = (gamma->data[i] * inv_std / d_model) * (d_model * dyi - sum_dy - xhat * sum_dy_xhat);
+                    input->grad.data()[b * d_model + i] += dx;
+                }
+            }
+        }
+    };
+    return out;
+}
+
+Node *fused_add_layernorm(Node *input, Node *residual, Node *gamma, Node *beta, float eps)
+{
+#ifdef SERIUS_USE_CUDA
+    if (input->data.is_gpu()) {
+        const Tensor &in_data = input->data;
+        Tensor output_data(in_data.shape(), in_data.dtype());
+        size_t d_model = in_data.shape().back();
+        size_t batch_seq = in_data.size() / d_model;
+
+        in_data.syncToDevice();
+        residual->data.syncToDevice();
+        gamma->data.syncToDevice();
+        beta->data.syncToDevice();
+        output_data.syncToDevice();
+
+        // Copy input to output since the kernel adds residual to x in-place
+        hal::get_backend(hal::DeviceType::CUDA)
+            ->memcpy_d2d(output_data.data_gpu(), in_data.data_gpu(), in_data.size() * in_data.element_size());
+
+        hal::fused_layernorm_residual(output_data.data_gpu(), residual->data.data_gpu(), gamma->data.data_gpu(),
+                                      beta->data.data_gpu(), d_model, batch_seq, eps, in_data.dtype());
+        output_data.syncToHost();
+
+        Node *out = new Node(std::move(output_data));
+        out->children = {input, residual, gamma, beta};
+        out->name = "fused_add_layernorm";
+
+        // Backward: dL/d(x+res) is same as dL/dx for LayerNorm.
+        // Then dL/dx += dL/d(x+res), dL/dres += dL/d(x+res).
+        out->backward_fn = [input, residual, gamma, beta, out, eps]() {
+            if (!input->requires_grad && !residual->requires_grad && !gamma->requires_grad && !beta->requires_grad)
+                return;
+
+            input->data.syncToHost();
+            residual->data.syncToHost();
+            out->grad.syncToHost();
+
+            const Tensor &x = input->data;
+            const Tensor &res = residual->data;
+            const Tensor &dy = out->grad;
+            size_t d_model = x.shape().back();
+            size_t batch_seq = x.size() / d_model;
+
+            for (size_t b = 0; b < batch_seq; ++b) {
+                float sum_xr = 0.0f;
+                for (size_t i = 0; i < d_model; ++i) {
+                    sum_xr += x.data()[b * d_model + i] + res.data()[b * d_model + i];
+                }
+                float mean = sum_xr / d_model;
+                float var_sum = 0.0f;
+                for (size_t i = 0; i < d_model; ++i) {
+                    float diff = (x.data()[b * d_model + i] + res.data()[b * d_model + i]) - mean;
+                    var_sum += diff * diff;
+                }
+                float inv_std = 1.0f / std::sqrt(var_sum / d_model + eps);
+
+                float sum_dy = 0.0f;
+                float sum_dy_xhat = 0.0f;
+                for (size_t i = 0; i < d_model; ++i) {
+                    float xhat = ((x.data()[b * d_model + i] + res.data()[b * d_model + i]) - mean) * inv_std;
+                    float dyi = dy.data()[b * d_model + i];
+                    if (gamma->requires_grad) gamma->grad[i] += dyi * xhat;
+                    if (beta->requires_grad) beta->grad[i] += dyi;
+                    sum_dy += dyi;
+                    sum_dy_xhat += dyi * xhat;
+                }
+
+                if (input->requires_grad || residual->requires_grad) {
+                    for (size_t i = 0; i < d_model; ++i) {
+                        float xhat = ((x.data()[b * d_model + i] + res.data()[b * d_model + i]) - mean) * inv_std;
+                        float dyi = dy.data()[b * d_model + i];
+                        float dx = (gamma->data[i] * inv_std / d_model) * (d_model * dyi - sum_dy - xhat * sum_dy_xhat);
+                        if (input->requires_grad) input->grad.data()[b * d_model + i] += dx;
+                        if (residual->requires_grad) residual->grad.data()[b * d_model + i] += dx;
+                    }
+                }
+            }
+        };
+        return out;
+    }
+#endif
+    // Fallback if not CUDA: standard add + layernorm
+    return layernorm(add(input, residual), gamma, beta, eps);
+}
+
+Node *fused_masked_softmax(Node *input, const Tensor &mask, float scale)
+{
+    Tensor res(input->data.shape(), input->data.dtype());
+    bool handled = false;
+
+#ifdef SERIUS_USE_CUDA
+    if (input->data.is_gpu()) {
+        input->data.syncToDevice();
+        mask.syncToDevice();
+        res.syncToDevice();
+
+        size_t batch_heads = input->data.shape()[0] * input->data.shape()[1];
+        size_t seq_q = input->data.shape()[2];
+        size_t seq_k = input->data.shape()[3];
+
+        // Copy input to scores since the kernel is in-place
+        hal::get_backend(hal::DeviceType::CUDA)
+            ->memcpy_d2d(res.data_gpu(), input->data.data_gpu(), input->data.size() * input->data.element_size());
+
+        hal::fused_masked_softmax(res.data_gpu(), mask.data_gpu(), batch_heads, seq_q, seq_k, input->data.dtype(),
+                                  scale);
+        res.mark_dirty(Tensor::DataLocation::GPU);
+        handled = true;
+    }
+#endif
+
+    if (!handled) {
+        // Fallback: apply scale, apply mask, then softmax
+        return softmax(masked_fill(mul_scalar(input, scale), mask, -1e20f));
+    }
+
+    Node *out = new Node(std::move(res));
+    out->children = {input};
+    out->name = "fused_masked_softmax";
+    out->backward_fn = [input, out, scale]() {
+        if (!input->requires_grad) return;
+
+        out->data.syncToHost();
+        out->grad.syncToHost();
+
+        const float *softmax_data = out->data.data();
+        const float *grad_softmax = out->grad.data();
+        float *grad_input = input->grad.data();
+
+        size_t total_size = out->data.size();
+        size_t k_dim = out->data.shape().back();
+        size_t n_dim = total_size / k_dim;
+
+        for (size_t i = 0; i < n_dim; ++i) {
+            float sum_s_grad = 0.0f;
+            for (size_t j = 0; j < k_dim; ++j) {
+                sum_s_grad += (softmax_data[(i * k_dim) + j] * grad_softmax[(i * k_dim) + j]);
+            }
+
+            for (size_t j = 0; j < k_dim; ++j) {
+                float s_j = softmax_data[(i * k_dim) + j];
+                float ds_j = grad_softmax[(i * k_dim) + j];
+                grad_input[(i * k_dim) + j] += (s_j * (ds_j - sum_s_grad)) * scale;
+            }
+        }
+    };
+    return out;
 }
 
 }  // namespace ops

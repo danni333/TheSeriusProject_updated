@@ -19,6 +19,9 @@ Node *transpose(Node *input_node, size_t dim0 = static_cast<size_t>(-2), size_t 
 Node *masked_fill(Node *input_node, const Tensor &mask_tensor, float fill_value);
 Node *mul_scalar(Node *input_node, float scalar_value);
 Node *contiguous(Node *input_node);
+Node *layernorm(Node *input, Node *gamma, Node *beta, float eps = 1e-5f);
+Node *fused_add_layernorm(Node *input, Node *residual, Node *gamma, Node *beta, float eps = 1e-5f);
+Node *fused_masked_softmax(Node *input, const Tensor &mask, float scale = 1.0f);
 
 struct RoPEResult
 {

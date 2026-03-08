@@ -18,8 +18,9 @@ void element_wise_add(const Tensor &A, const Tensor &B, Tensor &C)
         float *c_ptr = C.data();
         size_t size = A.size();
 
-        // Simple scalar loop (compiler can auto-vectorize this easily)
-        for (size_t i = 0; i < size; ++i) {
+// Simple scalar loop (compiler can auto-vectorize this easily)
+#pragma omp parallel for if (size > 10000)
+        for (int64_t i = 0; i < static_cast<int64_t>(size); ++i) {
             c_ptr[i] = a_ptr[i] + b_ptr[i];
         }
     } else {
@@ -54,7 +55,8 @@ void element_wise_mul(const Tensor &A, const Tensor &B, Tensor &C)
         float *c_ptr = C.data();
         size_t size = A.size();
 
-        for (size_t i = 0; i < size; ++i) {
+#pragma omp parallel for if (size > 10000)
+        for (int64_t i = 0; i < static_cast<int64_t>(size); ++i) {
             c_ptr[i] = a_ptr[i] * b_ptr[i];
         }
     } else {
@@ -62,6 +64,69 @@ void element_wise_mul(const Tensor &A, const Tensor &B, Tensor &C)
         size_t size = A.size();
         for (size_t i = 0; i < size; ++i) {
             C.at(indices) = A.at(indices) * B.at(indices);
+
+            for (int d = static_cast<int>(A.shape().size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < A.shape()[d]) break;
+                indices[d] = 0;
+            }
+        }
+    }
+}
+
+void element_wise_sub(const Tensor &A, const Tensor &B, Tensor &C)
+{
+    if (A.shape() != B.shape() || A.shape() != C.shape()) {
+        throw std::invalid_argument("Shapes must match for element_wise_sub");
+    }
+
+    if (A.is_contiguous() && B.is_contiguous() && C.is_contiguous()) {
+        const float *a_ptr = A.data();
+        const float *b_ptr = B.data();
+        float *c_ptr = C.data();
+        size_t size = A.size();
+
+#pragma omp parallel for if (size > 10000)
+        for (int64_t i = 0; i < static_cast<int64_t>(size); ++i) {
+            c_ptr[i] = a_ptr[i] - b_ptr[i];
+        }
+    } else {
+        std::vector<size_t> indices(A.shape().size(), 0);
+        size_t size = A.size();
+        for (size_t i = 0; i < size; ++i) {
+            C.at(indices) = A.at(indices) - B.at(indices);
+
+            for (int d = static_cast<int>(A.shape().size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < A.shape()[d]) break;
+                indices[d] = 0;
+            }
+        }
+    }
+}
+
+void element_wise_div(const Tensor &A, const Tensor &B, Tensor &C)
+{
+    if (A.shape() != B.shape() || A.shape() != C.shape()) {
+        throw std::invalid_argument("Shapes must match for element_wise_div");
+    }
+
+    if (A.is_contiguous() && B.is_contiguous() && C.is_contiguous()) {
+        const float *a_ptr = A.data();
+        const float *b_ptr = B.data();
+        float *c_ptr = C.data();
+        size_t size = A.size();
+
+#pragma omp parallel for if (size > 10000)
+        for (int64_t i = 0; i < static_cast<int64_t>(size); ++i) {
+            c_ptr[i] = a_ptr[i] / (b_ptr[i] == 0.0f ? 1e-7f : b_ptr[i]);
+        }
+    } else {
+        std::vector<size_t> indices(A.shape().size(), 0);
+        size_t size = A.size();
+        for (size_t i = 0; i < size; ++i) {
+            float denom = B.at(indices);
+            C.at(indices) = A.at(indices) / (denom == 0.0f ? 1e-7f : denom);
 
             for (int d = static_cast<int>(A.shape().size()) - 1; d >= 0; --d) {
                 indices[d]++;
@@ -83,7 +148,8 @@ void scale(const Tensor &A, float alpha, Tensor &B)
         float *b_ptr = B.data();
         size_t size = A.size();
 
-        for (size_t i = 0; i < size; ++i) {
+#pragma omp parallel for if (size > 10000)
+        for (int64_t i = 0; i < static_cast<int64_t>(size); ++i) {
             b_ptr[i] = a_ptr[i] * alpha;
         }
     } else {
@@ -112,7 +178,8 @@ void element_wise_apply(const Tensor &A, float (*func)(float), Tensor &B)
         float *b_ptr = B.data();
         size_t size = A.size();
 
-        for (size_t i = 0; i < size; ++i) {
+#pragma omp parallel for if (size > 10000)
+        for (int64_t i = 0; i < static_cast<int64_t>(size); ++i) {
             b_ptr[i] = func(a_ptr[i]);
         }
     } else {
@@ -139,10 +206,24 @@ Tensor element_wise_add(const Tensor &A, const Tensor &B)
     return C;
 }
 
+Tensor element_wise_sub(const Tensor &A, const Tensor &B)
+{
+    Tensor C(A.shape());
+    element_wise_sub(A, B, C);
+    return C;
+}
+
 Tensor element_wise_mul(const Tensor &A, const Tensor &B)
 {
     Tensor C(A.shape());
     element_wise_mul(A, B, C);
+    return C;
+}
+
+Tensor element_wise_div(const Tensor &A, const Tensor &B)
+{
+    Tensor C(A.shape());
+    element_wise_div(A, B, C);
     return C;
 }
 

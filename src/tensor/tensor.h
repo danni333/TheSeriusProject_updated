@@ -12,7 +12,6 @@
 
 #include "../hal/device.h"
 
-
 namespace serius {
 
 // Forward declaration
@@ -32,10 +31,10 @@ class Tensor
     Tensor(const std::vector<size_t> &shape, memory::MemoryPool *pool, hal::DType dtype = hal::DType::Float32);
 
     /// Create a view on external data (does NOT own the data)
-    Tensor(float *data_ptr, const std::vector<size_t> &shape);
+    Tensor(void *data_ptr, const std::vector<size_t> &shape);
 
     /// Create a view on external data with custom strides
-    Tensor(float *data_ptr, const std::vector<size_t> &shape, const std::vector<size_t> &strides);
+    Tensor(void *data_ptr, const std::vector<size_t> &shape, const std::vector<size_t> &strides);
 
     /// Copy constructor (deep copy)
     Tensor(const Tensor &other);
@@ -54,27 +53,73 @@ class Tensor
 
     // --- Element Access ---
 
-    /// Access element by flat index
+    /// Access element by flat index (Float32 only)
     float &operator[](size_t idx);
     const float &operator[](size_t idx) const;
 
-    /// Access element by multi-dimensional indices
+    /// Access element by multi-dimensional indices (Float32 only)
     float &at(const std::vector<size_t> &indices);
     const float &at(const std::vector<size_t> &indices) const;
 
-    /// 2D convenience accessor
+    /// 2D convenience accessor (Float32 only)
     float &at(size_t row, size_t col);
     const float &at(size_t row, size_t col) const;
 
-    /// 3D convenience accessor
+    /// 3D convenience accessor (Float32 only)
     float &at(size_t dim0, size_t dim1, size_t dim2);
     const float &at(size_t dim0, size_t dim1, size_t dim2) const;
 
+    /// 4D convenience accessor (Float32 only)
+    float &at(size_t dim0, size_t dim1, size_t dim2, size_t dim3);
+    const float &at(size_t dim0, size_t dim1, size_t dim2, size_t dim3) const;
+
+    /// Value-based accessors for any DType (converts on-the-fly)
+    float item(size_t idx) const;
+    void set_item(size_t idx, float val);
+
+    float item(const std::vector<size_t> &indices) const;
+    void set_item(const std::vector<size_t> &indices, float val);
+
+    float item(size_t row, size_t col) const { return item(std::vector<size_t>{row, col}); }
+    float item(size_t dim0, size_t dim1, size_t dim2) const { return item(std::vector<size_t>{dim0, dim1, dim2}); }
+    float item(size_t dim0, size_t dim1, size_t dim2, size_t dim3) const
+    {
+        return item(std::vector<size_t>{dim0, dim1, dim2, dim3});
+    }
+
+    void set_item(size_t row, size_t col, float val) { set_item(std::vector<size_t>{row, col}, val); }
+    void set_item(size_t dim0, size_t dim1, size_t dim2, float val)
+    {
+        set_item(std::vector<size_t>{dim0, dim1, dim2}, val);
+    }
+    void set_item(size_t dim0, size_t dim1, size_t dim2, size_t dim3, float val)
+    {
+        set_item(std::vector<size_t>{dim0, dim1, dim2, dim3}, val);
+    }
+
     /// Raw data pointer
-    float *data() { return data_; }
-    const float *data() const { return data_; }
+    float *data()
+    {
+        if (dtype_ != hal::DType::Float32) throw std::runtime_error("Tensor::data() used on non-float32 tensor");
+        return static_cast<float *>(data_);
+    }
+    const float *data() const
+    {
+        if (dtype_ != hal::DType::Float32) throw std::runtime_error("Tensor::data() const used on non-float32 tensor");
+        return static_cast<const float *>(data_);
+    }
+
+    void *raw_data() { return data_; }
+    const void *raw_data() const { return data_; }
 
     // --- Shape Operations ---
+    // ... rest of the public members ...
+
+    /// Make the tensor contiguous in memory
+    Tensor contiguous() const;
+
+    /// Broadcast tensor to a new shape
+    Tensor expand(const std::vector<size_t> &new_shape) const;
 
     /// Reshape the tensor (in-place, no data copy if contiguous)
     Tensor reshape(const std::vector<size_t> &new_shape) const;
@@ -120,8 +165,16 @@ class Tensor
     // --- Operators ---
 
     Tensor &operator+=(const Tensor &other);
+    Tensor &operator-=(const Tensor &other);
     Tensor operator+(const Tensor &other) const;
+    Tensor operator-(const Tensor &other) const;
     Tensor operator*(const Tensor &other) const;
+    Tensor operator/(const Tensor &other) const;
+
+    Tensor operator+(float scalar) const;
+    Tensor operator-(float scalar) const;
+    Tensor operator*(float scalar) const;
+    Tensor operator/(float scalar) const;
 
     // --- Properties ---
 
@@ -142,7 +195,19 @@ class Tensor
     const float *data_gpu() const { return static_cast<const float *>(data_gpu_); }
     float *data_gpu() { return static_cast<float *>(data_gpu_); }
 
+    bool is_gpu() const { return data_gpu_ != nullptr; }
+
+    void set_device(hal::DeviceType type)
+    {
+        if (type == hal::DeviceType::CUDA) {
+            syncToDevice();
+        } else {
+            syncToHost();
+        }
+    }
+
     DataLocation location() const { return location_; }
+    void mark_dirty(DataLocation loc) { location_ = loc; }
 
     /// Synchronize data to the compute device (GPU if available)
     void syncToDevice() const;
@@ -151,7 +216,7 @@ class Tensor
     void syncToHost() const;
 
    private:
-    float *data_;                    // Host pointer
+    void *data_;                     // Host pointer
     void *data_gpu_;                 // Device pointer
     mutable DataLocation location_;  // Where is the most recent data?
 
