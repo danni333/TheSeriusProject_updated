@@ -172,6 +172,13 @@ Tensor::Tensor(const Tensor &other)
             }
         }
     }
+    // Critical: copy location from other. If we only copied host data, we are dirty.
+    // If other was on GPU, and we didn't copy GPU data, we should be marked CPU.
+    if (other.data_gpu_ != nullptr && this->data_gpu_ == nullptr) {
+        location_ = DataLocation::CPU;
+    } else {
+        location_ = other.location_;
+    }
 }
 
 Tensor::Tensor(Tensor &&other) noexcept
@@ -466,6 +473,10 @@ Tensor Tensor::slice(size_t dim, size_t start, size_t end) const
 
     Tensor res = Tensor(new_data, new_shape, strides_);
     res.dtype_ = dtype_;
+    if (this->data_gpu_) {
+        res.data_gpu_ = static_cast<uint8_t *>(this->data_gpu_) + element_offset * element_size();
+        res.location_ = this->location_;
+    }
     return res;
 }
 
@@ -509,6 +520,10 @@ Tensor Tensor::permute(const std::vector<size_t> &dims) const
 
     Tensor res = Tensor(data_, new_shape, new_strides);
     res.dtype_ = dtype_;
+    if (this->data_gpu_) {
+        res.data_gpu_ = this->data_gpu_;
+        res.location_ = this->location_;
+    }
     return res;
 }
 

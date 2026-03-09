@@ -6,14 +6,21 @@
 #include <utility>
 #include <vector>
 
-#include "../src/autograd/engine.h"
-#include "../src/autograd/node.h"
-#include "../src/autograd/ops.h"
-#include "../src/blas/blas.h"
-#include "../src/tensor/tensor.h"
+#include "autograd/engine.h"
+#include "autograd/node.h"
+#include "autograd/ops.h"
+#include "blas/blas.h"
+#include "tensor/tensor.h"
 
-using namespace serius;
-using namespace serius::autograd;
+namespace serius {
+namespace test {
+
+namespace core = serius::core;
+using core::Tensor;
+using core::autograd::Node;
+namespace autograd = core::autograd;
+namespace ops = core::autograd::ops;
+namespace blas = core::blas;
 
 // Numeric gradient check helper
 float compute_numeric_gradient(std::function<float()> func, float &param, float eps = 1e-4f)
@@ -41,7 +48,7 @@ TEST(AutogradTest, BasicAdd)
     b->data[0] = 3.0f;
 
     Node *c = ops::add(a, b);
-    backward(c);
+    autograd::backward(c);
 
     EXPECT_FLOAT_EQ(c->data[0], 5.0f);
     EXPECT_FLOAT_EQ(a->grad[0], 1.0f);
@@ -83,7 +90,7 @@ TEST(AutogradTest, MatMulGrad)
         }
     };
 
-    backward(loss);
+    autograd::backward(loss);
 
     float numeric_grad = compute_numeric_gradient(
         [&]() {
@@ -125,7 +132,7 @@ TEST(AutogradTest, ReLU)
         y->grad[1] += loss->grad[0];
     };
 
-    backward(loss);
+    autograd::backward(loss);
 
     EXPECT_FLOAT_EQ(y->data[0], 0.0f);
     EXPECT_FLOAT_EQ(y->data[1], 2.0f);
@@ -196,7 +203,7 @@ TEST(AutogradTest, Chain)
         y->grad[1] += loss->grad[0];
     };
 
-    backward(loss);
+    autograd::backward(loss);
 
     EXPECT_NEAR(y->data[0], 2.6f, 1e-5);
     EXPECT_NEAR(y->data[1], 1.7f, 1e-5);
@@ -251,7 +258,7 @@ TEST(AutogradTest, SharedInput)
         }
     };
 
-    backward(loss);
+    autograd::backward(loss);
 
     EXPECT_FLOAT_EQ(x->grad[0], 6.0f);
     EXPECT_FLOAT_EQ(x->grad[1], 6.0f);
@@ -264,3 +271,5 @@ TEST(AutogradTest, SharedInput)
     delete y_vec;
     delete loss;
 }
+}  // namespace test
+}  // namespace serius

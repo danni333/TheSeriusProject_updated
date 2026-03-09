@@ -1,0 +1,35 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  bench_full.cpp
+     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/bench_full.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/bench_full.exp
+LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\bench_full.vcxproj]
+  bench_full.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_full.exe
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  bench_matmul.cpp
+     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/bench_matmul.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/bench_matmul.exp
+LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\bench_matmul.vcxproj]
+  bench_matmul.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_matmul.exe
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  bench_memory.cpp
+  bench_memory.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_memory.exe
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  bench_mixed_precision.cpp
+     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/bench_mixed_precision.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/bench_mixed_precision.exp
+LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\bench_mixed_precision.vcxproj]
+  bench_mixed_precision.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_mixed_precision.exe
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  test_cuda.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_cuda.exe

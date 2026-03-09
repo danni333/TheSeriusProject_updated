@@ -2,9 +2,11 @@
 
 #include <algorithm>
 
-
 namespace serius {
+namespace core {
 namespace autograd {
+
+using core::Tensor;
 
 void topo_sort(Node *node, std::set<Node *> &visited, std::vector<Node *> &order)
 {
@@ -51,4 +53,5 @@ void backward(Node *loss_node)
 }
 
 }  // namespace autograd
+}  // namespace core
 }  // namespace serius

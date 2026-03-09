@@ -3,12 +3,16 @@
 #include <iostream>
 #include <vector>
 
-#include "../src/blas/blas.h"
-#include "../src/tensor/tensor.h"
+#include "blas/blas.h"
+#include "tensor/tensor.h"
 
+namespace serius {
+namespace test {
 
-using namespace serius;
 using namespace std::chrono;
+namespace core = serius::core;
+using core::Tensor;
+namespace blas = core::blas;
 
 void run_matmul_benchmark(size_t size)
 {
@@ -47,7 +51,7 @@ void run_matmul_benchmark(size_t size)
     std::cout << std::string(40, '-') << "\n";
 }
 
-int main()
+void run_matmul_benchmarks()
 {
     std::cout << "--- MATMUL BENCHMARK ---\n\n";
 
@@ -61,6 +65,13 @@ int main()
     for (size_t s : sizes) {
         run_matmul_benchmark(s);
     }
+}
 
+}  // namespace test
+}  // namespace serius
+
+int main()
+{
+    serius::test::run_matmul_benchmarks();
     return 0;
 }

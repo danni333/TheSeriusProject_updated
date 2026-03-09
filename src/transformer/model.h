@@ -8,7 +8,10 @@
 #include "positional.h"
 
 namespace serius {
-namespace transformer {
+namespace model {
+
+using core::Tensor;
+using core::autograd::Node;
 
 struct ModelConfig
 {
@@ -35,17 +38,17 @@ class TransformerModel
 
     /// Forward pass
     /// Input: token indices as flat array of size seq_len (stored in a Node of shape {seq_len})
-    /// Returns: logits of shape (seq_len, vocab_size) as autograd::Node*
-    autograd::Node *forward(autograd::Node *token_ids, std::vector<KVCache *> *caches = nullptr) const;
+    /// Returns: logits of shape (seq_len, vocab_size) as Node*
+    Node *forward(Node *token_ids, std::vector<KVCache *> *caches = nullptr) const;
 
     /// Retrieve all trainable parameters
-    std::vector<autograd::Node *> parameters() const;
+    std::vector<Node *> parameters() const;
 
     // Parameters
-    autograd::Node *embedding;  // (vocab_size, d_model)
+    Node *embedding;  // (vocab_size, d_model)
     std::vector<TransformerBlock *> blocks;
     LayerNorm *final_norm;
-    autograd::Node *output_proj;  // (d_model, vocab_size)
+    Node *output_proj;  // (d_model, vocab_size)
 
    private:
     ModelConfig config_;
@@ -57,10 +60,10 @@ class TransformerModel
         size_t seq_len;
     };
 
-    autograd::Node *embedding_lookup(autograd::Node *token_ids) const;
+    Node *embedding_lookup(Node *token_ids) const;
     void do_copy_embedding(const Tensor &ids, const EmbeddingDims &dims, Tensor &hidden_data) const;
-    void do_embedding_backward(autograd::Node *token_ids, const EmbeddingDims &dims, autograd::Node *hidden) const;
+    void do_embedding_backward(Node *token_ids, const EmbeddingDims &dims, Node *hidden) const;
 };
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius

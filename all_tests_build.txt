@@ -1,0 +1,3 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+MSBUILD : error MSB1009: il file di progetto non esiste.
+Opzione: all_tests.vcxproj

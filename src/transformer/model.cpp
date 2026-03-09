@@ -5,7 +5,10 @@
 #include "../autograd/ops.h"
 
 namespace serius {
-namespace transformer {
+namespace model {
+
+using core::Tensor;
+using core::autograd::Node;
 
 TransformerModel::TransformerModel(const ModelConfig &config) : config_(config)
 {
@@ -19,7 +22,7 @@ TransformerModel::TransformerModel(const ModelConfig &config) : config_(config)
     for (size_t idx = 0; idx < emb_t.size(); ++idx) {
         emb_t[idx] = (emb_t[idx] - OFFSET) * SCALE_ADJ * scale;
     }
-    embedding = new autograd::Node(std::move(emb_t));
+    embedding = new Node(std::move(emb_t));
     embedding->name = "embedding";
 
     // Create transformer blocks
@@ -37,7 +40,7 @@ TransformerModel::TransformerModel(const ModelConfig &config) : config_(config)
     for (size_t idx = 0; idx < proj_t.size(); ++idx) {
         proj_t[idx] = (proj_t[idx] - OFFSET) * SCALE_ADJ * scale;
     }
-    output_proj = new autograd::Node(std::move(proj_t));
+    output_proj = new Node(std::move(proj_t));
     output_proj->name = "output_proj";
 }
 
@@ -51,7 +54,7 @@ TransformerModel::~TransformerModel()
     delete output_proj;
 }
 
-autograd::Node *TransformerModel::embedding_lookup(autograd::Node *token_ids) const
+Node *TransformerModel::embedding_lookup(Node *token_ids) const
 {
     const Tensor &ids = token_ids->data;
     bool is_batched = (ids.ndim() == 2);
@@ -64,7 +67,7 @@ autograd::Node *TransformerModel::embedding_lookup(autograd::Node *token_ids) co
     EmbeddingDims dims{is_batched, batch_size, seq_len};
     do_copy_embedding(ids, dims, hidden_data);
 
-    autograd::Node *hidden = new autograd::Node(std::move(hidden_data));
+    Node *hidden = new Node(std::move(hidden_data));
     hidden->name = "embedding_lookup";
     hidden->children = {token_ids, embedding};
 
@@ -91,8 +94,7 @@ void TransformerModel::do_copy_embedding(const Tensor &ids, const EmbeddingDims 
     }
 }
 
-void TransformerModel::do_embedding_backward(autograd::Node *token_ids, const EmbeddingDims &dims,
-                                             autograd::Node *hidden) const
+void TransformerModel::do_embedding_backward(Node *token_ids, const EmbeddingDims &dims, Node *hidden) const
 {
     if (!embedding->requires_grad) {
         return;
@@ -112,12 +114,12 @@ void TransformerModel::do_embedding_backward(autograd::Node *token_ids, const Em
     }
 }
 
-autograd::Node *TransformerModel::forward(autograd::Node *token_ids, std::vector<KVCache *> *caches) const
+Node *TransformerModel::forward(Node *token_ids, std::vector<KVCache *> *caches) const
 {
-    using namespace autograd::ops;
+    using namespace core::autograd::ops;
 
     // Lookup embeddings
-    autograd::Node *hidden = embedding_lookup(token_ids);
+    Node *hidden = embedding_lookup(token_ids);
 
     // Pass through transformer blocks
     for (size_t i = 0; i < blocks.size(); ++i) {
@@ -132,9 +134,9 @@ autograd::Node *TransformerModel::forward(autograd::Node *token_ids, std::vector
     return matmul(hidden, output_proj);
 }
 
-std::vector<autograd::Node *> TransformerModel::parameters() const
+std::vector<Node *> TransformerModel::parameters() const
 {
-    std::vector<autograd::Node *> params;
+    std::vector<Node *> params;
     params.push_back(embedding);
     for (auto *block : blocks) {
         params.push_back(block->attention.w_q);
@@ -142,20 +144,20 @@ std::vector<autograd::Node *> TransformerModel::parameters() const
         params.push_back(block->attention.w_uk);
         params.push_back(block->attention.w_uv);
         params.push_back(block->attention.w_o);
-        params.push_back(block->norm1.gamma);
-        params.push_back(block->norm1.beta);
-        params.push_back(block->norm2.gamma);
-        params.push_back(block->norm2.beta);
+        params.push_back(block->norm1.gamma_);
+        params.push_back(block->norm1.beta_);
+        params.push_back(block->norm2.gamma_);
+        params.push_back(block->norm2.beta_);
         params.push_back(block->ffn.w1);
         params.push_back(block->ffn.b1);
         params.push_back(block->ffn.w2);
         params.push_back(block->ffn.b2);
     }
-    params.push_back(final_norm->gamma);
-    params.push_back(final_norm->beta);
+    params.push_back(final_norm->gamma_);
+    params.push_back(final_norm->beta_);
     params.push_back(output_proj);
     return params;
 }
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius

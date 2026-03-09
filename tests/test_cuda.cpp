@@ -11,7 +11,13 @@
 #include "blas/matmul_cuda.h"
 #endif
 
-using namespace serius;
+namespace serius {
+namespace test {
+
+namespace core = serius::core;
+using core::Tensor;
+namespace blas = core::blas;
+namespace hal = serius::hal;
 
 void test_cuda_matmul_integration()
 {
@@ -42,21 +48,16 @@ void test_cuda_matmul_integration()
     assert(std::abs(c_data[0] - (2.0f * dim)) < 1e-4 && "CUDA matmul result incorrect or sync failed");
 
     std::cout << "CUDA matmul dispatch test ok.\n";
+    std::cout << "CUDA matmul dispatch test for dim=" << dim << " ok.\n";
 }
+
+}  // namespace test
+}  // namespace serius
 
 int main()
 {
-#ifdef SERIUS_USE_CUDA
-    hal::IBackend *cuda = hal::get_backend(hal::DeviceType::CUDA);
-    if (!cuda || !cuda->is_available()) {
-        std::cout << "CUDA backend not available, skipping CUDA tests.\n";
-        return 0;
-    }
-
-    test_cuda_matmul_integration();
-#else
-    std::cout << "Compiled without SERIUS_USE_CUDA macro. Skipping CUDA integration tests.\n";
-#endif
-
+    std::cout << "--- CUDA MATMUL INTEGRATION TEST ---\n";
+    serius::test::test_cuda_matmul_integration();
+    std::cout << "CUDA Integration tests passed.\n";
     return 0;
 }

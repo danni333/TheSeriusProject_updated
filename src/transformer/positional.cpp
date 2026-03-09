@@ -5,7 +5,7 @@
 #include <stdexcept>
 
 namespace serius {
-namespace transformer {
+namespace model {
 
 Tensor positional_encoding(int max_seq_len, int d_model)
 {
@@ -89,5 +89,5 @@ void apply_rope(Tensor &q, Tensor &k, size_t d_head)
     }
 }
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius

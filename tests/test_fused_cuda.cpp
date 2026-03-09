@@ -9,6 +9,8 @@
 #include "tensor/tensor.h"
 
 using namespace serius;
+using core::Tensor;
+namespace autograd = core::autograd;
 
 class FusedCUDATest : public ::testing::Test
 {

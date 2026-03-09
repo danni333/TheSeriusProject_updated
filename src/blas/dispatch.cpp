@@ -15,7 +15,10 @@
 #endif
 
 namespace serius {
+namespace core {
 namespace blas {
+
+using core::Tensor;
 
 // Cache CPU info
 static CpuInfo internal_cpu_info = {false, false};
@@ -300,4 +303,5 @@ Tensor batched_matmul(const Tensor &mat_a, const Tensor &mat_b)
 }
 
 }  // namespace blas
+}  // namespace core
 }  // namespace serius

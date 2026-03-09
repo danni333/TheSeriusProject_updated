@@ -6,7 +6,11 @@
 #include "layernorm.h"
 
 namespace serius {
-namespace transformer {
+namespace model {
+
+using core::autograd::Node;
+
+class KVCache;
 
 class TransformerBlock
 {
@@ -15,7 +19,7 @@ class TransformerBlock
 
     /// Forward pass (pre-norm architecture)
     /// Input: (seq_len, d_model) or (batch_size, seq_len, d_model)
-    autograd::Node *forward(autograd::Node *input, KVCache *cache = nullptr) const;
+    Node *forward(Node *input, KVCache *cache = nullptr) const;
 
     // Sub-layers
     LayerNorm norm1;
@@ -26,5 +30,5 @@ class TransformerBlock
     size_t d_model_;
 };
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius

@@ -1,0 +1,17 @@
+--- MEMORY SUBSYSTEM BENCHMARK ---
+
+Allocating 1000000 blocks of 64 bytes
+  std::malloc/free : 74.0695 ms
+  MemoryPool       : 2.6099 ms
+  Speedup          : 28.3802x
+---------------------------------------------
+Allocating 100000 blocks of 1024 bytes
+  std::malloc/free : 35.4441 ms
+  MemoryPool       : 0.2554 ms
+  Speedup          : 138.7788x
+---------------------------------------------
+Allocating 1000 blocks of 1048576 bytes
+  std::malloc/free : 6.5739 ms
+  MemoryPool       : 0.0028 ms
+  Speedup          : 2347.8214x
+---------------------------------------------

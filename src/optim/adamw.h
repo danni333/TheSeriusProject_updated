@@ -19,18 +19,21 @@ struct AdamWConfig
 
 struct ParamState
 {
-    Tensor m;  // 1st moment
-    Tensor v;  // 2nd moment
+    core::Tensor m;  // 1st moment
+    core::Tensor v;  // 2nd moment
     int step = 0;
 
     ParamState() : m({0}), v({0}), step(0) {}
-    ParamState(Tensor m_in, Tensor v_in, int step_in) : m(std::move(m_in)), v(std::move(v_in)), step(step_in) {}
+    ParamState(core::Tensor m_in, core::Tensor v_in, int step_in)
+        : m(std::move(m_in)), v(std::move(v_in)), step(step_in)
+    {
+    }
 };
 
 class AdamW
 {
    public:
-    AdamW(const std::vector<autograd::Node *> &params, const AdamWConfig &config = AdamWConfig());
+    AdamW(const std::vector<core::autograd::Node *> &params, const AdamWConfig &config = AdamWConfig());
 
     /// Perform a single optimization step
     void step();
@@ -39,14 +42,14 @@ class AdamW
     void zero_grad();
 
     // State management
-    const std::map<autograd::Node *, ParamState> &state() const { return state_; }
-    std::map<autograd::Node *, ParamState> &state() { return state_; }
+    const std::map<core::autograd::Node *, ParamState> &state() const { return state_; }
+    std::map<core::autograd::Node *, ParamState> &state() { return state_; }
     void set_lr(float lr) { config_.lr = lr; }
 
    private:
-    std::vector<autograd::Node *> params_;
+    std::vector<core::autograd::Node *> params_;
     AdamWConfig config_;
-    std::map<autograd::Node *, ParamState> state_;
+    std::map<core::autograd::Node *, ParamState> state_;
 };
 
 }  // namespace optim

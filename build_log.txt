@@ -1,46 +1,38 @@
 Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
 
   spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
-  dispatch.cpp
   serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/bench_matmul.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/bench_matmul.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\bench_matmul.vcxproj]
+  bench_full.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_full.exe
   bench_matmul.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_matmul.exe
   bench_memory.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\bench_memory.exe
+  bench_mixed_precision.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\bench_mixed_precision.cpp(231,1): error C2447: '{': intestazione di funzione mancante. Elenco formale di tipo obsoleto? [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\bench_mixed_precision.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\bench_mixed_precision.cpp(247,19): error C2039: 'run_mixed_precision_benchmarks': non ├¿ un membro di 'serius::test' [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\bench_mixed_precision.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\bench_mixed_precision.cpp(13,11):
+      vedere la dichiarazione di 'serius::test'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\bench_mixed_precision.cpp(247,19): error C3861: 'run_mixed_precision_benchmarks': identificatore non trovato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\bench_mixed_precision.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\bench_mixed_precision.cpp(250,1): error C1004: fine del file imprevista [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\bench_mixed_precision.vcxproj]
   gmock.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gmock.lib
   gmock_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gmock_main.lib
   gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest.lib
   gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest_main.lib
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_autograd.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_autograd.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_autograd.vcxproj]
   test_autograd.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_autograd.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_blas.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_blas.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_blas.vcxproj]
   test_blas.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_blas.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_cuda.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_cuda.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_cuda.vcxproj]
   test_cuda.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_cuda.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_dataloader.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_dataloader.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_dataloader.vcxproj]
   test_dataloader.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_dataloader.exe
   test_dummy.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_dummy.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_fused_cuda.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_fused_cuda.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_fused_cuda.vcxproj]
   test_fused_cuda.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_fused_cuda.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_hal.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_hal.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_hal.vcxproj]
   test_hal.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_hal.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_kv_cache_logic.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_kv_cache_logic.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_kv_cache_logic.vcxproj]
   test_kv_cache_logic.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_kv_cache_logic.exe
   test_memory.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_memory.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_tensor.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_tensor.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_tensor.vcxproj]
+  test_quant.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(21,28): error C2039: 'autograd': non ├¿ un membro di 'serius::core' [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(18,11):
+      vedere la dichiarazione di 'serius::core'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(21,28): error C2878: 'autograd': non esiste alcuno spazio dei nomi o classe con questo nome [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
   test_tensor.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_tensor.exe
   test_tokenizer.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_tokenizer.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_training.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_training.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_training.vcxproj]
   test_training.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_training.exe
-     Creazione della libreria C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_transformer.lib e dell'oggetto C:/Users/ddech/OneDrive/Desktop/TheSeriusProject_updated/build/tests/Release/test_transformer.exp
-LINK : warning LNK4098: la libreria predefinita 'LIBCMT' ├¿ in conflitto con l'utilizzo di altre librerie; usare /NODEFAULTLIB:libreria [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_transformer.vcxproj]
   test_transformer.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\Release\test_transformer.exe

@@ -7,7 +7,6 @@
 
 #include "matmul_cuda.h"
 
-
 #define CHECK_CUDA_ERROR(call)                                                                       \
     do {                                                                                             \
         cudaError_t err = call;                                                                      \
@@ -18,6 +17,7 @@
     } while (0)
 
 namespace serius {
+namespace core {
 namespace blas {
 
 // Helper to convert to float for calculation
@@ -118,4 +118,5 @@ void batched_matmul_cuda(const void *A, const void *B, void *C, size_t batch_siz
 }
 
 }  // namespace blas
+}  // namespace core
 }  // namespace serius

@@ -5,8 +5,8 @@
 
 #include "node.h"
 
-
 namespace serius {
+namespace core {
 namespace autograd {
 
 // Performs a topological sort of the computational graph ending at `loss_node`
@@ -19,4 +19,5 @@ void backward(Node *loss_node);
 void topo_sort(Node *node, std::set<Node *> &visited, std::vector<Node *> &order);
 
 }  // namespace autograd
+}  // namespace core
 }  // namespace serius

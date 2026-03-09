@@ -64,7 +64,7 @@ __device__ __forceinline__ T warp_reduce_max(T val)
 template <typename T, bool is_max>
 __device__ __forceinline__ T reduce_block(T val)
 {
-    static __shared__ T shared[32];
+    __shared__ float shared[32];
     int lane = threadIdx.x % 32;
     int wid = threadIdx.x / 32;
 
@@ -73,15 +73,16 @@ __device__ __forceinline__ T reduce_block(T val)
     if (lane == 0) shared[wid] = val;
     __syncthreads();
 
-    val = (threadIdx.x < blockDim.x / 32) ? shared[lane] : (is_max ? -1e20f : 0.0f);
+    // Use float for the final reduction to avoid precision issues in sum
+    float res = (threadIdx.x < blockDim.x / 32) ? shared[lane] : (is_max ? -1e20f : 0.0f);
 
     if (wid == 0) {
-        val = is_max ? warp_reduce_max(val) : warp_reduce_sum(val);
-        if (lane == 0) shared[0] = val;
+        res = is_max ? warp_reduce_max(res) : warp_reduce_sum(res);
+        if (lane == 0) shared[0] = res;
     }
     __syncthreads();
 
-    return shared[0];
+    return (T)shared[0];
 }
 
 // --- LayerNorm + Residual Fusion ---

@@ -6,6 +6,9 @@
 namespace serius {
 namespace model {
 
+using core::Tensor;
+using core::autograd::Node;
+
 class LayerNorm
 {
    public:
@@ -14,11 +17,11 @@ class LayerNorm
 
     /// Forward pass: normalizes along the last dimension
     /// Input shape: (seq_len, d_model) or (batch, seq_len, d_model)
-    core::autograd::Node *forward(core::autograd::Node *input) const;
+    Node *forward(Node *input) const;
 
     // Learnable parameters (managed by the layer)
-    core::autograd::Node *gamma_;  // scale, shape: (d_model,)
-    core::autograd::Node *beta_;   // shift, shape: (d_model,)
+    Node *gamma_;  // scale, shape: (d_model,)
+    Node *beta_;   // shift, shape: (d_model,)
     float eps_;
 
    private:

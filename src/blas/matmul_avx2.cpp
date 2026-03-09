@@ -9,6 +9,7 @@
 #include <algorithm>
 
 namespace serius {
+namespace core {
 namespace blas {
 
 // AVX2 implementation of Matrix Multiplication
@@ -91,4 +92,5 @@ void matmul_avx2(const float *A, const float *B, float *C, size_t M, size_t N, s
 }
 
 }  // namespace blas
+}  // namespace core
 }  // namespace serius

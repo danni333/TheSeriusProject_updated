@@ -10,6 +10,7 @@
 #endif
 
 namespace serius {
+namespace core {
 namespace autograd {
 namespace ops {
 
@@ -336,10 +337,8 @@ Node *reshape(Node *input_node, const std::vector<size_t> &new_shape)
 Node *transpose(Node *input_node, size_t dim0, size_t dim1)
 {
     // Tensor::transpose() uses size_t, but -1/-2 are useful defaults
-    size_t d0_val = static_cast<size_t>(dim0);
-    size_t d1_val = static_cast<size_t>(dim1);
-    size_t dim0_idx = (d0_val == static_cast<size_t>(-2)) ? input_node->data.ndim() - 2 : d0_val;
-    size_t dim1_idx = (d1_val == static_cast<size_t>(-1)) ? input_node->data.ndim() - 1 : d1_val;
+    size_t dim0_idx = (dim0 == static_cast<size_t>(-2)) ? input_node->data.ndim() - 2 : dim0;
+    size_t dim1_idx = (dim1 == static_cast<size_t>(-1)) ? input_node->data.ndim() - 1 : dim1;
 
     Tensor res = input_node->data.transpose(dim0_idx, dim1_idx);
     Node *out = new Node(std::move(res));
@@ -552,19 +551,21 @@ Node *layernorm(Node *input, Node *gamma, Node *beta, float eps)
         // CPU Implementation (simplified for brevity, assuming float32)
         size_t d_model = in_data.shape().back();
         size_t batch_seq = in_data.size() / d_model;
-        for (size_t b = 0; b < batch_seq; ++b) {
-            float sum = 0.0f;
-            for (size_t i = 0; i < d_model; ++i) sum += in_data.data()[b * d_model + i];
-            float mean = sum / d_model;
-            float var_sum = 0.0f;
+        for (size_t batch_idx = 0; batch_idx < batch_seq; ++batch_idx) {
+            float sum_val = 0.0F;
             for (size_t i = 0; i < d_model; ++i) {
-                float diff = in_data.data()[b * d_model + i] - mean;
-                var_sum += diff * diff;
+                sum_val += in_data.data()[batch_idx * d_model + i];
             }
-            float inv_std = 1.0f / std::sqrt(var_sum / d_model + eps);
+            float mean_val = sum_val / static_cast<float>(d_model);
+            float var_sum = 0.0F;
             for (size_t i = 0; i < d_model; ++i) {
-                float x_hat = (in_data.data()[b * d_model + i] - mean) * inv_std;
-                output_data.data()[b * d_model + i] = gamma->data[i] * x_hat + beta->data[i];
+                float diff_val = in_data.data()[batch_idx * d_model + i] - mean_val;
+                var_sum += diff_val * diff_val;
+            }
+            float inv_std_val = 1.0F / std::sqrt(var_sum / static_cast<float>(d_model) + eps);
+            for (size_t i = 0; i < d_model; ++i) {
+                float x_hat_val = (in_data.data()[(batch_idx * d_model) + i] - mean_val) * inv_std_val;
+                output_data.data()[(batch_idx * d_model) + i] = (gamma->data[i] * x_hat_val) + beta->data[i];
             }
         }
     }
@@ -576,39 +577,47 @@ Node *layernorm(Node *input, Node *gamma, Node *beta, float eps)
     out->backward_fn = [input, gamma, beta, out, eps]() {
         if (!input->requires_grad && !gamma->requires_grad && !beta->requires_grad) return;
         // Simplified LayerNorm backward (assuming CPU float32 for grad calculation)
-        const Tensor &x = input->data;
-        const Tensor &dy = out->grad;
-        size_t d_model = x.shape().back();
-        size_t batch_seq = x.size() / d_model;
+        const Tensor &x_data = input->data;
+        const Tensor &grad_out = out->grad;
+        size_t d_model = x_data.shape().back();
+        size_t batch_seq = x_data.size() / d_model;
 
-        for (size_t b = 0; b < batch_seq; ++b) {
-            float sum_x = 0.0f;
-            for (size_t i = 0; i < d_model; ++i) sum_x += x.data()[b * d_model + i];
-            float mean = sum_x / d_model;
-            float var_sum = 0.0f;
+        for (size_t batch_idx = 0; batch_idx < batch_seq; ++batch_idx) {
+            float sum_x_val = 0.0F;
             for (size_t i = 0; i < d_model; ++i) {
-                float diff = x.data()[b * d_model + i] - mean;
-                var_sum += diff * diff;
+                sum_x_val += x_data.data()[batch_idx * d_model + i];
             }
-            float inv_std = 1.0f / std::sqrt(var_sum / d_model + eps);
-
-            float sum_dy = 0.0f;
-            float sum_dy_xhat = 0.0f;
+            float mean_val = sum_x_val / static_cast<float>(d_model);
+            float var_sum = 0.0F;
             for (size_t i = 0; i < d_model; ++i) {
-                float xhat = (x.data()[b * d_model + i] - mean) * inv_std;
-                float dyi = dy.data()[b * d_model + i];
-                if (gamma->requires_grad) gamma->grad[i] += dyi * xhat;
-                if (beta->requires_grad) beta->grad[i] += dyi;
-                sum_dy += dyi;
-                sum_dy_xhat += dyi * xhat;
+                float diff_val = x_data.data()[batch_idx * d_model + i] - mean_val;
+                var_sum += diff_val * diff_val;
+            }
+            float inv_std_val = 1.0F / std::sqrt(var_sum / static_cast<float>(d_model) + eps);
+
+            float sum_dy_val = 0.0F;
+            float sum_dy_xhat_val = 0.0F;
+            for (size_t i = 0; i < d_model; ++i) {
+                float xhat_val = (x_data.data()[(batch_idx * d_model) + i] - mean_val) * inv_std_val;
+                float dyi_val = grad_out.data()[(batch_idx * d_model) + i];
+                if (gamma->requires_grad) {
+                    gamma->grad[i] += dyi_val * xhat_val;
+                }
+                if (beta->requires_grad) {
+                    beta->grad[i] += dyi_val;
+                }
+                sum_dy_val += dyi_val;
+                sum_dy_xhat_val += dyi_val * xhat_val;
             }
 
             if (input->requires_grad) {
                 for (size_t i = 0; i < d_model; ++i) {
-                    float xhat = (x.data()[b * d_model + i] - mean) * inv_std;
-                    float dyi = dy.data()[b * d_model + i];
-                    float dx = (gamma->data[i] * inv_std / d_model) * (d_model * dyi - sum_dy - xhat * sum_dy_xhat);
-                    input->grad.data()[b * d_model + i] += dx;
+                    float xhat_val = (x_data.data()[(batch_idx * d_model) + i] - mean_val) * inv_std_val;
+                    float dyi_val = grad_out.data()[(batch_idx * d_model) + i];
+                    float dx_val =
+                        (gamma->data[i] * inv_std_val / static_cast<float>(d_model)) *
+                        ((static_cast<float>(d_model) * dyi_val) - sum_dy_val - (xhat_val * sum_dy_xhat_val));
+                    input->grad.data()[(batch_idx * d_model) + i] += dx_val;
                 }
             }
         }
@@ -729,14 +738,23 @@ Node *fused_masked_softmax(Node *input, const Tensor &mask, float scale)
 
     if (!handled) {
         // Fallback: apply scale, apply mask, then softmax
-        return softmax(masked_fill(mul_scalar(input, scale), mask, -1e20f));
+        const float NEG_INF = -1e20F;
+        Node *scaled_input = mul_scalar(input, scale);
+        Node *masked_input = masked_fill(scaled_input, mask, NEG_INF);
+        Node *softmax_output = softmax(masked_input);
+
+        // The result of the fallback path is a new Node, so we need to return it directly.
+        // The backward_fn for this path is handled by the individual ops (mul_scalar, masked_fill, softmax).
+        return softmax_output;
     }
 
     Node *out = new Node(std::move(res));
     out->children = {input};
     out->name = "fused_masked_softmax";
     out->backward_fn = [input, out, scale]() {
-        if (!input->requires_grad) return;
+        if (!input->requires_grad) {
+            return;
+        }
 
         out->data.syncToHost();
         out->grad.syncToHost();
@@ -750,15 +768,13 @@ Node *fused_masked_softmax(Node *input, const Tensor &mask, float scale)
         size_t n_dim = total_size / k_dim;
 
         for (size_t i = 0; i < n_dim; ++i) {
-            float sum_s_grad = 0.0f;
+            float sum_grad_val = 0.0F;
             for (size_t j = 0; j < k_dim; ++j) {
-                sum_s_grad += (softmax_data[(i * k_dim) + j] * grad_softmax[(i * k_dim) + j]);
+                sum_grad_val += grad_softmax[i * k_dim + j] * softmax_data[i * k_dim + j];
             }
-
             for (size_t j = 0; j < k_dim; ++j) {
-                float s_j = softmax_data[(i * k_dim) + j];
-                float ds_j = grad_softmax[(i * k_dim) + j];
-                grad_input[(i * k_dim) + j] += (s_j * (ds_j - sum_s_grad)) * scale;
+                float softmax_val = softmax_data[i * k_dim + j];
+                grad_input[i * k_dim + j] += scale * softmax_val * (grad_softmax[i * k_dim + j] - sum_grad_val);
             }
         }
     };
@@ -767,4 +783,5 @@ Node *fused_masked_softmax(Node *input, const Tensor &mask, float scale)
 
 }  // namespace ops
 }  // namespace autograd
+}  // namespace core
 }  // namespace serius

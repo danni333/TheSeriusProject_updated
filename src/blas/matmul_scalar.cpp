@@ -1,6 +1,7 @@
 #include "blas.h"
 
 namespace serius {
+namespace core {
 namespace blas {
 
 // Naive scalar matrix multiplication
@@ -23,4 +24,5 @@ void matmul_scalar(const float *A, const float *B, float *C, size_t M, size_t N,
 }
 
 }  // namespace blas
+}  // namespace core
 }  // namespace serius

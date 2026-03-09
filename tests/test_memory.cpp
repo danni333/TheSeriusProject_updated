@@ -3,15 +3,18 @@
 #include <cstdint>
 #include <vector>
 
-#include "../src/memory/memory_pool.h"
-#include "../src/memory/pool_allocator.h"
+#include "memory/memory_pool.h"
+#include "memory/pool_allocator.h"
+#include "tensor/tensor.h"
 
 namespace serius {
-namespace core {
-namespace memory {
 namespace test {
 
+namespace core = serius::core;
 using core::Tensor;
+using core::memory::MemoryPool;
+using core::memory::PoolAllocator;
+using core::memory::ScopedArena;
 
 TEST(MemoryPoolTest, BasicAllocation)
 {
@@ -140,6 +143,4 @@ TEST(MemoryPoolTest, PrintStats)
 }
 
 }  // namespace test
-}  // namespace memory
-}  // namespace core
 }  // namespace serius

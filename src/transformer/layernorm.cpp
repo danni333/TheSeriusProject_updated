@@ -1,16 +1,18 @@
 #include "layernorm.h"
 
-#include "../../hal/backend.h"  // Added for hal::get_backend
 #include "../autograd/ops.h"
+#include "../hal/device.h"  // Forward declarations and IBackend
 
 namespace serius {
 namespace model {
 
-LayerNorm::LayerNorm(size_t d_model, float eps) : d_model_(d_model), eps_(eps)
+using core::Tensor;
+using core::autograd::Node;
+
+LayerNorm::LayerNorm(size_t d_model, float epsilon) : d_model_(d_model), eps_(epsilon)
 {
-    hal::IBackend *cpu = hal::get_backend(hal::DeviceType::CPU);
-    gamma_ = new core::autograd::Node(core::Tensor({d_model}, hal::DType::Float32));
-    beta_ = new core::autograd::Node(core::Tensor({d_model}, hal::DType::Float32));
+    gamma_ = new Node(Tensor({d_model}, hal::DType::Float32));
+    beta_ = new Node(Tensor({d_model}, hal::DType::Float32));
 
     gamma_->data.fill(1.0F);
     beta_->data.zeros();
@@ -24,10 +26,10 @@ LayerNorm::~LayerNorm()
     delete beta_;
 }
 
-core::autograd::Node *LayerNorm::forward(core::autograd::Node *input) const
+Node *LayerNorm::forward(Node *input) const
 {
     // Simplified LN for example
-    return autograd::ops::layernorm(input, gamma_, beta_, eps_);
+    return core::autograd::ops::layernorm(input, gamma_, beta_, eps_);
 }
 
 }  // namespace model

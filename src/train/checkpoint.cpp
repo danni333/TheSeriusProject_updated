@@ -8,11 +8,11 @@
 namespace serius {
 namespace training {
 
-void clip_grad_norm(const std::vector<autograd::Node *> &params, float max_norm)
+void clip_grad_norm(const std::vector<core::autograd::Node *> &params, float max_norm)
 {
     float total_norm = 0.0f;
     for (auto *p : params) {
-        const Tensor &g = p->grad;
+        const core::Tensor &g = p->grad;
         for (size_t i = 0; i < g.size(); ++i) {
             total_norm += g[i] * g[i];
         }
@@ -22,7 +22,7 @@ void clip_grad_norm(const std::vector<autograd::Node *> &params, float max_norm)
     if (total_norm > max_norm) {
         float scale = max_norm / (total_norm + 1e-6f);
         for (auto *p : params) {
-            Tensor &g = p->grad;
+            core::Tensor &g = p->grad;
             for (size_t i = 0; i < g.size(); ++i) {
                 g[i] *= scale;
             }
@@ -30,7 +30,7 @@ void clip_grad_norm(const std::vector<autograd::Node *> &params, float max_norm)
     }
 }
 
-void save_checkpoint(const std::string &path, const transformer::TransformerModel &model, const optim::AdamW &optimizer,
+void save_checkpoint(const std::string &path, const model::TransformerModel &model, const optim::AdamW &optimizer,
                      int epoch, int step)
 {
     std::ofstream os(path, std::ios::binary);
@@ -68,7 +68,7 @@ void save_checkpoint(const std::string &path, const transformer::TransformerMode
     }
 }
 
-void load_checkpoint(const std::string &path, transformer::TransformerModel &model, optim::AdamW &optimizer, int &epoch,
+void load_checkpoint(const std::string &path, model::TransformerModel &model, optim::AdamW &optimizer, int &epoch,
                      int &step)
 {
     std::ifstream is(path, std::ios::binary);
@@ -88,7 +88,7 @@ void load_checkpoint(const std::string &path, transformer::TransformerModel &mod
     int num_params;
     is.read((char *)&num_params, 4);
 
-    std::map<std::string, autograd::Node *> param_map;
+    std::map<std::string, core::autograd::Node *> param_map;
     for (auto *p : model.parameters()) {
         param_map[p->name] = p;
     }
@@ -108,7 +108,7 @@ void load_checkpoint(const std::string &path, transformer::TransformerModel &mod
             total_size *= shape[d];
         }
 
-        autograd::Node *p = nullptr;
+        core::autograd::Node *p = nullptr;
         if (param_map.count(name)) {
             p = param_map[name];
         }

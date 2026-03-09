@@ -6,8 +6,8 @@
 
 #include "memory_pool.h"
 
-
 namespace serius {
+namespace core {
 namespace memory {
 
 template <typename T>
@@ -66,4 +66,5 @@ class PoolAllocator
 };
 
 }  // namespace memory
+}  // namespace core
 }  // namespace serius

@@ -5,8 +5,8 @@
 
 #include "data/dataloader.h"
 
-
-using namespace serius;
+namespace serius {
+namespace test {
 
 class DataLoaderTest : public ::testing::Test
 {
@@ -94,3 +94,5 @@ TEST_F(DataLoaderTest, Stopper)
     loader.load_files({"test_data1.txt"});
     loader.stop();
 }
+}  // namespace test
+}  // namespace serius

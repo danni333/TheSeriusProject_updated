@@ -5,7 +5,9 @@
 #include <stdexcept>
 
 namespace serius {
-namespace transformer {
+namespace model {
+
+using core::Tensor;
 
 KVCache::KVCache(size_t max_seq_len, size_t num_heads, size_t head_dim, bool rolling)
     : max_len_(max_seq_len), current_len_(0), num_heads_(num_heads), head_dim_(head_dim), rolling_(rolling)
@@ -14,12 +16,12 @@ KVCache::KVCache(size_t max_seq_len, size_t num_heads, size_t head_dim, bool rol
     // Assuming a default batch size of 1 for now, or we'll reshape on first update
 }
 
-void KVCache::update(const Tensor &k, const Tensor &v)
+void KVCache::update(const Tensor &key, const Tensor &value)
 {
-    size_t batch_size = k.shape()[0];
-    size_t num_heads = k.shape()[1];
-    size_t new_len = k.shape()[2];
-    size_t head_dim = k.shape()[3];
+    size_t batch_size = key.shape()[0];
+    size_t num_heads = key.shape()[1];
+    size_t new_len = key.shape()[2];
+    size_t head_dim = key.shape()[3];
 
     if (keys_ == nullptr) {
         // Initialize buffers with correct batch size
@@ -29,13 +31,15 @@ void KVCache::update(const Tensor &k, const Tensor &v)
 
     if (rolling_) {
         // Rolling buffer: overwrite circularly when full
-        for (size_t b = 0; b < batch_size; ++b) {
-            for (size_t h = 0; h < num_heads; ++h) {
-                for (size_t t = 0; t < new_len; ++t) {
-                    size_t pos = (current_len_ + t) % max_len_;
-                    for (size_t d = 0; d < head_dim; ++d) {
-                        keys_->at({b, h, pos, d}) = k.at({b, h, t, d});
-                        values_->at({b, h, pos, d}) = v.at({b, h, t, d});
+        for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
+            for (size_t head_idx = 0; head_idx < num_heads; ++head_idx) {
+                for (size_t seq_idx = 0; seq_idx < new_len; ++seq_idx) {
+                    size_t pos_idx = (current_len_ + seq_idx) % max_len_;
+                    for (size_t d_idx = 0; d_idx < head_dim; ++d_idx) {
+                        keys_->at({batch_idx, head_idx, pos_idx, d_idx}) =
+                            key.at({batch_idx, head_idx, seq_idx, d_idx});
+                        values_->at({batch_idx, head_idx, pos_idx, d_idx}) =
+                            value.at({batch_idx, head_idx, seq_idx, d_idx});
                     }
                 }
             }
@@ -46,12 +50,14 @@ void KVCache::update(const Tensor &k, const Tensor &v)
             throw std::runtime_error("KV Cache overflow: maximum sequence length reached");
         }
 
-        for (size_t b = 0; b < batch_size; ++b) {
-            for (size_t h = 0; h < num_heads; ++h) {
-                for (size_t t = 0; t < new_len; ++t) {
-                    for (size_t d = 0; d < head_dim; ++d) {
-                        keys_->at({b, h, current_len_ + t, d}) = k.at({b, h, t, d});
-                        values_->at({b, h, current_len_ + t, d}) = v.at({b, h, t, d});
+        for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
+            for (size_t head_idx = 0; head_idx < num_heads; ++head_idx) {
+                for (size_t seq_idx = 0; seq_idx < new_len; ++seq_idx) {
+                    for (size_t d_idx = 0; d_idx < head_dim; ++d_idx) {
+                        keys_->at({batch_idx, head_idx, current_len_ + seq_idx, d_idx}) =
+                            key.at({batch_idx, head_idx, seq_idx, d_idx});
+                        values_->at({batch_idx, head_idx, current_len_ + seq_idx, d_idx}) =
+                            value.at({batch_idx, head_idx, seq_idx, d_idx});
                     }
                 }
             }
@@ -110,5 +116,5 @@ void KVCache::reorder(const std::vector<int> &beam_indices)
     }
 }
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius

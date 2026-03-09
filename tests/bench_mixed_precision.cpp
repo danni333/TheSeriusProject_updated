@@ -5,12 +5,18 @@
 #include <string>
 #include <vector>
 
-#include "../src/blas/blas.h"
-#include "../src/hal/device.h"
-#include "../src/tensor/tensor.h"
+#include "blas/blas.h"
+#include "hal/device.h"
+#include "tensor/tensor.h"
 
-using namespace serius;
+namespace serius {
+namespace test {
+
 using namespace std::chrono;
+namespace core = serius::core;
+using core::Tensor;
+namespace blas = core::blas;
+namespace hal = serius::hal;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -217,30 +223,11 @@ static void bench_memory_footprint()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-int main()
+void run_mixed_precision_benchmarks()
 {
     std::cout << "============================================================\n";
-    std::cout << "        SERIUS MIXED-PRECISION BENCHMARK SUITE\n";
+    std::cout << "           MIXED PRECISION BENCHMARK SUITE\n";
     std::cout << "============================================================\n";
-
-    // CPU info
-    auto info = blas::get_cpu_info();
-    std::cout << "CPU: AVX2=" << (info.has_avx2 ? "Yes" : "No") << " AVX512=" << (info.has_avx512f ? "Yes" : "No")
-              << "\n";
-
-#ifdef SERIUS_USE_CUDA
-    std::cout << "CUDA: Enabled\n";
-#else
-    std::cout << "CUDA: Disabled\n";
-#endif
-
-    // --- Precision ---
-    bench_precision(64);
-    bench_precision(256);
 
     // --- Performance ---
     std::vector<size_t> perf_sizes = {256, 512, 1024};
@@ -248,12 +235,22 @@ int main()
         bench_performance(s);
     }
 
+    // --- Precision ---
+    bench_precision(512);
+
     // --- Memory ---
     bench_memory_footprint();
 
     std::cout << "\n============================================================\n";
     std::cout << "                    BENCHMARK COMPLETE\n";
     std::cout << "============================================================\n";
+}
 
+}  // namespace test
+}  // namespace serius
+
+int main()
+{
+    serius::test::run_mixed_precision_benchmarks();
     return 0;
 }

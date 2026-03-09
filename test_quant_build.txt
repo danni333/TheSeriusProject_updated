@@ -1,0 +1,12 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest.lib
+  gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest_main.lib
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  test_quant.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(21,28): error C2039: 'autograd': non ├¿ un membro di 'serius::core' [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(18,11):
+      vedere la dichiarazione di 'serius::core'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(21,28): error C2878: 'autograd': non esiste alcuno spazio dei nomi o classe con questo nome [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]

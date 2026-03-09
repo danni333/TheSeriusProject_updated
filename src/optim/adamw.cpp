@@ -5,10 +5,11 @@
 namespace serius {
 namespace optim {
 
-AdamW::AdamW(const std::vector<autograd::Node *> &params, const AdamWConfig &config) : params_(params), config_(config)
+AdamW::AdamW(const std::vector<core::autograd::Node *> &params, const AdamWConfig &config)
+    : params_(params), config_(config)
 {
     for (auto *p : params_) {
-        state_[p] = {Tensor::zeros(p->data.shape()), Tensor::zeros(p->data.shape()), 0};
+        state_[p] = {core::Tensor::zeros(p->data.shape()), core::Tensor::zeros(p->data.shape()), 0};
     }
 }
 
@@ -25,10 +26,10 @@ void AdamW::step()
         auto &adam_state = state_[param_node];
         adam_state.step++;
 
-        const Tensor &grad_tensor = param_node->grad;
-        Tensor &moment1 = adam_state.m;
-        Tensor &moment2 = adam_state.v;
-        Tensor &param_data = param_node->data;
+        const core::Tensor &grad_tensor = param_node->grad;
+        core::Tensor &moment1 = adam_state.m;
+        core::Tensor &moment2 = adam_state.v;
+        core::Tensor &param_data = param_node->data;
 
         const float beta1 = config_.beta1;
         const float beta2 = config_.beta2;

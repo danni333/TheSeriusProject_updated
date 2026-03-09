@@ -6,7 +6,12 @@
 #include "hal/device.h"
 #include "tensor/tensor.h"
 
-using namespace serius;
+namespace serius {
+namespace test {
+
+namespace core = serius::core;
+using core::Tensor;
+namespace hal = serius::hal;
 
 void test_backend_discovery()
 {
@@ -46,10 +51,13 @@ void test_tensor_sync()
     std::cout << "Tensor sync logic ok.\n";
 }
 
+}  // namespace test
+}  // namespace serius
+
 int main()
 {
-    test_backend_discovery();
-    test_tensor_sync();
+    serius::test::test_backend_discovery();
+    serius::test::test_tensor_sync();
 
     std::cout << "All HAL/Device tests passed.\n";
     return 0;

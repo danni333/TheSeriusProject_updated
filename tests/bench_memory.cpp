@@ -4,11 +4,15 @@
 #include <iostream>
 #include <vector>
 
-#include "../src/memory/memory_pool.h"
+#include "memory/memory_pool.h"
 
+namespace serius {
+namespace test {
 
-using namespace serius;
 using namespace std::chrono;
+namespace core = serius::core;
+using core::memory::MemoryPool;
+namespace memory = core::memory;
 
 void run_memory_benchmark(size_t alloc_count, size_t alloc_size)
 {
@@ -47,9 +51,9 @@ void run_memory_benchmark(size_t alloc_count, size_t alloc_size)
     std::cout << std::string(45, '-') << "\n";
 }
 
-int main()
+void run_memory_benchmarks()
 {
-    std::cout << "--- MEMORY ALLOCATION BENCHMARK ---\n\n";
+    std::cout << "--- MEMORY SUBSYSTEM BENCHMARK ---\n\n";
 
     // Test small allocations (High overhead for malloc)
     run_memory_benchmark(1000000, 64);
@@ -59,6 +63,13 @@ int main()
 
     // Test large allocations
     run_memory_benchmark(1000, 1024 * 1024);
+}
 
+}  // namespace test
+}  // namespace serius
+
+int main()
+{
+    serius::test::run_memory_benchmarks();
     return 0;
 }

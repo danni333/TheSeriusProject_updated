@@ -3,15 +3,22 @@
 #include <cmath>
 #include <limits>
 
-#include "../src/transformer/attention.h"
-#include "../src/transformer/block.h"
-#include "../src/transformer/ffn.h"
-#include "../src/transformer/layernorm.h"
-#include "../src/transformer/model.h"
-#include "../src/transformer/positional.h"
+#include "tensor/tensor.h"
+#include "transformer/attention.h"
+#include "transformer/block.h"
+#include "transformer/ffn.h"
+#include "transformer/layernorm.h"
+#include "transformer/model.h"
+#include "transformer/positional.h"
 
-using namespace serius;
-using namespace serius::transformer;
+namespace serius {
+namespace test {
+
+namespace core = serius::core;
+using core::Tensor;
+using core::autograd::Node;
+namespace autograd = core::autograd;
+using namespace model;
 
 // ===== LayerNorm Tests =====
 
@@ -210,15 +217,15 @@ TEST(TransformerTest, ModelForward)
 
     // Simulate 2 batches, 4 tokens each
     Tensor tokens({2, 4});
-    tokens.at(0, 0) = 1.0F;
-    tokens.at(0, 1) = 5.0F;
-    tokens.at(0, 2) = 10.0F;
-    tokens.at(0, 3) = 50.0F;
+    tokens.set_item(0, 0, 1.0F);
+    tokens.set_item(0, 1, 5.0F);
+    tokens.set_item(0, 2, 10.0F);
+    tokens.set_item(0, 3, 50.0F);
 
-    tokens.at(1, 0) = 2.0F;
-    tokens.at(1, 1) = 6.0F;
-    tokens.at(1, 2) = 11.0F;
-    tokens.at(1, 3) = 51.0F;
+    tokens.set_item(1, 0, 2.0F);
+    tokens.set_item(1, 1, 6.0F);
+    tokens.set_item(1, 2, 11.0F);
+    tokens.set_item(1, 3, 51.0F);
 
     autograd::Node input_node(tokens, false);
     autograd::Node *logits_node = model.forward(&input_node);
@@ -236,3 +243,5 @@ TEST(TransformerTest, ModelForward)
         EXPECT_FALSE(std::isinf(logits[idx])) << "Inf in logits at index " << idx;
     }
 }
+}  // namespace test
+}  // namespace serius

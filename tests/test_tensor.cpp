@@ -8,6 +8,7 @@
 namespace serius {
 namespace test {
 
+namespace core = serius::core;
 using core::Tensor;
 
 TEST(TensorTest, CreateAndShape)

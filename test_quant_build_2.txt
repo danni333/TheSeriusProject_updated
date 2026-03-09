@@ -1,0 +1,93 @@
+Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
+
+  gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest.lib
+  gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest_main.lib
+  spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  test_quant.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(292,5): error C2065: 'KVCache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(292,13): error C2146: errore di sintassi: ';' mancante prima dell'identificatore 'cache' [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(292,13): error C3861: 'cache': identificatore non trovato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(311,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(312,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(312,5): error C2660: 'testing::internal::EqHelper::Compare': la funzione non accetta 3 argomenti [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1407,26):
+      vedere la dichiarazione di 'testing::internal::EqHelper::Compare'
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1414,26):
+      potrebbe essere 'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,std::nullptr_t,T *)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(312,5):
+          'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,std::nullptr_t,T *)': sono previsti 4 argomenti - 3 specificati
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1395,26):
+      o 'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,const T1 &,const T2 &)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(312,5):
+          'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,const T1 &,const T2 &)': sono previsti 4 argomenti - 3 specificati
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(312,5):
+      durante la ricerca di corrispondenza con l'elenco di argomenti '(const char [20], const char [10], size_t)'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(315,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(317,20): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(317,18): error C2512: 'serius::core::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(25,7):
+      vedere la dichiarazione di 'serius::core::Tensor'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(318,20): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(318,18): error C2512: 'serius::core::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(25,7):
+      vedere la dichiarazione di 'serius::core::Tensor'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(346,5): error C2065: 'KVCache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(346,13): error C2146: errore di sintassi: ';' mancante prima dell'identificatore 'cache' [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(346,13): error C3861: 'cache': identificatore non trovato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(356,9): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(359,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(359,5): error C2660: 'testing::internal::EqHelper::Compare': la funzione non accetta 3 argomenti [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1407,26):
+      vedere la dichiarazione di 'testing::internal::EqHelper::Compare'
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1414,26):
+      potrebbe essere 'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,std::nullptr_t,T *)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(359,5):
+          'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,std::nullptr_t,T *)': sono previsti 4 argomenti - 3 specificati
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1395,26):
+      o 'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,const T1 &,const T2 &)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(359,5):
+          'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,const T1 &,const T2 &)': sono previsti 4 argomenti - 3 specificati
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(359,5):
+      durante la ricerca di corrispondenza con l'elenco di argomenti '(const char [20], const char [10], size_t)'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(369,9): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(373,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(373,5): error C2660: 'testing::internal::EqHelper::Compare': la funzione non accetta 3 argomenti [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1407,26):
+      vedere la dichiarazione di 'testing::internal::EqHelper::Compare'
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1414,26):
+      potrebbe essere 'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,std::nullptr_t,T *)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(373,5):
+          'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,std::nullptr_t,T *)': sono previsti 4 argomenti - 3 specificati
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest.h(1395,26):
+      o 'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,const T1 &,const T2 &)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(373,5):
+          'testing::AssertionResult testing::internal::EqHelper::Compare(const char *,const char *,const T1 &,const T2 &)': sono previsti 4 argomenti - 3 specificati
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(373,5):
+      durante la ricerca di corrispondenza con l'elenco di argomenti '(const char [20], const char [10], size_t)'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(374,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(374,5): error C2512: 'testing::AssertionResult': non ├¿ disponibile alcun costruttore predefinito appropriato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(374,5):
+      'testing::AssertionResult::AssertionResult': non ├¿ disponibile alcun costruttore predefinito appropriato
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\include\gtest\gtest-assertion-result.h(155,3):
+          potrebbe essere 'testing::AssertionResult::AssertionResult(const T &,std::enable_if<!std::is_convertible<T,testing::AssertionResult>::value,void>::type *)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(374,5):
+          durante la ricerca di corrispondenza con l'elenco di argomenti '()'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(374,5): error C2737: 'gtest_ar_': l'oggetto const deve essere inizializzato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(376,20): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(376,18): error C2512: 'serius::core::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(25,7):
+      vedere la dichiarazione di 'serius::core::Tensor'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(391,5): error C2065: 'KVCache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(391,13): error C2146: errore di sintassi: ';' mancante prima dell'identificatore 'cache' [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(391,13): error C3861: 'cache': identificatore non trovato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(398,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(399,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_quant.cpp(402,5): error C2065: 'cache': identificatore non dichiarato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_quant.vcxproj]

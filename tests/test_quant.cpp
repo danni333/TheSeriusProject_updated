@@ -5,14 +5,22 @@
 #include <cstdlib>
 #include <vector>
 
-#include "../src/quant/conversions.h"
-#include "../src/quant/dequant_matmul.h"
-#include "../src/quant/int4.h"
-#include "../src/transformer/kv_cache.h"
+#include "memory/memory_pool.h"
+#include "memory/pool_allocator.h"
+#include "quant/conversions.h"
+#include "quant/dequant_matmul.h"
+#include "quant/int4.h"
+#include "tensor/tensor.h"
+#include "transformer/kv_cache.h"
 
-using namespace serius;
-using namespace serius::quant;
-using namespace serius::transformer;
+namespace serius {
+namespace test {
+
+namespace core = serius::core;
+using core::Tensor;
+namespace model = serius::model;
+using model::KVCache;
+using namespace quant;
 
 // ============================================================
 // FP16 / BF16 Roundtrip Tests
@@ -137,14 +145,7 @@ TEST(QuantINT4, BlockQuantizeConstantData)
     std::vector<float> recovered(block_size);
     dequantize_block(block, recovered.data(), block_size);
 
-    // All values should be very close to 0 since they all quantize to the same level
-    // and dequantization with scale=1, zp=0 gives 0
-    // Actually, for constant data the scale is 1.0 and zero_point=0, so dequant gives 0.
-    // This is expected behavior for degenerate blocks.
     for (size_t i = 0; i < block_size; ++i) {
-        // The degenerate case: scale=1, zp=0, all values quantize to 0 → dequant = 0
-        // This is a known limitation - constant blocks lose their value.
-        // The test just ensures no crash and deterministic output.
         EXPECT_TRUE(std::isfinite(recovered[i]));
     }
 }
@@ -402,3 +403,6 @@ TEST(KVCacheTest, NonRollingOverflow)
     // Third update should throw
     EXPECT_THROW(cache.update(key, val), std::runtime_error);
 }
+
+}  // namespace test
+}  // namespace serius

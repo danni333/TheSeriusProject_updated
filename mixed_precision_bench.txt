@@ -1,0 +1,48 @@
+============================================================
+           MIXED PRECISION BENCHMARK SUITE
+============================================================
+
+=== PERFORMANCE COMPARISON === (size 256x256)
+------------------------------------------------------------
+  FP32 Scalar CPU  :      11.63 ms  (    2.88 GFLOPS)
+  FP32 Dispatch   :       0.23 ms  (  147.57 GFLOPS)
+  FP16 Dispatch   :       0.17 ms  (  196.16 GFLOPS)
+  BF16 Dispatch   :       0.18 ms  (  183.98 GFLOPS)
+
+=== PERFORMANCE COMPARISON === (size 512x512)
+------------------------------------------------------------
+  FP32 Scalar CPU  :     110.25 ms  (    2.43 GFLOPS)
+  FP32 Dispatch   :       1.53 ms  (  175.26 GFLOPS)
+  FP16 Dispatch   :       0.66 ms  (  405.97 GFLOPS)
+  BF16 Dispatch   :       0.66 ms  (  405.42 GFLOPS)
+
+=== PERFORMANCE COMPARISON === (size 1024x1024)
+------------------------------------------------------------
+  FP32 Scalar CPU  :    1969.98 ms  (    1.09 GFLOPS)
+  FP32 Dispatch   :       5.40 ms  (  397.66 GFLOPS)
+  FP16 Dispatch   :       4.57 ms  (  470.34 GFLOPS)
+  BF16 Dispatch   :       4.58 ms  (  468.59 GFLOPS)
+
+=== PRECISION COMPARISON === (size 512x512)
+------------------------------------------------------------
+  FP16 vs FP32:
+    Max Error : 0.158554
+    Avg Error : 0.083517
+    RMSE      : 0.088373
+  BF16 vs FP32:
+    Max Error : 0.551041
+    Avg Error : 0.189460
+    RMSE      : 0.230499
+
+=== MEMORY FOOTPRINT COMPARISON ===
+------------------------------------------------------------
+      Size |         FP32 |         FP16 |         BF16 |    FP16 Save |    BF16 Save
+--------------------------------------------------------------------------------
+   256x 256 |    768.0 KB |    384.0 KB |    384.0 KB |      50.0 % |      50.0 %
+   512x 512 |      3.0 MB |      1.5 MB |      1.5 MB |      50.0 % |      50.0 %
+  1024x1024 |     12.0 MB |      6.0 MB |      6.0 MB |      50.0 % |      50.0 %
+  2048x2048 |     48.0 MB |     24.0 MB |     24.0 MB |      50.0 % |      50.0 %
+
+============================================================
+                    BENCHMARK COMPLETE
+============================================================

@@ -1,0 +1,17 @@
+============================================================
+             SERIUS UNIFIED BENCHMARK SUITE
+============================================================
+
+System Info:
+  AVX2: Yes | AVX512: Yes
+
+--- 1. BLAS Performance ---
+  MatMul 512x512                :    1248.26 ms (0.22 GFLOPS)
+  MatMul 1024x1024              :       6.98 ms (307.65 GFLOPS)
+
+--- 2. Memory Subsystem ---
+  MemoryPool Alloc/Reset (1000000):       2.67 ms (23.95 GB/s equivalent)
+  MemoryPool Alloc/Reset (100000):       0.26 ms (391.59 GB/s equivalent)
+
+--- 3. Transformer Throughput ---
+CUDA error at C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\hal\cuda_backend.cu:41 code=700 "an illegal memory access was encountered"

@@ -19,14 +19,14 @@ struct TrainerConfig
 class Trainer
 {
    public:
-    Trainer(transformer::TransformerModel &model, optim::AdamW &optimizer, optim::WSDScheduler &scheduler,
+    Trainer(model::TransformerModel &model, optim::AdamW &optimizer, optim::WSDScheduler &scheduler,
             const TrainerConfig &config = TrainerConfig());
 
     /// Run the training loop
     void train(DataLoader &dataloader);
 
    private:
-    transformer::TransformerModel &model_;
+    model::TransformerModel &model_;
     optim::AdamW &optimizer_;
     optim::WSDScheduler &scheduler_;
     TrainerConfig config_;

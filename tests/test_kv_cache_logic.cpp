@@ -5,12 +5,17 @@
 #include <memory>
 #include <vector>
 
-#include "../src/transformer/kv_cache.h"
-#include "../src/transformer/model.h"
+#include "transformer/kv_cache.h"
+#include "transformer/model.h"
 
+namespace serius {
+namespace test {
 
-using namespace serius;
-using namespace serius::transformer;
+namespace autograd = core::autograd;
+using core::Tensor;
+using model::KVCache;
+using model::ModelConfig;
+using model::TransformerModel;
 
 TEST(KVCacheTest, IncrementalInferenceConsistency)
 {
@@ -64,3 +69,6 @@ TEST(KVCacheTest, IncrementalInferenceConsistency)
         }
     }
 }
+
+}  // namespace test
+}  // namespace serius

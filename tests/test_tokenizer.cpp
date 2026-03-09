@@ -4,8 +4,8 @@
 
 #include "tokenizer/bpe.h"
 
-
-using namespace serius;
+namespace serius {
+namespace test {
 
 TEST(TokenizerTest, BasicInit)
 {
@@ -62,3 +62,5 @@ TEST(TokenizerTest, SaveLoad)
 
     std::filesystem::remove(path);
 }
+}  // namespace test
+}  // namespace serius

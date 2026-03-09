@@ -11,10 +11,15 @@
 #include "transformer/config.h"
 #include "transformer/model.h"
 
-using namespace serius;
-using namespace serius::transformer;
-using namespace serius::optim;
-using namespace serius::training;
+namespace serius {
+namespace test {
+
+using core::Tensor;
+using core::autograd::Node;
+using namespace model;
+using namespace optim;
+using namespace training;
+namespace autograd = core::autograd;
 
 class TrainingTest : public ::testing::Test
 {
@@ -114,3 +119,6 @@ TEST_F(TrainingTest, FullTrainingStep)
 
     optimizer.step();
 }
+
+}  // namespace test
+}  // namespace serius

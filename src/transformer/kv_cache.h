@@ -6,7 +6,9 @@
 #include "../tensor/tensor.h"
 
 namespace serius {
-namespace transformer {
+namespace model {
+
+using core::Tensor;
 
 class KVCache
 {
@@ -47,5 +49,5 @@ class KVCache
     bool rolling_;
 };
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius

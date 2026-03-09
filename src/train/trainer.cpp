@@ -10,7 +10,7 @@
 namespace serius {
 namespace training {
 
-Trainer::Trainer(transformer::TransformerModel &model, optim::AdamW &optimizer, optim::WSDScheduler &scheduler,
+Trainer::Trainer(model::TransformerModel &model, optim::AdamW &optimizer, optim::WSDScheduler &scheduler,
                  const TrainerConfig &config)
     : model_(model), optimizer_(optimizer), scheduler_(scheduler), config_(config)
 {
@@ -28,20 +28,20 @@ void Trainer::train(DataLoader &dataloader)
             optimizer_.zero_grad();
 
             // 2. Prepare inputs as autograd nodes
-            autograd::Node *input_node = new autograd::Node(std::move(batch.input_ids), false);
+            core::autograd::Node *input_node = new core::autograd::Node(std::move(batch.input_ids), false);
             input_node->name = "input_ids";
 
-            autograd::Node *target_node = new autograd::Node(std::move(batch.target_ids), false);
+            core::autograd::Node *target_node = new core::autograd::Node(std::move(batch.target_ids), false);
             target_node->name = "target_ids";
 
             // Forward pass
-            autograd::Node *logits = model_.forward(input_node);
+            core::autograd::Node *logits = model_.forward(input_node);
 
             // Cross entropy handles (B, S, V) and (B, S) natively.
-            autograd::Node *loss_node = autograd::ops::cross_entropy(logits, target_node);
+            core::autograd::Node *loss_node = core::autograd::ops::cross_entropy(logits, target_node);
 
             // 4. Backward pass
-            autograd::backward(loss_node);
+            core::autograd::backward(loss_node);
 
             // 5. Gradient clipping
             clip_grad_norm(model_.parameters(), config_.grad_clip);

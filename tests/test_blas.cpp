@@ -10,6 +10,7 @@ namespace core {
 namespace blas {
 namespace test {
 
+namespace core = serius::core;
 using core::Tensor;
 
 TEST(BlasTest, MatmulNaive)
@@ -35,15 +36,7 @@ TEST(BlasTest, MatmulNaive)
     B.at(2, 0) = 11;
     B.at(2, 1) = 12;
 
-    // Dispatch checks capabilities and should run scalar if AVX not present,
-    // but results must be completely identical regardless of path taken.
     matmul(A, B, C);
-
-    // Expected C =
-    // [[ 1*7 + 2*9 + 3*11,  1*8 + 2*10 + 3*12 ],
-    //  [ 4*7 + 5*9 + 6*11,  4*8 + 5*10 + 6*12 ]]
-    // = [[ 58, 64 ],
-    //    [ 139, 154 ]]
 
     EXPECT_FLOAT_EQ(C.at(0, 0), 58.0f);
     EXPECT_FLOAT_EQ(C.at(0, 1), 64.0f);
@@ -53,7 +46,6 @@ TEST(BlasTest, MatmulNaive)
 
 TEST(BlasTest, MatmulLarge)
 {
-    // Large matrix test (triggers block tiling optimization seamlessly)
     const size_t M = 128;
     const size_t K = 256;
     const size_t N = 128;
@@ -63,21 +55,17 @@ TEST(BlasTest, MatmulLarge)
     Tensor C_expected({M, N});
     Tensor C({M, N});
 
-    // Fill with random
     A.rand();
     B.rand();
     C.zeros();
     C_expected.zeros();
 
-    // Compute scalar reference
     matmul_scalar(A.data(), B.data(), C_expected.data(), M, N, K, A.strides()[0], B.strides()[0],
                   C_expected.strides()[0]);
 
-    // Compute dispatch
     matmul(A, B, C);
 
     for (size_t i = 0; i < C.size(); ++i) {
-        // High floating point tolerance depending on summation order due to FMA vs separated
         EXPECT_NEAR(C[i], C_expected[i], 1e-4f) << " at index " << i;
     }
 }
@@ -88,7 +76,6 @@ TEST(BlasTest, MatVec)
     Tensor x({3});
     Tensor y({3});
 
-    // A = Identity * 2
     A.zeros();
     A.at(0, 0) = 2;
     A.at(1, 1) = 2;
@@ -171,8 +158,6 @@ TEST(BlasTest, ElementWiseApply)
     EXPECT_FLOAT_EQ(B[1], 5.0f);
 }
 
-}
-
 TEST(BlasTest, ElementWiseSub)
 {
     Tensor A({2, 2});
@@ -207,7 +192,6 @@ TEST(BlasTest, ElementWiseDiv)
 
 TEST(BlasTest, ElementWiseOpenMP)
 {
-    // Test that the large tensor code-path with OpenMP and AVX works correctly
     size_t large_size = 20000;
     Tensor A({large_size});
     Tensor B({large_size});

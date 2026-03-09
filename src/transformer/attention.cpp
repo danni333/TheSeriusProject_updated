@@ -7,7 +7,9 @@
 #include "kv_cache.h"
 
 namespace serius {
-namespace transformer {
+namespace model {
+
+using core::autograd::Node;
 
 MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat)
     : d_model_(d_model), n_heads_(n_heads), d_head_(d_model / n_heads), cached_mask_({0})
@@ -19,7 +21,7 @@ MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_
     }
 
     // Xavier-like initialization helper
-    auto init_weights = [](size_t out_dim, size_t in_dim) -> autograd::Node * {
+    auto init_weights = [](size_t out_dim, size_t in_dim) -> Node * {
         Tensor weights({out_dim, in_dim});
         const float init_scale = 1.0F / std::sqrt(static_cast<float>(in_dim));
         weights.rand();
@@ -28,7 +30,7 @@ MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_
             const float two_v = 2.0F;
             weights[idx] = (weights[idx] - half_v) * two_v * init_scale;
         }
-        return new autograd::Node(std::move(weights));
+        return new Node(std::move(weights));
     };
 
     w_q = init_weights(d_model, d_model);
@@ -52,26 +54,25 @@ MultiHeadAttention::~MultiHeadAttention()
     delete w_o;
 }
 
-autograd::Node *MultiHeadAttention::forward(autograd::Node *input, KVCache *cache) const
+Node *MultiHeadAttention::forward(Node *input, KVCache *cache) const
 {
-    using namespace autograd::ops;
+    using namespace core::autograd::ops;
 
     // Queries: input * w_q
-    autograd::Node *queries = matmul(input, w_q);
+    Node *queries = matmul(input, w_q);
 
     // Multi-Head Latent Attention KV Compression
-    autograd::Node *c_t = matmul(input, w_dkv);
+    Node *c_t = matmul(input, w_dkv);
 
     // Keys and Values decompression
-    autograd::Node *keys = matmul(c_t, w_uk);
-    autograd::Node *values = matmul(c_t, w_uv);
+    Node *keys = matmul(c_t, w_uk);
+    Node *values = matmul(c_t, w_uv);
 
     // --- RoPE (Differentiable) ---
     size_t pos_offset = cache ? cache->current_len() : 0;
-    autograd::ops::RoPEResult rope_out =
-        autograd::ops::rope(queries, keys, d_head_, autograd::ops::DEFAULT_ROPE_BASE, pos_offset);
-    autograd::Node *q_rot = rope_out.queries;
-    autograd::Node *k_rot = rope_out.keys;
+    RoPEResult rope_out = rope(queries, keys, d_head_, DEFAULT_ROPE_BASE, pos_offset);
+    Node *q_rot = rope_out.queries;
+    Node *k_rot = rope_out.keys;
 
     // --- Split Heads and Flatten for Matmul ---
     size_t batch_size = input->data.ndim() == 3 ? input->data.shape()[0] : 1;
@@ -80,14 +81,14 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input, KVCache *cach
     size_t d_head = d_head_;
 
     // Reshape: (B, S, D) -> (B, S, H, D_h)
-    autograd::Node *q_split = reshape(q_rot, {batch_size, seq_len, n_heads, d_head});
-    autograd::Node *k_split = reshape(k_rot, {batch_size, seq_len, n_heads, d_head});
-    autograd::Node *v_split = reshape(values, {batch_size, seq_len, n_heads, d_head});
+    Node *q_split = reshape(q_rot, {batch_size, seq_len, n_heads, d_head});
+    Node *k_split = reshape(k_rot, {batch_size, seq_len, n_heads, d_head});
+    Node *v_split = reshape(values, {batch_size, seq_len, n_heads, d_head});
 
     // Transpose: (B, S, H, D_h) -> (B, H, S, D_h)
-    autograd::Node *q_heads = contiguous(transpose(q_split, 1, 2));
-    autograd::Node *k_heads = contiguous(transpose(k_split, 1, 2));
-    autograd::Node *v_heads = contiguous(transpose(v_split, 1, 2));
+    Node *q_heads = contiguous(transpose(q_split, 1, 2));
+    Node *k_heads = contiguous(transpose(k_split, 1, 2));
+    Node *v_heads = contiguous(transpose(v_split, 1, 2));
 
     // --- KV Caching Integration ---
     if (cache != nullptr) {
@@ -100,8 +101,8 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input, KVCache *cach
         Tensor full_v = cache->get_values();
 
         // Create new nodes for cached data (gradient flow stops here for cache for now)
-        k_heads = new autograd::Node(std::move(full_k));
-        v_heads = new autograd::Node(std::move(full_v));
+        k_heads = new Node(std::move(full_k));
+        v_heads = new Node(std::move(full_v));
 
         k_heads = contiguous(k_heads);
         v_heads = contiguous(v_heads);
@@ -111,15 +112,15 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input, KVCache *cach
 
     // Flatten: (B, H, S, D_h) -> (B*H, S, D_h)
     size_t batch_heads = batch_size * n_heads;
-    autograd::Node *q_flat = reshape(q_heads, {batch_heads, seq_len, d_head});
-    autograd::Node *k_flat = reshape(k_heads, {batch_heads, total_seq_len, d_head});
-    autograd::Node *v_flat = reshape(v_heads, {batch_heads, total_seq_len, d_head});
+    Node *q_flat = reshape(q_heads, {batch_heads, seq_len, d_head});
+    Node *k_flat = reshape(k_heads, {batch_heads, total_seq_len, d_head});
+    Node *v_flat = reshape(v_heads, {batch_heads, total_seq_len, d_head});
 
     // --- Scaled Dot-Product Attention ---
 
     // 1. Scores = (Q * K^T) / sqrt(d_k)
-    autograd::Node *k_t = contiguous(transpose(k_flat, 1, 2));
-    autograd::Node *scores = matmul(q_flat, k_t);
+    Node *k_t = contiguous(transpose(k_flat, 1, 2));
+    Node *scores = matmul(q_flat, k_t);
 
     float scale_factor = 1.0F / std::sqrt(static_cast<float>(d_head));
     // 2. Causal Masking (Optimized: reuse cached mask if possible)
@@ -141,19 +142,19 @@ autograd::Node *MultiHeadAttention::forward(autograd::Node *input, KVCache *cach
     current_mask = current_mask.slice(1, 0, total_seq_len);  // [seq_len, total_seq_len]
 
     // 2. Fused Masked Softmax (scaling, masking, and softmax in one step)
-    autograd::Node *attn_probs = fused_masked_softmax(scores, current_mask, scale_factor);
+    Node *attn_probs = fused_masked_softmax(scores, current_mask, scale_factor);
 
     // 4. Context = Attn * V
-    autograd::Node *context_flat = matmul(attn_probs, v_flat);
+    Node *context_flat = matmul(attn_probs, v_flat);
 
     // --- Unflatten and Merge ---
-    autograd::Node *context_heads = reshape(context_flat, {batch_size, n_heads, seq_len, d_head});
-    autograd::Node *context_transposed = contiguous(transpose(context_heads, 1, 2));
-    autograd::Node *context_merged = reshape(context_transposed, {batch_size, seq_len, d_model_});
+    Node *context_heads = reshape(context_flat, {batch_size, n_heads, seq_len, d_head});
+    Node *context_transposed = contiguous(transpose(context_heads, 1, 2));
+    Node *context_merged = reshape(context_transposed, {batch_size, seq_len, d_model_});
 
     // --- Output Projection ---
     return matmul(context_merged, w_o);
 }
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius
