@@ -6,14 +6,15 @@
 #include <memory>
 #include <vector>
 
-
 namespace serius {
+namespace core {
 namespace memory {
 
 class MemoryPool
 {
    public:
-    explicit MemoryPool(size_t initial_size = 1024 * 1024 * 128);  // Default 128MB
+    static constexpr size_t kDefaultPoolSize = 128ULL * 1024ULL * 1024ULL;
+    explicit MemoryPool(size_t initial_size = kDefaultPoolSize);
     ~MemoryPool();
 
     MemoryPool(const MemoryPool &) = delete;
@@ -24,6 +25,9 @@ class MemoryPool
 
     size_t capacity() const;
     size_t used() const;
+    size_t peak_used() const;
+    size_t allocation_count() const;
+    void print_stats() const;
 
     static constexpr size_t ALIGNMENT = 64;
 
@@ -33,7 +37,7 @@ class MemoryPool
         uint8_t *data;
         size_t size;
 
-        explicit Block(size_t s);
+        explicit Block(size_t alloc_size);
         ~Block();
     };
 
@@ -41,7 +45,10 @@ class MemoryPool
     size_t current_block_idx_;
     size_t current_offset_;
 
-    static size_t align_up(size_t x, size_t alignment);
+    size_t peak_used_{0};
+    size_t allocation_count_{0};
+
+    static size_t align_up(size_t val, size_t alignment);
     void grow(size_t min_size);
 
     friend class ScopedArena;
@@ -63,4 +70,5 @@ class ScopedArena
 };
 
 }  // namespace memory
+}  // namespace core
 }  // namespace serius

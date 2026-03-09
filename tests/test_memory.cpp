@@ -6,10 +6,12 @@
 #include "../src/memory/memory_pool.h"
 #include "../src/memory/pool_allocator.h"
 
-
 namespace serius {
+namespace core {
 namespace memory {
 namespace test {
+
+using core::Tensor;
 
 TEST(MemoryPoolTest, BasicAllocation)
 {
@@ -106,6 +108,38 @@ TEST(MemoryPoolTest, PoolAllocatorBasic)
     EXPECT_GT(pool.used(), 0);
 }
 
+TEST(MemoryPoolTest, StatsTracking)
+{
+    MemoryPool pool(1024);
+
+    EXPECT_EQ(pool.peak_used(), 0);
+    EXPECT_EQ(pool.allocation_count(), 0);
+
+    pool.allocate(128);
+    EXPECT_EQ(pool.peak_used(), 128);
+    EXPECT_EQ(pool.allocation_count(), 1);
+
+    pool.allocate(256);
+    EXPECT_EQ(pool.peak_used(), 384);
+    EXPECT_EQ(pool.allocation_count(), 2);
+
+    pool.reset();
+    EXPECT_EQ(pool.peak_used(), 384);  // Peak should not shrink on reset
+
+    pool.allocate(64);
+    EXPECT_EQ(pool.peak_used(), 384);  // Current used is 64, peak is still 384
+    EXPECT_EQ(pool.allocation_count(), 3);
+}
+
+TEST(MemoryPoolTest, PrintStats)
+{
+    MemoryPool pool(1024);
+    pool.allocate(128);
+    // Just verifying it doesn't crash or throw
+    EXPECT_NO_THROW(pool.print_stats());
+}
+
 }  // namespace test
 }  // namespace memory
+}  // namespace core
 }  // namespace serius

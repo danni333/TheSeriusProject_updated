@@ -5,10 +5,12 @@
 #include "../src/blas/blas.h"
 #include "../src/tensor/tensor.h"
 
-
 namespace serius {
+namespace core {
 namespace blas {
 namespace test {
+
+using core::Tensor;
 
 TEST(BlasTest, MatmulNaive)
 {
@@ -169,6 +171,61 @@ TEST(BlasTest, ElementWiseApply)
     EXPECT_FLOAT_EQ(B[1], 5.0f);
 }
 
+}
+
+TEST(BlasTest, ElementWiseSub)
+{
+    Tensor A({2, 2});
+    Tensor B({2, 2});
+    Tensor C({2, 2});
+
+    A.fill(5.0f);
+    B.fill(2.5f);
+
+    element_wise_sub(A, B, C);
+
+    for (size_t i = 0; i < C.size(); ++i) {
+        EXPECT_FLOAT_EQ(C[i], 2.5f);
+    }
+}
+
+TEST(BlasTest, ElementWiseDiv)
+{
+    Tensor A({2, 2});
+    Tensor B({2, 2});
+    Tensor C({2, 2});
+
+    A.fill(10.0f);
+    B.fill(2.0f);
+
+    element_wise_div(A, B, C);
+
+    for (size_t i = 0; i < C.size(); ++i) {
+        EXPECT_FLOAT_EQ(C[i], 5.0f);
+    }
+}
+
+TEST(BlasTest, ElementWiseOpenMP)
+{
+    // Test that the large tensor code-path with OpenMP and AVX works correctly
+    size_t large_size = 20000;
+    Tensor A({large_size});
+    Tensor B({large_size});
+    Tensor C({large_size});
+
+    A.fill(1.0f);
+    B.fill(2.0f);
+
+    element_wise_add(A, B, C);
+
+    for (size_t i = 0; i < large_size; ++i) {
+        if (std::abs(C[i] - 3.0f) > 1e-5f) {
+            FAIL() << "ElementWiseOpenMP failed at index " << i << ": expected 3.0, got " << C[i];
+        }
+    }
+}
+
 }  // namespace test
 }  // namespace blas
+}  // namespace core
 }  // namespace serius

@@ -7,20 +7,21 @@
 #include "../tensor/tensor.h"
 
 namespace serius {
+namespace core {
 namespace autograd {
 
 struct Node
 {
-    Tensor data;
-    Tensor grad;
+    core::Tensor data;
+    core::Tensor grad;
     std::vector<Node *> children;
     std::function<void()> backward_fn;
     bool requires_grad;
     std::string name;  // Optional, for debugging
 
     // Constructors
-    explicit Node(Tensor &&t, bool requires_grad = true);
-    explicit Node(const Tensor &t, bool requires_grad = true);
+    explicit Node(core::Tensor &&t, bool requires_grad = true);
+    explicit Node(const core::Tensor &t, bool requires_grad = true);
 
     // Initialize the gradient tensor with zeros (same shape as data)
     void zero_grad();
@@ -31,4 +32,5 @@ struct Node
 };
 
 }  // namespace autograd
+}  // namespace core
 }  // namespace serius

@@ -4,7 +4,7 @@
 #include "../tensor/tensor.h"
 
 namespace serius {
-namespace transformer {
+namespace model {
 
 class LayerNorm
 {
@@ -14,16 +14,16 @@ class LayerNorm
 
     /// Forward pass: normalizes along the last dimension
     /// Input shape: (seq_len, d_model) or (batch, seq_len, d_model)
-    autograd::Node *forward(autograd::Node *input) const;
+    core::autograd::Node *forward(core::autograd::Node *input) const;
 
     // Learnable parameters (managed by the layer)
-    autograd::Node *gamma;  // scale, shape: (d_model,)
-    autograd::Node *beta;   // shift, shape: (d_model,)
-    float eps;
+    core::autograd::Node *gamma_;  // scale, shape: (d_model,)
+    core::autograd::Node *beta_;   // shift, shape: (d_model,)
+    float eps_;
 
    private:
     size_t d_model_;
 };
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius

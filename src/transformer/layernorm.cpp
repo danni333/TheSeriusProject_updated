@@ -1,33 +1,34 @@
 #include "layernorm.h"
 
-#include <cmath>
-#include <stdexcept>
-
+#include "../../hal/backend.h"  // Added for hal::get_backend
 #include "../autograd/ops.h"
 
 namespace serius {
-namespace transformer {
+namespace model {
 
-LayerNorm::LayerNorm(size_t d_model, float eps) : d_model_(d_model), eps(eps)
+LayerNorm::LayerNorm(size_t d_model, float eps) : d_model_(d_model), eps_(eps)
 {
-    gamma = new autograd::Node(Tensor({d_model}, hal::DType::Float32), true);
-    beta = new autograd::Node(Tensor({d_model}, hal::DType::Float32), true);
-    gamma->data.fill(1.0F);
-    beta->data.fill(0.0F);
-    gamma->name = "layernorm_gamma";
-    beta->name = "layernorm_beta";
+    hal::IBackend *cpu = hal::get_backend(hal::DeviceType::CPU);
+    gamma_ = new core::autograd::Node(core::Tensor({d_model}, hal::DType::Float32));
+    beta_ = new core::autograd::Node(core::Tensor({d_model}, hal::DType::Float32));
+
+    gamma_->data.fill(1.0F);
+    beta_->data.zeros();
+    gamma_->name = "layernorm_gamma";
+    beta_->name = "layernorm_beta";
 }
 
 LayerNorm::~LayerNorm()
 {
-    delete gamma;
-    delete beta;
+    delete gamma_;
+    delete beta_;
 }
 
-autograd::Node *LayerNorm::forward(autograd::Node *input) const
+core::autograd::Node *LayerNorm::forward(core::autograd::Node *input) const
 {
-    return autograd::ops::layernorm(input, gamma, beta, eps);
+    // Simplified LN for example
+    return autograd::ops::layernorm(input, gamma_, beta_, eps_);
 }
 
-}  // namespace transformer
+}  // namespace model
 }  // namespace serius

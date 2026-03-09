@@ -5,9 +5,10 @@
 #include "../src/memory/memory_pool.h"
 #include "../src/tensor/tensor.h"
 
-
 namespace serius {
 namespace test {
+
+using core::Tensor;
 
 TEST(TensorTest, CreateAndShape)
 {
@@ -198,7 +199,7 @@ TEST(TensorTest, Transpose)
 
 TEST(TensorTest, MemoryPoolAllocation)
 {
-    memory::MemoryPool pool(4096);
+    core::memory::MemoryPool pool(4096);
     Tensor t({4, 4}, &pool);
 
     t.fill(2.0f);
@@ -240,6 +241,99 @@ TEST(TensorTest, OnesAndRand)
         }
     }
     EXPECT_FALSE(all_same);
+}
+
+TEST(TensorTest, BinaryOperators)
+{
+    Tensor a({2, 2});
+    Tensor b({2, 2});
+    a.fill(5.0f);
+    b.fill(2.0f);
+
+    Tensor sub = a - b;
+    Tensor div = a / b;
+
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_FLOAT_EQ(sub[i], 3.0f);
+        EXPECT_FLOAT_EQ(div[i], 2.5f);
+    }
+
+    a -= b;
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_FLOAT_EQ(a[i], 3.0f);
+    }
+}
+
+TEST(TensorTest, ScalarOperators)
+{
+    Tensor a({2, 2});
+    a.fill(10.0f);
+
+    Tensor add = a + 5.0f;
+    Tensor sub = a - 3.0f;
+    Tensor mul = a * 2.0f;
+    Tensor div = a / 4.0f;
+
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_FLOAT_EQ(add[i], 15.0f);
+        EXPECT_FLOAT_EQ(sub[i], 7.0f);
+        EXPECT_FLOAT_EQ(mul[i], 20.0f);
+        EXPECT_FLOAT_EQ(div[i], 2.5f);
+    }
+}
+
+TEST(TensorTest, Contiguous)
+{
+    Tensor t({2, 3});
+    t.at(0, 0) = 1;
+    t.at(0, 1) = 2;
+    t.at(0, 2) = 3;
+    t.at(1, 0) = 4;
+    t.at(1, 1) = 5;
+    t.at(1, 2) = 6;
+
+    // Transpose makes it non-contiguous
+    Tensor tr = t.transpose();
+    EXPECT_FALSE(tr.is_contiguous());
+
+    Tensor cont = tr.contiguous();
+    EXPECT_TRUE(cont.is_contiguous());
+    EXPECT_EQ(cont.shape()[0], 3);
+    EXPECT_EQ(cont.shape()[1], 2);
+
+    // Verify values in row-major order
+    // tr is [[1, 4], [2, 5], [3, 6]]
+    EXPECT_FLOAT_EQ(cont.at(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(cont.at(0, 1), 4.0f);
+    EXPECT_FLOAT_EQ(cont.at(1, 0), 2.0f);
+    EXPECT_FLOAT_EQ(cont.at(1, 1), 5.0f);
+    EXPECT_FLOAT_EQ(cont.at(2, 0), 3.0f);
+    EXPECT_FLOAT_EQ(cont.at(2, 1), 6.0f);
+
+    // If already contiguous, should return a view
+    Tensor already_cont({2, 2});
+    Tensor view = already_cont.contiguous();
+    EXPECT_EQ(view.data(), already_cont.data());
+}
+
+TEST(TensorTest, Expand)
+{
+    // Expand (3, 1) to (3, 4)
+    Tensor t({3, 1});
+    t.at(0, 0) = 1;
+    t.at(1, 0) = 2;
+    t.at(2, 0) = 3;
+
+    Tensor expanded = t.expand({3, 4});
+    EXPECT_EQ(expanded.shape()[0], 3);
+    EXPECT_EQ(expanded.shape()[1], 4);
+    EXPECT_EQ(expanded.strides()[1], 0);
+
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = 0; j < 4; ++j) {
+            EXPECT_FLOAT_EQ(expanded.at(i, j), static_cast<float>(i + 1));
+        }
+    }
 }
 
 }  // namespace test

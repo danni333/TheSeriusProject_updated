@@ -15,6 +15,7 @@
 #endif
 
 namespace serius {
+namespace core {
 
 // Define a named constant for memory alignment
 constexpr size_t MEMORY_ALIGNMENT = 64;
@@ -973,4 +974,5 @@ void Tensor::syncToHost() const
     }
 }
 
+}  // namespace core
 }  // namespace serius

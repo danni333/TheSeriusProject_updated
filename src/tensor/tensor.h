@@ -10,9 +10,12 @@
 #include <string>
 #include <vector>
 
+#include "../common/serius_check.h"
 #include "../hal/device.h"
 
+
 namespace serius {
+namespace core {
 
 // Forward declaration
 namespace memory {
@@ -234,4 +237,5 @@ class Tensor
     size_t compute_offset(const std::vector<size_t> &indices) const;
 };
 
+}  // namespace core
 }  // namespace serius

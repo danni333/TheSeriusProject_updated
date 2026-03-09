@@ -3,6 +3,7 @@
 #include "../tensor/tensor.h"
 
 namespace serius {
+namespace core {
 namespace blas {
 
 // --- Matrix Multiplication ---
@@ -67,4 +68,5 @@ Tensor scale(const Tensor &A, float alpha);
 Tensor element_wise_apply(const Tensor &A, float (*func)(float));
 
 }  // namespace blas
+}  // namespace core
 }  // namespace serius

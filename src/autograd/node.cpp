@@ -1,21 +1,23 @@
 #include "node.h"
 
 namespace serius {
+namespace core {
 namespace autograd {
 
-Node::Node(Tensor &&t, bool requires_grad)
+Node::Node(core::Tensor &&t, bool requires_grad)
     : data(std::move(t)), grad(std::vector<size_t>{}), requires_grad(requires_grad)
 {
     if (requires_grad) {
-        grad = Tensor(data.shape());
+        grad = core::Tensor(data.shape());
         // Constructor already zero-initializes the memory.
     }
 }
 
-Node::Node(const Tensor &t, bool requires_grad) : data(t), grad(std::vector<size_t>{}), requires_grad(requires_grad)
+Node::Node(const core::Tensor &t, bool requires_grad)
+    : data(t), grad(std::vector<size_t>{}), requires_grad(requires_grad)
 {
     if (requires_grad) {
-        grad = Tensor(data.shape());
+        grad = core::Tensor(data.shape());
     }
 }
 
@@ -27,4 +29,5 @@ void Node::zero_grad()
 }
 
 }  // namespace autograd
+}  // namespace core
 }  // namespace serius
