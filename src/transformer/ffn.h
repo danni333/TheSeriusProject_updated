@@ -20,6 +20,9 @@ class FFN
     /// Returns: (seq_len, d_model)
     Node *forward(Node *input) const;
 
+    /// Optimized forward pass utilizing fused_bias_gelu for the inner activation
+    Node *forward_optimized(Node *input) const;
+
     // Parameters
     Node *w1;  // (d_model, d_ff)
     Node *b1;  // (d_ff,)

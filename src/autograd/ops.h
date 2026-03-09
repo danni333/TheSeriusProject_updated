@@ -25,6 +25,7 @@ Node *layernorm(Node *input, Node *gamma, Node *beta, float eps = DEFAULT_EPS);
 Node *rmsnorm(Node *input, Node *gamma, float eps = DEFAULT_EPS);
 Node *fused_add_layernorm(Node *input, Node *residual, Node *gamma, Node *beta, float eps = DEFAULT_EPS);
 Node *fused_masked_softmax(Node *input, const core::Tensor &mask, float scale = 1.0F);
+Node *fused_bias_gelu(Node *input, Node *bias);
 
 struct RoPEResult
 {

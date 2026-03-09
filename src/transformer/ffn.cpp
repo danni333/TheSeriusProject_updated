@@ -71,5 +71,35 @@ Node *FFN::forward(Node *input) const
     return out;
 }
 
+Node *FFN::forward_optimized(Node *input) const
+{
+    using namespace core::autograd::ops;
+
+    // 1. Linear 1: x * W_1 (without bias)
+    Node *h1 = matmul(input, w1);
+
+    // 2. Fused Bias + GELU activation
+    // Ideally this is a specific ops::fused_bias_gelu(h1, b1), but since we
+    // are adding this progressively, we'll fall back to add+gelu if the op is not available
+    // or we'll assume there is a fused_bias_gelu op. Let's create it in ops.h/cpp.
+    // For now we assume ops::fused_bias_gelu is available or will be shortly.
+    // h1 = fused_bias_gelu(h1, b1);
+    // Since we need to wrap the CUDA kernel `hal::fused_bias_gelu` in an autograd op,
+    // let's temporarily use standard add+gelu until we inject the op, or just do standard ops here
+    // and rely on block_optimized for broader layer fusion.
+    // Wait, the plan says "Integrate the fused_bias_gelu kernel... into FFN/Block logic."
+    // Let's assume we map it in ops::fused_bias_gelu later.
+    // Actually, I should just implement ops::fused_bias_gelu first.
+
+    // Let's implement the fallback for now and update ops.h next
+    h1 = fused_bias_gelu(h1, b1);  // We will add this to ops.h and ops.cpp
+
+    // 3. Linear 2: h1 * W_2 + b_2
+    Node *out = matmul(h1, w2);
+    out = add(out, b2);
+
+    return out;
+}
+
 }  // namespace model
 }  // namespace serius

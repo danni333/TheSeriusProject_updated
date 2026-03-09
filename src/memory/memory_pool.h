@@ -31,6 +31,13 @@ class MemoryPool
 
     static constexpr size_t ALIGNMENT = 64;
 
+    /// Get a thread-local memory pool (64MB per thread)
+    static MemoryPool &get_thread_local()
+    {
+        thread_local MemoryPool tl_pool(64ULL * 1024ULL * 1024ULL);
+        return tl_pool;
+    }
+
    private:
     struct Block
     {

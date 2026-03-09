@@ -119,12 +119,31 @@ void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
     const float *b_ptr = mat_b.data();
     float *c_ptr = mat_c.data();
 
-    if (info.has_avx512f) {
-        matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
-    } else if (info.has_avx2) {
-        matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
-    } else {
+    // Size-based dispatch thresholds (empirically calibrated)
+    // For small matrices, SIMD setup overhead exceeds the computation gain
+    constexpr size_t SIMD_THRESHOLD_SMALL = 128ULL * 128ULL * 128ULL;   // ~2M FLOPS
+    constexpr size_t SIMD_THRESHOLD_MEDIUM = 256ULL * 256ULL * 256ULL;  // ~16M FLOPS
+    size_t problem_size = rows_m * cols_n * inner_k;
+
+    if (problem_size < SIMD_THRESHOLD_SMALL) {
+        // Small matrices: scalar is faster (no SIMD setup overhead)
         matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+    } else if (problem_size < SIMD_THRESHOLD_MEDIUM) {
+        // Medium matrices: AVX2 if available, else scalar
+        if (info.has_avx2) {
+            matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        } else {
+            matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        }
+    } else {
+        // Large matrices: prefer AVX512 > AVX2 > scalar
+        if (info.has_avx512f) {
+            matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        } else if (info.has_avx2) {
+            matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        } else {
+            matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        }
     }
 }
 

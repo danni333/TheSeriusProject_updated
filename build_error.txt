@@ -3,12 +3,37 @@ Versione di MSBuild 17.14.40+3e7442088 per .NET Framework
   gtest.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest.lib
   gtest_main.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\lib\Release\gtest_main.lib
   spdlog.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\spdlog-build\Release\spdlog.lib
-  ops.cpp
-  dispatch.cpp
-  elementwise.cpp
-  matmul_scalar.cpp
-  tensor.cpp
-C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.cpp(408,16): error C2220: l'avviso seguente ├¿ considerato come errore [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
-C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.cpp(408,16): warning C4267: 'inizializzazione': conversione da 'size_t' a 'int'. Possibile perdita di dati. [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\serius_core.vcxproj]
-  ffn.cpp
-  Generazione del codice in corso...
+  serius_core.vcxproj -> C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\src\Release\serius_core.lib
+  test_amp.cpp
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(16,12): error C2512: 'serius::core::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_amp.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(24,7):
+      vedere la dichiarazione di 'serius::core::Tensor'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(17,12): error C2512: 'serius::core::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_amp.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(24,7):
+      vedere la dichiarazione di 'serius::core::Tensor'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(18,12): error C2512: 'serius::core::Tensor': non ├¿ disponibile alcun costruttore predefinito appropriato [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_amp.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(24,7):
+      vedere la dichiarazione di 'serius::core::Tensor'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(60,17): error C2665: 'serius::core::Tensor::ones': nessuna funzione di overload pu├▓ convertire tutti i tipi di argomento [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_amp.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(165,19):
+      potrebbe essere 'serius::core::Tensor serius::core::Tensor::ones(const std::vector<size_t,std::allocator<size_t>> &,serius::core::memory::MemoryPool *)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(60,17):
+          'serius::core::Tensor serius::core::Tensor::ones(const std::vector<size_t,std::allocator<size_t>> &,serius::core::memory::MemoryPool *)': impossibile convertire l'argomento 2 da 'serius::hal::DType' a 'serius::core::memory::MemoryPool *'
+              C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(60,42):
+              La conversione da tipo integrale a tipo puntatore richiede reinterpret_cast, cast di tipo C o cast di tipo funzione tra parentesi
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(60,17):
+      durante la ricerca di corrispondenza con l'elenco di argomenti '(initializer list, serius::hal::DType)'
+  
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(61,17): error C2665: 'serius::core::Tensor::ones': nessuna funzione di overload pu├▓ convertire tutti i tipi di argomento [C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\tests\test_amp.vcxproj]
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\src\tensor\tensor.h(165,19):
+      potrebbe essere 'serius::core::Tensor serius::core::Tensor::ones(const std::vector<size_t,std::allocator<size_t>> &,serius::core::memory::MemoryPool *)'
+          C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(61,17):
+          'serius::core::Tensor serius::core::Tensor::ones(const std::vector<size_t,std::allocator<size_t>> &,serius::core::memory::MemoryPool *)': impossibile convertire l'argomento 2 da 'serius::hal::DType' a 'serius::core::memory::MemoryPool *'
+              C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(61,42):
+              La conversione da tipo integrale a tipo puntatore richiede reinterpret_cast, cast di tipo C o cast di tipo funzione tra parentesi
+      C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(61,17):
+      durante la ricerca di corrispondenza con l'elenco di argomenti '(initializer list, serius::hal::DType)'
+  

@@ -39,13 +39,25 @@ data/
 *.safetensors
 *.bin
 
-# Logs / Test Output
+# Logs / Test Output / Build Output
 *.log
-test_output*.txt
-build_error*.log
+*.txt
+!CMakeLists.txt
+!README.md
+!LICENSE
+
+# Python scripts (one-off fixes)
+fix_elementwise.py
+
+# Documentation (generated/internal)
+docs/
+AUDIT_IMPLEMENTATION_RECOMMENDATIONS.md
 
 # Misc
 .DS_Store
 Thumbs.db
 *.tmp
 .gemini/
+
+# Todo / scratch notes
+todo/

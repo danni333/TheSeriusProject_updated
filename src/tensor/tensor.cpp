@@ -532,6 +532,49 @@ Tensor Tensor::copy() const
     return Tensor(*this);  // Uses copy constructor
 }
 
+Tensor Tensor::cast(hal::DType target_dtype) const
+{
+    if (target_dtype == dtype_) {
+        return copy();  // No conversion needed
+    }
+
+    Tensor result(shape_, target_dtype);
+    if (size_ == 0) {
+        return result;
+    }
+
+    // Ensure CPU data is up to date
+    syncToHost();
+
+    if (dtype_ == hal::DType::Float32 && target_dtype == hal::DType::Float16) {
+        quant::convert_float_to_half(static_cast<const float *>(data_), static_cast<uint16_t *>(result.raw_data()),
+                                     size_);
+    } else if (dtype_ == hal::DType::Float32 && target_dtype == hal::DType::BFloat16) {
+        quant::convert_float_to_bf16(static_cast<const float *>(data_), static_cast<uint16_t *>(result.raw_data()),
+                                     size_);
+    } else if (dtype_ == hal::DType::Float16 && target_dtype == hal::DType::Float32) {
+        quant::convert_half_to_float(static_cast<const uint16_t *>(data_), static_cast<float *>(result.raw_data()),
+                                     size_);
+    } else if (dtype_ == hal::DType::BFloat16 && target_dtype == hal::DType::Float32) {
+        quant::convert_bf16_to_float(static_cast<const uint16_t *>(data_), static_cast<float *>(result.raw_data()),
+                                     size_);
+    } else if (dtype_ == hal::DType::Float16 && target_dtype == hal::DType::BFloat16) {
+        // FP16 → FP32 → BF16 (two-step conversion)
+        std::vector<float> tmp(size_);
+        quant::convert_half_to_float(static_cast<const uint16_t *>(data_), tmp.data(), size_);
+        quant::convert_float_to_bf16(tmp.data(), static_cast<uint16_t *>(result.raw_data()), size_);
+    } else if (dtype_ == hal::DType::BFloat16 && target_dtype == hal::DType::Float16) {
+        // BF16 → FP32 → FP16 (two-step conversion)
+        std::vector<float> tmp(size_);
+        quant::convert_bf16_to_float(static_cast<const uint16_t *>(data_), tmp.data(), size_);
+        quant::convert_float_to_half(tmp.data(), static_cast<uint16_t *>(result.raw_data()), size_);
+    } else {
+        throw std::runtime_error("Unsupported dtype conversion");
+    }
+
+    return result;
+}
+
 Tensor Tensor::sum(size_t dim) const
 {
     if (dim >= shape_.size()) {
@@ -952,6 +995,8 @@ Tensor Tensor::operator/(float scalar) const
 
 void Tensor::syncToDevice() const
 {
+    if (size_ == 0 || data_ == nullptr) return;  // Nothing to sync
+
     if (location_ == DataLocation::GPU || location_ == DataLocation::SYNCED) {
         return;  // Already on GPU
     }
@@ -974,6 +1019,8 @@ void Tensor::syncToDevice() const
 
 void Tensor::syncToHost() const
 {
+    if (size_ == 0 || data_gpu_ == nullptr) return;  // Nothing to sync
+
     if (location_ == DataLocation::CPU || location_ == DataLocation::SYNCED) {
         return;  // Already on CPU
     }

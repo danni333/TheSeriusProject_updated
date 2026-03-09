@@ -13,7 +13,6 @@
 #include "../common/serius_check.h"
 #include "../hal/device.h"
 
-
 namespace serius {
 namespace core {
 
@@ -144,6 +143,9 @@ class Tensor
 
     /// Deep copy
     Tensor copy() const;
+
+    /// Cast to a different data type (FP32 ↔ FP16 ↔ BF16)
+    Tensor cast(hal::DType target_dtype) const;
 
     // --- Fill & Initialize ---
 

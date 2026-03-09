@@ -16,6 +16,7 @@ add_library(serius_core
     transformer/ffn.cpp
     transformer/kv_cache.cpp
     transformer/block.cpp
+    transformer/block_optimized.cpp
     transformer/model.cpp
     tokenizer/bpe.cpp
     data/dataloader.cpp
@@ -27,6 +28,7 @@ add_library(serius_core
     quant/conversions.cpp
     quant/int4.cpp
     quant/dequant_matmul.cpp
+    debug/tensor_logger.cpp
 )
 
 if(SERIUS_USE_CUDA)

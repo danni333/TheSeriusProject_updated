@@ -210,5 +210,36 @@ void fused_masked_softmax(void *x, const void *mask, size_t batch_heads, size_t 
     }
 }
 
+// --- Fused Bias + GELU ---
+
+template <typename T>
+__global__ void fused_bias_gelu_kernel(T *x, const T *bias, int n, int bias_size)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        float val = to_float(x[idx]) + to_float(bias[idx % bias_size]);
+        // Fast GELU approximation: 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+        float gelu = 0.5f * val * (1.0f + tanhf(0.7978845608f * (val + 0.044715f * val * val * val)));
+        x[idx] = (T)gelu;
+    }
+}
+
+void fused_bias_gelu(void *x, const void *bias, size_t n, size_t bias_size, DType dtype, cudaStream_t stream)
+{
+    int block_size = 256;
+    int grid_size = (int)((n + block_size - 1) / block_size);
+
+    if (dtype == DType::Float16) {
+        fused_bias_gelu_kernel<<<grid_size, block_size, 0, stream>>>((__half *)x, (const __half *)bias, (int)n,
+                                                                     (int)bias_size);
+    } else if (dtype == DType::BFloat16) {
+        fused_bias_gelu_kernel<<<grid_size, block_size, 0, stream>>>((__nv_bfloat16 *)x, (const __nv_bfloat16 *)bias,
+                                                                     (int)n, (int)bias_size);
+    } else {  // DType::Float32
+        fused_bias_gelu_kernel<<<grid_size, block_size, 0, stream>>>((float *)x, (const float *)bias, (int)n,
+                                                                     (int)bias_size);
+    }
+}
+
 }  // namespace hal
 }  // namespace serius

@@ -25,6 +25,12 @@ target_link_libraries(test_kv_cache_logic PRIVATE gtest_main serius_core)
 add_executable(test_transformer test_transformer.cpp)
 target_link_libraries(test_transformer PRIVATE gtest_main serius_core)
 
+add_executable(test_transformer_optim test_transformer_optim.cpp)
+target_link_libraries(test_transformer_optim PRIVATE serius_core GTest::gtest_main)
+
+add_executable(test_amp test_amp.cpp)
+target_link_libraries(test_amp PRIVATE gtest_main serius_core)
+
 # Benchmarks (no gtest needed)
 add_executable(bench_matmul bench_matmul.cpp)
 target_link_libraries(bench_matmul PRIVATE serius_core)
@@ -45,6 +51,9 @@ gtest_discover_tests(test_tensor DISCOVERY_TIMEOUT 10)
 gtest_discover_tests(test_blas DISCOVERY_TIMEOUT 10)
 gtest_discover_tests(test_autograd DISCOVERY_TIMEOUT 10)
 gtest_discover_tests(test_transformer DISCOVERY_TIMEOUT 10)
+gtest_discover_tests(test_transformer_optim DISCOVERY_TIMEOUT 10)
+gtest_discover_tests(test_amp DISCOVERY_TIMEOUT 10)
+
 
 # Tokenizer Tests (converted from catch2 to gtest)
 add_executable(test_tokenizer test_tokenizer.cpp)

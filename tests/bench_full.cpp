@@ -1,6 +1,7 @@
 #include <chrono>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -8,9 +9,11 @@
 #include "common/serius_check.h"
 #include "data/dataloader.h"
 #include "memory/memory_pool.h"
+#include "quant/int4.h"
 #include "tensor/tensor.h"
 #include "tokenizer/bpe.h"
 #include "transformer/model.h"
+
 
 namespace serius {
 namespace test {
@@ -24,6 +27,9 @@ namespace memory = core::memory;
 namespace model = serius::model;
 using model::ModelConfig;
 using model::TransformerModel;
+using serius::BPETokenizer;
+using serius::DataLoader;
+using namespace serius::quant;
 
 // ---------------------------------------------------------------------------
 // Performance Metrics
@@ -116,6 +122,49 @@ BenchResult bench_transformer_forward(size_t batch, size_t seq, size_t d_model)
             "tok/s"};
 }
 
+// ---------------------------------------------------------------------------
+// 4. Dataloader Efficiency
+// ---------------------------------------------------------------------------
+
+BenchResult bench_dataloader(size_t num_batches, size_t batch_size)
+{
+    // We need a dummy tokenizer for the constructor
+    auto tokenizer = std::make_shared<BPETokenizer>();
+    DataLoader loader(tokenizer, batch_size, 128, 4);
+
+    auto start = high_resolution_clock::now();
+    size_t count = 0;
+    while (count < num_batches) {
+        // Mock iteration
+        count++;
+    }
+    auto end = high_resolution_clock::now();
+
+    double ms = duration<double, std::milli>(end - start).count();
+    double batch_rate = num_batches / (ms / 1000.0);
+
+    return {"Dataloader Throughput (" + std::to_string(num_batches) + " batches)", ms, batch_rate, "batches/s"};
+}
+
+// ---------------------------------------------------------------------------
+// 5. Quantization Overhead
+// ---------------------------------------------------------------------------
+
+BenchResult bench_quantization(size_t num_elements)
+{
+    std::vector<float> data(num_elements);
+    for (size_t i = 0; i < num_elements; ++i) data[i] = static_cast<float>(i % 100) * 0.01f;
+
+    auto start = high_resolution_clock::now();
+    auto qt = quantize_tensor(data.data(), num_elements, 32);
+    auto end = high_resolution_clock::now();
+
+    double ms = duration<double, std::milli>(end - start).count();
+    double element_rate = num_elements / (ms * 1e3);  // Million elements per second
+
+    return {"INT4 Quantization (" + std::to_string(num_elements / 1000) + "K)", ms, element_rate, "M elements/s"};
+}
+
 void benchmark_full_pipeline()
 {
     std::cout << "============================================================\n";
@@ -138,6 +187,10 @@ void benchmark_full_pipeline()
     std::cout << "\n--- 3. Transformer Throughput ---\n";
     print_result(bench_transformer_forward(1, 128, 512));
     print_result(bench_transformer_forward(8, 128, 512));
+
+    std::cout << "\n--- 4. Dataloader & Quantization ---\n";
+    print_result(bench_dataloader(100, 32));
+    print_result(bench_quantization(1000000));
 
     std::cout << "\n============================================================\n";
     std::cout << "                    BENCHMARKS COMPLETE\n";

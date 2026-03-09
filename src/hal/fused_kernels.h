@@ -24,5 +24,12 @@ void fused_layernorm_residual(void *x, const void *residual, const void *gamma, 
 void fused_masked_softmax(void *x, const void *mask, size_t batch_heads, size_t seq_q, size_t seq_k, DType dtype,
                           float scale, cudaStream_t stream = nullptr);
 
+// Fused Bias + GELU activation
+// x: input tensor (receives result in-place)
+// bias: bias vector (size = hidden_dim, broadcasted across batch)
+// n: total number of elements
+// bias_size: size of the bias vector (hidden_dim)
+void fused_bias_gelu(void *x, const void *bias, size_t n, size_t bias_size, DType dtype, cudaStream_t stream = nullptr);
+
 }  // namespace hal
 }  // namespace serius

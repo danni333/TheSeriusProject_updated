@@ -142,5 +142,36 @@ TEST(MemoryPoolTest, PrintStats)
     EXPECT_NO_THROW(pool.print_stats());
 }
 
+TEST(MemoryPoolTest, ThreadLocalPool)
+{
+    // Ensure the main thread has access to a working pool
+    MemoryPool &main_pool = MemoryPool::get_thread_local();
+    void *ptr1 = main_pool.allocate(128);
+    EXPECT_NE(ptr1, nullptr);
+    size_t main_used = main_pool.used();
+    EXPECT_EQ(main_used, 128);
+
+    // Let's test thread independence if OpenMP is enabled,
+    // otherwise we just tested that get_thread_local() compiles and works.
+#ifdef _OPENMP
+    bool thread_independent = true;
+#pragma omp parallel num_threads(2)
+    {
+        MemoryPool &thread_pool = MemoryPool::get_thread_local();
+        void *t_ptr = thread_pool.allocate(256);
+        EXPECT_NE(t_ptr, nullptr);
+
+        // At this point each thread should have used 256 bytes in its own local pool
+        // The main thread's local pool might be used since it can participate in the thread team
+        if (omp_get_thread_num() != 0) {
+            if (thread_pool.used() != 256) {
+                thread_independent = false;
+            }
+        }
+    }
+    EXPECT_TRUE(thread_independent);
+#endif
+}
+
 }  // namespace test
 }  // namespace serius
