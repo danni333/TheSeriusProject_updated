@@ -35,6 +35,10 @@ add_library(serius_core
     infer/sampler.cpp
     safety/guardrails.cpp
     debug/nan_debugger.cpp
+    distributed/local_comm.cpp
+    distributed/data_parallel.cpp
+    distributed/pipeline.cpp
+    distributed/tensor_parallel.cpp
 )
 
 if(SERIUS_USE_CUDA)
@@ -51,6 +55,21 @@ if(SERIUS_USE_VULKAN)
     target_sources(serius_core PRIVATE 
         hal/vulkan_backend.cpp
     )
+endif()
+
+if(SERIUS_USE_NCCL)
+    target_sources(serius_core PRIVATE
+        distributed/nccl_comm.cpp
+    )
+    # Link NCCL library
+    target_link_libraries(serius_core PUBLIC nccl)
+endif()
+
+if(SERIUS_USE_MPI)
+    target_sources(serius_core PRIVATE
+        distributed/mpi_comm.cpp
+    )
+    target_link_libraries(serius_core PUBLIC MPI::MPI_CXX)
 endif()
 
 if(SERIUS_USE_METAL)

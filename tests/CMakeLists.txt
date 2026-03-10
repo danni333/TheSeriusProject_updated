@@ -70,6 +70,9 @@ target_link_libraries(test_kv_cache_logic PRIVATE serius_core gtest_main)
 add_executable(test_memory test_memory.cpp)
 target_link_libraries(test_memory PRIVATE serius_core gtest_main)
 
+add_executable(test_distributed test_distributed.cpp)
+target_link_libraries(test_distributed PRIVATE serius_core gtest_main)
+
 # Benchmarks
 add_executable(bench_full bench_full.cpp)
 target_link_libraries(bench_full PRIVATE serius_core)
@@ -106,3 +109,4 @@ gtest_discover_tests(test_training)
 gtest_discover_tests(test_fused_cuda)
 gtest_discover_tests(test_kv_cache_logic)
 gtest_discover_tests(test_memory)
+gtest_discover_tests(test_distributed)
