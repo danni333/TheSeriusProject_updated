@@ -2,6 +2,7 @@
 
 #include <iomanip>
 #include <iostream>
+#include <optional>
 
 #include "../autograd/engine.h"
 #include "../autograd/ops.h"
@@ -36,22 +37,35 @@ void Trainer::train(DataLoader &dataloader)
 
             // Forward pass
             core::autograd::Node *logits = model_.forward(input_node);
-
-            // Cross entropy handles (B, S, V) and (B, S) natively.
             core::autograd::Node *loss_node = core::autograd::ops::cross_entropy(logits, target_node);
 
-            // 4. Backward pass
-            core::autograd::backward(loss_node);
+            // 4. Backward pass (with AMP scaling if enabled)
+            core::autograd::Node *scaled_loss = loss_node;
+            if (config_.use_amp) {
+                scaled_loss = amp_.scale(loss_node);
+            }
 
-            // 5. Gradient clipping
-            clip_grad_norm(model_.parameters(), config_.grad_clip);
+            core::autograd::backward(scaled_loss);
 
-            // 6. Update learning rate
+            // 5. AMP Unscale and Update
+            bool should_step = true;
+            if (config_.use_amp) {
+                should_step = amp_.unscale_and_update(model_.parameters());
+            }
+
             float current_lr = scheduler_.get_lr(current_step_);
-            optimizer_.set_lr(current_lr);
 
-            // 7. Optimizer step
-            optimizer_.step();
+            if (should_step) {
+                // 6. Gradient clipping
+                clip_grad_norm(model_.parameters(), config_.grad_clip);
+                optimizer_.set_lr(current_lr);
+
+                // 8. Optimizer step
+                optimizer_.step();
+            } else {
+                std::cout << "Warning: Gradient overflow detected at step " << current_step_
+                          << ". Skipping optimizer step.\n";
+            }
 
             // 8. Logging
             const int LOG_INTERVAL = 10;
@@ -74,6 +88,21 @@ void Trainer::train(DataLoader &dataloader)
             // For now, we'll assume they need manual cleanup if not managed.
             // ... cleanup logic (topological sort delete)
         }
+    }
+}
+
+void Trainer::freeze_parameters(size_t count)
+{
+    std::vector<core::autograd::Node *> params = model_.parameters();
+    for (size_t i = 0; i < count && i < params.size(); ++i) {
+        params[i]->requires_grad = false;
+    }
+}
+
+void Trainer::set_parameters_requires_grad(bool value)
+{
+    for (core::autograd::Node *p : model_.parameters()) {
+        p->requires_grad = value;
     }
 }
 

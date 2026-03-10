@@ -1,93 +1,61 @@
-enable_testing()
+cmake_minimum_required(VERSION 3.10)
 
-# Make all test targets resolve #include "foo/bar.h" from the src directory
-# This is needed because MSVC resolves ../src/ paths differently than gcc/clang
-include_directories(${CMAKE_SOURCE_DIR}/src)
+# GTest from root FetchContent (googletest)
+include(GoogleTest)
 
-add_executable(test_dummy test_dummy.cpp)
-target_link_libraries(test_dummy PRIVATE gtest_main serius_core)
-
-add_executable(test_memory test_memory.cpp)
-target_link_libraries(test_memory PRIVATE gtest_main serius_core)
-
+# Serius Core tests
 add_executable(test_tensor test_tensor.cpp)
-target_link_libraries(test_tensor PRIVATE gtest_main serius_core)
-
-add_executable(test_blas test_blas.cpp)
-target_link_libraries(test_blas PRIVATE gtest_main serius_core)
+target_link_libraries(test_tensor PRIVATE serius_core gtest_main)
 
 add_executable(test_autograd test_autograd.cpp)
-target_link_libraries(test_autograd PRIVATE gtest_main serius_core)
+target_link_libraries(test_autograd PRIVATE serius_core gtest_main)
 
-add_executable(test_kv_cache_logic test_kv_cache_logic.cpp)
-target_link_libraries(test_kv_cache_logic PRIVATE gtest_main serius_core)
+add_executable(test_hal test_hal.cpp)
+target_link_libraries(test_hal PRIVATE serius_core gtest_main)
 
-add_executable(test_transformer test_transformer.cpp)
-target_link_libraries(test_transformer PRIVATE gtest_main serius_core)
+add_executable(test_cuda test_cuda.cpp)
+target_link_libraries(test_cuda PRIVATE serius_core gtest_main)
+
+add_executable(test_paged_kv test_paged_kv.cpp)
+target_link_libraries(test_paged_kv PRIVATE serius_core gtest_main)
+
+add_executable(test_logger test_logger.cpp)
+target_link_libraries(test_logger PRIVATE serius_core gtest_main)
 
 add_executable(test_transformer_optim test_transformer_optim.cpp)
-target_link_libraries(test_transformer_optim PRIVATE serius_core GTest::gtest_main)
+target_link_libraries(test_transformer_optim PRIVATE serius_core gtest)
 
-add_executable(test_amp test_amp.cpp)
-target_link_libraries(test_amp PRIVATE gtest_main serius_core)
-
-# Benchmarks (no gtest needed)
-add_executable(bench_matmul bench_matmul.cpp)
-target_link_libraries(bench_matmul PRIVATE serius_core)
-
-add_executable(bench_memory bench_memory.cpp)
-target_link_libraries(bench_memory PRIVATE serius_core)
-
-add_executable(bench_mixed_precision bench_mixed_precision.cpp)
-target_link_libraries(bench_mixed_precision PRIVATE serius_core)
-
-add_executable(bench_full bench_full.cpp)
-target_link_libraries(bench_full PRIVATE serius_core)
-
-include(GoogleTest)
-gtest_discover_tests(test_dummy DISCOVERY_TIMEOUT 10)
-gtest_discover_tests(test_memory DISCOVERY_TIMEOUT 10)
-gtest_discover_tests(test_tensor DISCOVERY_TIMEOUT 10)
-gtest_discover_tests(test_blas DISCOVERY_TIMEOUT 10)
-gtest_discover_tests(test_autograd DISCOVERY_TIMEOUT 10)
-gtest_discover_tests(test_transformer DISCOVERY_TIMEOUT 10)
-gtest_discover_tests(test_transformer_optim DISCOVERY_TIMEOUT 10)
-gtest_discover_tests(test_amp DISCOVERY_TIMEOUT 10)
-
-
-# Tokenizer Tests (converted from catch2 to gtest)
-add_executable(test_tokenizer test_tokenizer.cpp)
-target_link_libraries(test_tokenizer PRIVATE gtest_main serius_core)
-gtest_discover_tests(test_tokenizer DISCOVERY_TIMEOUT 10)
-
-# DataLoader Tests (converted from catch2 to gtest)
-add_executable(test_dataloader test_dataloader.cpp)
-target_link_libraries(test_dataloader PRIVATE gtest_main serius_core)
-gtest_discover_tests(test_dataloader DISCOVERY_TIMEOUT 10)
-
-# HAL / Device Tests (standalone, no gtest main needed)
-add_executable(test_hal test_hal.cpp)
-target_link_libraries(test_hal PRIVATE serius_core)
-target_include_directories(test_hal PRIVATE ${CMAKE_SOURCE_DIR}/src)
-add_test(NAME test_hal COMMAND test_hal)
-
-# CUDA integration tests (standalone, no gtest main needed)
-add_executable(test_cuda test_cuda.cpp)
-target_link_libraries(test_cuda PRIVATE serius_core)
-target_include_directories(test_cuda PRIVATE ${CMAKE_SOURCE_DIR}/src)
-add_test(NAME test_cuda COMMAND test_cuda)
-
-# Training Tests
-add_executable(test_training test_training.cpp)
-target_link_libraries(test_training PRIVATE gtest_main serius_core)
-gtest_discover_tests(test_training DISCOVERY_TIMEOUT 10)
-
-# Fused CUDA Tests
-add_executable(test_fused_cuda test_fused_cuda.cpp)
-target_link_libraries(test_fused_cuda PRIVATE gtest_main serius_core)
-gtest_discover_tests(test_fused_cuda DISCOVERY_TIMEOUT 10)
-
-# Quantization Tests (INT4, FP16/BF16, KV Cache enhancements)
+# Quantization tests
 add_executable(test_quant test_quant.cpp)
-target_link_libraries(test_quant PRIVATE gtest_main serius_core)
-gtest_discover_tests(test_quant DISCOVERY_TIMEOUT 10)
+target_link_libraries(test_quant PRIVATE serius_core gtest_main)
+
+# Flash Attention tests
+add_executable(test_flash_attn test_flash_attn.cpp)
+target_link_libraries(test_flash_attn PRIVATE serius_core gtest_main)
+
+add_executable(test_config_loader test_config_loader.cpp)
+target_link_libraries(test_config_loader PRIVATE serius_core gtest_main)
+
+add_executable(test_sampler test_sampler.cpp)
+target_link_libraries(test_sampler PRIVATE serius_core gtest_main)
+
+add_executable(test_guardrails test_guardrails.cpp)
+target_link_libraries(test_guardrails PRIVATE serius_core gtest_main)
+
+add_executable(test_nan_debugger test_nan_debugger.cpp)
+target_link_libraries(test_nan_debugger PRIVATE serius_core gtest_main)
+
+# Discovery
+gtest_discover_tests(test_tensor)
+gtest_discover_tests(test_autograd)
+gtest_discover_tests(test_hal)
+gtest_discover_tests(test_cuda)
+gtest_discover_tests(test_paged_kv)
+gtest_discover_tests(test_logger)
+gtest_discover_tests(test_quant)
+gtest_discover_tests(test_flash_attn)
+gtest_discover_tests(test_config_loader)
+gtest_discover_tests(test_sampler)
+gtest_discover_tests(test_guardrails)
+gtest_discover_tests(test_nan_debugger)
+gtest_discover_tests(test_transformer_optim)

@@ -1,91 +1,86 @@
-# Getting Started
+# Getting Started — TheSeriusProject
 
-Benvenuto in **TheSeriusProject**.  
-Questa guida ti porta da zero a eseguire test e benchmark di base in pochi minuti.
-
----
-
-## 1. Prerequisiti
-
-- Compilatore **C++17** o superiore (MSVC, Clang, GCC).
-- **CMake** ≥ 3.20.
-- (Opzionale) **CUDA Toolkit** per il backend GPU.
-- (Opzionale) **Python 3** per script di supporto e benchmark.
-
-Su Windows è consigliato:
-
-- Visual Studio con workload "Desktop development with C++".
-- `CMake` installato e disponibile nel `PATH`.
+Guida rapida per passare da zero a server API e chat in pochi minuti.
 
 ---
 
-## 2. Clona il repository
+## 1. Requisiti
+
+- **Compilatore C++20** (MSVC 2022, GCC 12+, Clang 16+)
+- **CMake 3.25+**
+- **CUDA Toolkit 12.x** (opzionale, per GPU NVIDIA)
+
+---
+
+## 2. Compilazione
 
 ```bash
+# Clone (se non l'hai già)
 git clone https://github.com/<user>/TheSeriusProject.git
 cd TheSeriusProject
-```
 
-Se stai lavorando da una copia zip, assicurati che il contenuto sia estratto in una cartella senza spazi nel percorso (per evitare problemi con alcuni tool di build).
-
----
-
-## 3. Build veloce (CPU only)
-
-Da root del progetto:
-
-```bash
+# Configura e build
 mkdir build
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
+# Con CUDA:
+# cmake .. -DCMAKE_BUILD_TYPE=Release -DSERIUS_USE_CUDA=ON
+
 cmake --build . --config Release
 ```
 
-Se la build fallisce, controlla i file `build_*.txt` generati nella root (es. `build_log.txt`, `build_last_error.txt`) per i dettagli.
+L'eseguibile CLI si trova in `build/serius` (o `build/Release/serius.exe` su Windows).
 
 ---
 
-## 4. Esegui i test principali
-
-Sempre dalla cartella `build`:
+## 3. Avviare il server API
 
 ```bash
+# Dalla cartella build
+./serius serve --port 8080
+# oppure: ./serius serve
+```
+
+Il server è in ascolto su `http://0.0.0.0:8080`.
+
+- **Health:** `curl http://localhost:8080/health`
+- **Modelli:** `curl http://localhost:8080/v1/models`
+- **Chat (stub):**  
+  `curl -X POST http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"Ciao!\"}]}"`
+
+---
+
+## 4. Comando Chat (in sviluppo)
+
+```bash
+./serius chat --model path/to/model.gguf
+```
+
+Il caricamento modelli (GGUF/safetensors) e l’inferenza reale sono in fase di implementazione. Per ora il comando stampa un messaggio informativo.
+
+---
+
+## 5. Eseguire i test
+
+```bash
+cd build
 ctest --output-on-failure
 ```
 
-Questo esegue la suite di test definita in `tests/`, inclusi:
+---
 
-- Autograd e engine tensoriale.
-- Operazioni BLAS (matmul, ecc.).
-- Kernel CUDA (se compilati).
-- Transformer stack (attenzione, FFN, KV cache, ecc.).
+## 6. Configurazione modelli
+
+I file di configurazione JSON per i modelli sono in `configs/`:
+
+- `configs/model_7b.json` — esempio 7B
+- `configs/model_1b.json` — esempio 1B
+- `configs/training_config.json` — parametri di training
 
 ---
 
-## 5. Esegui i benchmark
+## Prossimi passi
 
-Per avere un'idea delle performance di base:
-
-```bash
-ctest -R bench -V
-```
-
-I risultati dettagliati vengono spesso riportati in file come:
-
-- `matmul_bench.txt`
-- `memory_bench.txt`
-- `mixed_precision_bench.txt`
-- `bench_results.txt`
-
-Controlla questi file nella root del progetto per analizzare le performance.
-
----
-
-## 6. Prossimi passi
-
-- Leggi `docs/installation.md` per una configurazione più approfondita (GPU, flag di compilazione, ecc.).
-- Esplora `docs/architecture.md` per capire come è organizzato il motore interno.
-- Segui la roadmap in `todo/` per vedere le fasi previste (quantizzazione, distribuzione, API, documentazione avanzata, ecc.).
-
-Se incontri problemi, consulta `docs/troubleshooting.md` o apri una issue nel repository.
-
+- **Installazione dettagliata:** `docs/installation.md`
+- **Riferimento API:** `docs/api-reference.md`
+- **Architettura:** `docs/architecture.md`

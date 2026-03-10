@@ -821,21 +821,41 @@ Node *fused_bias_gelu(Node *input, Node *bias)
             if (!input->requires_grad && !bias->requires_grad) return;
             // Since we applied it in place on forward, backward needs the standard ops
             // Alternatively, we define a small backward approximation or just execute a full backward.
-            // But doing standard backward via nodes requires the original intermediate.
-            // For now, let's keep it simple by rebuilding the chain for the backward pass ONLY.
-            // Or better yet, we just approximate it using the GELU derivative on the host.
-            // A more robust way is just calling the fallback for backward:
-            // This is a bit hacky but ensures correct gradients without a custom CUDA backward kernel.
-            if (input->requires_grad || bias->requires_grad) {
-                Node *tmp_add = add(input, bias);
-                Node *tmp_gelu = gelu(tmp_add);
-                tmp_gelu->grad = out->grad;  // Pass gradient through
-                tmp_gelu->backward();        // Trigger local backward
-                input->grad += input->grad;  // Temporary nodes write cleanly to input/bias grads
-                bias->grad += bias->grad;
 
-                delete tmp_gelu;
-                delete tmp_add;
+            // Mathematical approximation of GELU derivative
+            const float PI_CONST = static_cast<float>(M_PI);
+            const float SQRT_2_PI = std::sqrt(2.0F / PI_CONST);
+            const float GELU_COEFF = 0.044715F;
+            const float HALF = 0.5F;
+            const float ONE = 1.0F;
+            const float THREE = 3.0F;
+
+            input->data.syncToHost();
+            bias->data.syncToHost();
+            out->grad.syncToHost();
+
+            size_t input_size = input->data.size();
+            size_t bias_size = bias->data.size();
+
+            for (size_t i = 0; i < input_size; ++i) {
+                float x_val = input->data[i] + bias->data[i % bias_size];
+                float x_squared = x_val * x_val;
+                float x_cubed = x_squared * x_val;
+                float inner = SQRT_2_PI * (x_val + (GELU_COEFF * x_cubed));
+                float tanh_val = std::tanh(inner);
+                float sech2_val = ONE - (tanh_val * tanh_val);
+
+                float deriv = (HALF * (ONE + tanh_val)) +
+                              (HALF * x_val * sech2_val * SQRT_2_PI * (ONE + (THREE * GELU_COEFF * x_squared)));
+
+                float grad_val = out->grad[i] * deriv;
+
+                if (input->requires_grad) {
+                    input->grad[i] += grad_val;
+                }
+                if (bias->requires_grad) {
+                    bias->grad[i % bias_size] += grad_val;
+                }
             }
         };
 

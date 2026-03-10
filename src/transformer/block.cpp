@@ -1,5 +1,7 @@
 #include "block.h"
 
+#include <iostream>
+
 #include "../autograd/ops.h"
 
 namespace serius {
@@ -12,7 +14,7 @@ TransformerBlock::TransformerBlock(size_t d_model, size_t n_heads, size_t d_ff)
 {
 }
 
-Node *TransformerBlock::forward(Node *input, KVCache *cache) const
+Node *TransformerBlock::forward(Node *input, PagedKVCache *cache) const
 {
     using namespace core::autograd::ops;
 
@@ -29,6 +31,33 @@ Node *TransformerBlock::forward(Node *input, KVCache *cache) const
 
     // Residual connection
     return add(residual1, ffn_out);
+}
+
+Node *TransformerBlock::forward_optimized(Node *input, PagedKVCache *cache) const
+{
+    using namespace core::autograd::ops;
+    std::cerr << "[Block] Start" << std::endl;
+
+    // Use fused_add_layernorm where possible
+    // x = x + Attn(LN(x))
+    Node *normed1 = norm1.forward(input);
+    std::cerr << "[Block] Norm1 done" << std::endl;
+    Node *attn_out = attention.forward(normed1, cache);
+    std::cerr << "[Block] Attention done" << std::endl;
+
+    // x2 = x + attn_out
+    // normed2 = LN(x2)
+    // Fusion: normed2 = LN(x + attn_out)
+    Node *normed_fused = fused_add_layernorm(input, attn_out, norm2.gamma_, norm2.beta_);
+    std::cerr << "[Block] Fused Add LN done" << std::endl;
+
+    // x3 = x2 + FFN(normed2)
+    Node *ffn_out_opt = ffn.forward_optimized(normed_fused);
+    std::cerr << "[Block] FFN done" << std::endl;
+
+    // Final residual skip
+    Node *res_intermediate = add(input, attn_out);
+    return add(res_intermediate, ffn_out_opt);
 }
 
 }  // namespace model

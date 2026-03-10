@@ -16,13 +16,18 @@ AdamW::AdamW(const std::vector<core::autograd::Node *> &params, const AdamWConfi
 void AdamW::zero_grad()
 {
     for (auto *p : params_) {
-        p->zero_grad();
+        if (p->requires_grad) {
+            p->zero_grad();
+        }
     }
 }
 
 void AdamW::step()
 {
     for (auto *param_node : params_) {
+        if (!param_node->requires_grad) {
+            continue;
+        }
         auto &adam_state = state_[param_node];
         adam_state.step++;
 

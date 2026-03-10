@@ -1,0 +1,23 @@
+{
+    "model_name": "SeriusModel-1B",
+    "architecture": "transformer",
+    "hidden_size": 2048,
+    "num_layers": 24,
+    "num_attention_heads": 16,
+    "num_kv_heads": 8,
+    "intermediate_size": 8192,
+    "vocab_size": 32000,
+    "max_position_embeddings": 4096,
+    "rope_theta": 10000.0,
+    "rms_norm_eps": 1e-5,
+    "attention_type": "mha",
+    "moe": {
+        "enabled": false,
+        "num_experts": 0,
+        "top_k": 0
+    },
+    "quantization": {
+        "type": "none",
+        "bits": 16
+    }
+}

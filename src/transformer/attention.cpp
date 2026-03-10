@@ -4,7 +4,7 @@
 #include <stdexcept>
 
 #include "../autograd/ops.h"
-#include "kv_cache.h"
+#include "paged_kv_cache.h"
 
 namespace serius {
 namespace model {
@@ -54,7 +54,7 @@ MultiHeadAttention::~MultiHeadAttention()
     delete w_o;
 }
 
-Node *MultiHeadAttention::forward(Node *input, KVCache *cache) const
+Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
 {
     using namespace core::autograd::ops;
 
@@ -97,8 +97,8 @@ Node *MultiHeadAttention::forward(Node *input, KVCache *cache) const
         cache->update(k_heads->data, v_heads->data);
 
         // Get FULL sequence from cache
-        Tensor full_k = cache->get_keys();
-        Tensor full_v = cache->get_values();
+        Tensor full_k = cache->gather_keys();
+        Tensor full_v = cache->gather_values();
 
         // Create new nodes for cached data (gradient flow stops here for cache for now)
         k_heads = new Node(std::move(full_k));
@@ -152,8 +152,17 @@ Node *MultiHeadAttention::forward(Node *input, KVCache *cache) const
     Node *context_transposed = contiguous(transpose(context_heads, 1, 2));
     Node *context_merged = reshape(context_transposed, {batch_size, seq_len, d_model_});
 
-    // --- Output Projection ---
-    return matmul(context_merged, w_o);
+    fprintf(stderr, "[Attention] Projecting output\n");
+    fflush(stderr);
+    // Final linear projection
+    Node *output = matmul(context_merged, w_o);
+
+    if (input->data.ndim() == 2) {
+        fprintf(stderr, "[Attention] Reshaping to 2D\n");
+        fflush(stderr);
+        return reshape(output, {seq_len, d_model_});
+    }
+    return output;
 }
 
 }  // namespace model

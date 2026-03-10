@@ -23,6 +23,114 @@ class FusedCUDATest : public ::testing::Test
     }
 };
 
+TEST_F(FusedCUDATest, BiasGELUFP32)
+{
+    size_t n = 1024;
+    size_t bias_size = 128;
+
+    Tensor x_t({n}, hal::DType::Float32);
+    Tensor bias_t({bias_size}, hal::DType::Float32);
+
+    // Initialize with test values
+    for (size_t i = 0; i < n; ++i) {
+        x_t.set_item(i, static_cast<float>(i % 10));
+    }
+    for (size_t i = 0; i < bias_size; ++i) {
+        bias_t.set_item(i, static_cast<float>(i + 1));
+    }
+
+    x_t.set_device(hal::DeviceType::CUDA);
+    bias_t.set_device(hal::DeviceType::CUDA);
+
+    // Reference implementation
+    Tensor ref_t({n}, hal::DType::Float32);
+    for (size_t i = 0; i < n; ++i) {
+        float val = x_t.item(i) + bias_t.item(i % bias_size);
+        float gelu = 0.5f * val * (1.0f + tanhf(0.7978845608f * (val + 0.044715f * val * val * val)));
+        ref_t.set_item(i, gelu);
+    }
+
+    // Apply fused kernel
+    hal::fused_bias_gelu(x_t.data_gpu(), bias_t.data_gpu(), n, bias_size, hal::DType::Float32, nullptr);
+
+    x_t.syncToHost();
+    for (size_t i = 0; i < n; ++i) {
+        EXPECT_NEAR(x_t.item(i), ref_t.item(i), 1e-5f);
+    }
+}
+
+TEST_F(FusedCUDATest, BiasGELUFP16)
+{
+    size_t n = 512;
+    size_t bias_size = 64;
+
+    Tensor x_t({n}, hal::DType::Float16);
+    Tensor bias_t({bias_size}, hal::DType::Float16);
+
+    for (size_t i = 0; i < n; ++i) {
+        x_t.set_item(i, __float2half(static_cast<float>(i % 10)));
+    }
+    for (size_t i = 0; i < bias_size; ++i) {
+        bias_t.set_item(i, __float2half(static_cast<float>(i + 1)));
+    }
+
+    x_t.set_device(hal::DeviceType::CUDA);
+    bias_t.set_device(hal::DeviceType::CUDA);
+
+    // Reference implementation
+    Tensor ref_t({n}, hal::DType::Float32);
+    for (size_t i = 0; i < n; ++i) {
+        float val = __half2float(x_t.item(i)) + __half2float(bias_t.item(i % bias_size));
+        float gelu = 0.5f * val * (1.0f + tanhf(0.7978845608f * (val + 0.044715f * val * val * val)));
+        ref_t.set_item(i, gelu);
+    }
+
+    // Apply fused kernel
+    hal::fused_bias_gelu(x_t.data_gpu(), bias_t.data_gpu(), n, bias_size, hal::DType::Float16, nullptr);
+
+    x_t.syncToHost();
+    for (size_t i = 0; i < n; ++i) {
+        float actual = __half2float(x_t.item(i));
+        EXPECT_NEAR(actual, ref_t.item(i), 1e-3f);
+    }
+}
+
+TEST_F(FusedCUDATest, BiasGELUBF16)
+{
+    size_t n = 512;
+    size_t bias_size = 64;
+
+    Tensor x_t({n}, hal::DType::BFloat16);
+    Tensor bias_t({bias_size}, hal::DType::BFloat16);
+
+    for (size_t i = 0; i < n; ++i) {
+        x_t.set_item(i, __float2bfloat16(static_cast<float>(i % 10)));
+    }
+    for (size_t i = 0; i < bias_size; ++i) {
+        bias_t.set_item(i, __float2bfloat16(static_cast<float>(i + 1)));
+    }
+
+    x_t.set_device(hal::DeviceType::CUDA);
+    bias_t.set_device(hal::DeviceType::CUDA);
+
+    // Reference implementation
+    Tensor ref_t({n}, hal::DType::Float32);
+    for (size_t i = 0; i < n; ++i) {
+        float val = __bfloat162float(x_t.item(i)) + __bfloat162float(bias_t.item(i % bias_size));
+        float gelu = 0.5f * val * (1.0f + tanhf(0.7978845608f * (val + 0.044715f * val * val * val)));
+        ref_t.set_item(i, gelu);
+    }
+
+    // Apply fused kernel
+    hal::fused_bias_gelu(x_t.data_gpu(), bias_t.data_gpu(), n, bias_size, hal::DType::BFloat16, nullptr);
+
+    x_t.syncToHost();
+    for (size_t i = 0; i < n; ++i) {
+        float actual = __bfloat162float(x_t.item(i));
+        EXPECT_NEAR(actual, ref_t.item(i), 1e-3f);
+    }
+}
+
 TEST_F(FusedCUDATest, LayerNormForward)
 {
     size_t batch = 2;

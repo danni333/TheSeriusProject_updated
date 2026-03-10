@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #include <cstdint>
 #include <vector>
 

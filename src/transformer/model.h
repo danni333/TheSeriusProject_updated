@@ -30,6 +30,8 @@ struct ModelConfig
     size_t max_seq_len = DEFAULT_MAX_SEQ_LEN;
 };
 
+class PagedKVCache;
+
 class TransformerModel
 {
    public:
@@ -39,7 +41,7 @@ class TransformerModel
     /// Forward pass
     /// Input: token indices as flat array of size seq_len (stored in a Node of shape {seq_len})
     /// Returns: logits of shape (seq_len, vocab_size) as Node*
-    Node *forward(Node *token_ids, std::vector<KVCache *> *caches = nullptr) const;
+    Node *forward(Node *token_ids, std::vector<PagedKVCache *> *caches = nullptr) const;
 
     /// Retrieve all trainable parameters
     std::vector<Node *> parameters() const;

@@ -1,110 +1,104 @@
-# Installation & Build
+# Installazione — TheSeriusProject
 
-Questa pagina descrive come compilare e configurare **TheSeriusProject** su CPU e, dove possibile, GPU.
+Istruzioni per compilare e installare il progetto da sorgente.
 
 ---
 
-## 1. Requisiti generali
+## Requisiti di sistema
 
-- **C++17** o superiore.
-- **CMake** ≥ 3.20.
-- Sistema operativo:
-  - Windows 10/11.
-  - Linux recente (Ubuntu, Debian, Arch, ecc.).
-  - macOS (supporto sperimentale, soprattutto lato CPU).
+| Requisito | Minimo |
+|-----------|--------|
+| Compilatore C++ | C++20 (MSVC 2022, GCC 12+, Clang 16+) |
+| CMake | 3.25 o superiore |
+| Git | Per clonare e per FetchContent |
+| RAM | 8 GB (16+ GB per modelli grandi) |
 
 Opzionali:
 
-- **CUDA Toolkit** (per backend GPU NVIDIA).
-- **Python 3** per script e test avanzati.
+- **CUDA Toolkit 12.x** — per backend GPU NVIDIA
+- **Vulkan SDK** — per backend Vulkan
+- **Xcode / Metal** — per backend Metal su macOS
+- **Python 3** — per script (generate_reference.py, download_model.py)
+- **NumPy** — per generare dati di test (script)
 
 ---
 
-## 2. Build su Windows (MSVC)
+## Build su Windows
 
-Da un terminale `x64 Native Tools Command Prompt` o da PowerShell con gli environment di Visual Studio caricati:
+1. Apri **Developer Command Prompt for VS** (o terminale con `cl` in PATH).
 
-```bash
-git clone https://github.com/<user>/TheSeriusProject.git
-cd TheSeriusProject
+2. Dalla root del progetto:
 
-mkdir build
-cd build
-cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release
-```
-
-Se non usi Ninja, puoi omettere `-G "Ninja"` e lasciare che CMake scelga il generatore predefinito (es. Visual Studio).
-
----
-
-## 3. Build su Linux
-
-```bash
-git clone https://github.com/<user>/TheSeriusProject.git
-cd TheSeriusProject
-
+```bat
 mkdir build
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release -j$(nproc)
-```
-
-È consigliato abilitare l'ottimizzazione per l'architettura corrente:
-
-```bash
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCPU_NATIVE=ON
-```
-
-*(Il nome esatto dei flag dipende dalla configurazione CMake del progetto; vedere `CMakeLists.txt` per i dettagli.)*
-
----
-
-## 4. Abilitare CUDA (GPU NVIDIA)
-
-Per abilitare il backend CUDA:
-
-1. Installa **CUDA Toolkit** compatibile con la tua GPU.
-2. Assicurati che `nvcc` sia nel `PATH`.
-3. Rigenera la build:
-
-```bash
-mkdir -p build
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DENABLE_CUDA=ON
 cmake --build . --config Release
 ```
 
-I flag precisi (`ENABLE_CUDA`, `CUDA_ARCH`, ecc.) possono variare; controlla i relativi `CMakeLists.txt` in `src/blas/` e `src/hal/`.
+3. Con CUDA:
+
+```bat
+cmake .. -DCMAKE_BUILD_TYPE=Release -DSERIUS_USE_CUDA=ON
+cmake --build . --config Release
+```
+
+4. Eseguibile CLI: `build\Release\serius.exe` (o `build\serius.exe` a seconda del generatore).
 
 ---
 
-## 5. Layout di output
+## Build su Linux / macOS
 
-Dopo la build, il binario principale e le librerie vengono prodotti in `build/` (o nella cartella configurata dal generatore).
+```bash
+mkdir build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+cmake --build . -j
+```
 
-File utili nella root del progetto:
+Con Ninja:
 
-- `build_log.txt`, `build_output.txt`, `build_last_error.txt` — log di build e errori recenti.
-- `*_bench.txt` — risultati dei benchmark eseguiti.
+```bash
+cmake -G Ninja -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+```
 
 ---
 
-## 6. Verifica installazione
+## Test
 
-Esegui dalla cartella `build`:
+Dalla cartella `build`:
 
 ```bash
 ctest --output-on-failure
 ```
 
-Se tutti i test principali passano (autograd, BLAS, tensor, transformer, training), l'installazione di base è corretta.
+Oppure eseguire un singolo test:
+
+```bash
+./tests/test_tensor
+./tests/test_sampler
+```
 
 ---
 
-## 7. Prossimi passi
+## Configurazione modelli
 
-- Vai su `docs/getting-started.md` per un percorso guidato.
-- Consulta `docs/gpu-setup.md` (quando disponibile) per dettagli avanzati sul setup GPU.
-- Leggi `docs/supported-models.md` per capire quali modelli sono target del progetto.
+Dopo la build, i file in `configs/` possono essere usati senza installazione:
 
+- `configs/model_1b.json` — modello piccolo (demo)
+- `configs/model_7b.json` — modello 7B (parametri)
+- `configs/training_config.json` — training
+
+Per usare un config in un’altra cartella, passa il path assoluto o relativo a `serius chat --config path/to/config.json`.
+
+---
+
+## Installazione (opzionale)
+
+CMake non definisce ancora un target `install` completo. Per usare il progetto:
+
+- Esegui `serius` dalla cartella `build` (o aggiungi `build/` al PATH).
+- Copia manualmente `serius` e la cartella `configs/` dove preferisci.
+
+In futuro: `cmake --build build --target install` con prefisso configurabile.

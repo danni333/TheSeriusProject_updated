@@ -1,94 +1,71 @@
-# Troubleshooting
+# Troubleshooting — TheSeriusProject
 
-Questa pagina raccoglie problemi comuni e relative soluzioni quando si lavora con **TheSeriusProject**.
-
----
-
-## 1. Problemi di build
-
-### 1.1 CMake non trova il compilatore
-
-**Sintomi**
-
-- Errori del tipo: `No CMAKE_CXX_COMPILER could be found`.
-
-**Possibili cause**
-
-- Toolchain C++ non installata o non configurata nel `PATH`.
-
-**Soluzione**
-
-- Su Windows: installa Visual Studio con il workload "Desktop development with C++".
-- Su Linux: installa `build-essential` (Debian/Ubuntu) o pacchetto equivalente.
+Problemi comuni e soluzioni.
 
 ---
 
-### 1.2 Errori legati a CUDA
+## Build
 
-**Sintomi**
+### "Could NOT find GTest"
 
-- Errori durante la configurazione CMake o la compilazione di file `.cu`.
+Il progetto usa **FetchContent** per Googletest, non `find_package(GTest)`. Assicurati che in `tests/CMakeLists.txt` non ci sia `find_package(GTest REQUIRED)`. Se compare l’errore, rimuovi quella riga e riconfigura.
 
-**Possibili cause**
+### "Cannot find source file: test_ops.cpp"
 
-- CUDA Toolkit non installato o versione incompatibile.
-- Variabili d'ambiente (`CUDA_HOME`, `PATH`) non impostate correttamente.
+Alcuni target di test potrebbero riferirsi a file rimossi o rinominati. Controlla l’elenco in `tests/CMakeLists.txt` e rimuovi o aggiorna i riferimenti ai file inesistenti.
 
-**Soluzione**
+### Errori CUDA / nvcc
 
-- Verifica che `nvcc --version` funzioni nel terminale.
-- Ricompila con `-DENABLE_CUDA=OFF` per isolare il problema e lavorare solo su CPU.
+- Verifica che **CUDA Toolkit 12.x** sia installato e che `nvcc` sia in PATH.
+- Su Windows, usa **Developer Command Prompt for VS** con la versione corretta di MSVC.
+- Se non usi la GPU, configura senza CUDA: `cmake .. -DSERIUS_USE_CUDA=OFF`.
 
----
+### Warning / errori di tipo in operazioni tra size_t e int
 
-## 2. Test che falliscono
-
-### 2.1 Test numerici (BLAS, autograd, transformer) falliscono marginalmente
-
-**Sintomi**
-
-- Asserzioni del tipo: "expected ~X, got Y (difference > epsilon)".
-
-**Possibili cause**
-
-- Differenze tra implementazioni SIMD/GPU e scalar.
-- Differenze di floating point tra piattaforme/compilatori.
-
-**Soluzione (linea guida)**
-
-- Verifica la tolleranza numerica usata nel test.
-- Confronta i risultati con la versione scalar di riferimento (se disponibile).
+Nei test o nel codice, conversioni tra `size_t` e `int` possono generare warning. Usa `static_cast` dove il compilatore segnala il problema.
 
 ---
 
-### 2.2 Benchmark estremamente lenti
+## Runtime
 
-**Sintomi**
+### "Tensor::data() used on non-float32 tensor"
 
-- Tempi di `matmul` o altri benchmark molto superiori alle aspettative.
+Alcuni layer o dati potrebbero essere in FP16/BF16. Il sampler e parte del codice si aspettano Float32. Verifica il `dtype` dei tensori in ingresso (es. logits) o converti a Float32 prima dell’uso.
 
-**Possibili cause**
+### Server non si avvia: "Failed to listen on port 8080"
 
-- Mancato utilizzo di AVX/AVX2/AVX‑512.
-- Compilatore che non sta ottimizzando correttamente (es. build `Debug`).
+- La porta potrebbe essere già in uso. Usa un’altra porta: `serius serve --port 8081`.
+- Su Linux/macOS, le porte &lt; 1024 richiedono spesso permessi di amministratore; usa una porta &gt; 1024.
 
-**Soluzione**
+### Chat: output strano o token sconosciuti
 
-- Ricompila con `-DCMAKE_BUILD_TYPE=Release`.
-- Controlla i flag specifici per abilitare il path SIMD (vedi `src/blas/dispatch.cpp` e `CMakeLists.txt`).
+- Il **tokenizer** predefinito ha un vocabolario molto piccolo (PAD, BOS, EOS, UNK + 256 byte). Per risultati sensati carica un tokenizer addestrato con `tokenizer.load(path)` (quando supportato dalla CLI).
+- Il **modello** è inizializzato casualmente se non carichi pesi da checkpoint/GGUF. La chat in locale è una demo; per risposte coerenti servono pesi addestrati.
+
+### Loss NaN durante il training
+
+- Riduci il learning rate.
+- Verifica **gradient clipping** (es. `grad_clip = 1.0` in `TrainerConfig`).
+- Usa **AMP** con loss scaling (es. `use_amp = true` in `TrainerConfig`).
+- Controlla i tensori con `debug::find_first_nan()` o il **TensorLogger** per individuare il primo tensore con NaN/Inf.
 
 ---
 
-## 3. Altri problemi
+## API / Server
 
-Se incontri un problema non documentato:
+### 404 su /v1/chat/completions
 
-1. Controlla i file di log nella root (`build_log.txt`, `build_last_error.txt`, `*_bench.txt`, `test_output*.txt`).
-2. Riprova con una build pulita (`rm -rf build && mkdir build`).
-3. Apri una issue nel repository includendo:
-   - Sistema operativo e versione.
-   - Versione del compilatore/CMake/CUDA.
-   - Log di build o di esecuzione rilevanti.
+Assicurati di usare **POST** e non GET. Inoltre l’URL deve essere esattamente `/v1/chat/completions` (con la ‘s’ finale).
 
-Questa pagina verrà estesa con casi sempre più specifici man mano che il progetto evolve.
+### Risposta "Serius API is running. Load a model..."
 
+È il messaggio **stub** quando il server non ha un modello caricato in memoria. L’integrazione con un modello reale e il sampler lato server è in sviluppo; la CLI `serius chat` usa già il modello in processo.
+
+---
+
+## Dove trovare altro aiuto
+
+- **Architettura:** `docs/architecture.md`
+- **API REST:** `docs/api-reference.md`
+- **Quick start:** `docs/getting-started.md`
+- **Roadmap e lacune:** file `todo/faseN+.md`

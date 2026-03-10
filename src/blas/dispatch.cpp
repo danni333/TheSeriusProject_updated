@@ -24,6 +24,11 @@ using core::Tensor;
 static CpuInfo internal_cpu_info = {false, false};
 static bool cpu_info_initialized = false;
 
+// Size-based dispatch thresholds (empirically calibrated)
+// For small matrices, SIMD setup overhead exceeds the computation gain
+constexpr size_t SIMD_THRESHOLD_SMALL = 128ULL * 128ULL * 128ULL;   // ~2M FLOPS
+constexpr size_t SIMD_THRESHOLD_MEDIUM = 256ULL * 256ULL * 256ULL;  // ~16M FLOPS
+
 CpuInfo get_cpu_info()
 {
     if (cpu_info_initialized) {
@@ -119,10 +124,6 @@ void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
     const float *b_ptr = mat_b.data();
     float *c_ptr = mat_c.data();
 
-    // Size-based dispatch thresholds (empirically calibrated)
-    // For small matrices, SIMD setup overhead exceeds the computation gain
-    constexpr size_t SIMD_THRESHOLD_SMALL = 128ULL * 128ULL * 128ULL;   // ~2M FLOPS
-    constexpr size_t SIMD_THRESHOLD_MEDIUM = 256ULL * 256ULL * 256ULL;  // ~16M FLOPS
     size_t problem_size = rows_m * cols_n * inner_k;
 
     if (problem_size < SIMD_THRESHOLD_SMALL) {
@@ -258,17 +259,28 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
     }
 
     for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
-        const float *a_ptr = mat_a.data() + (batch_idx * mat_a.strides()[0]);  // Use A.strides()[0] for batch stride
-        const float *b_ptr = (mat_b.ndim() == 3) ? (mat_b.data() + (batch_idx * mat_b.strides()[0]))
-                                                 : mat_b.data();         // Use B.strides()[0] for batch stride
-        float *c_ptr = mat_c.data() + (batch_idx * mat_c.strides()[0]);  // Use C.strides()[0] for batch stride
+        const float *a_ptr = mat_a.data() + (batch_idx * mat_a.strides()[0]);
+        const float *b_ptr = (mat_b.ndim() == 3) ? (mat_b.data() + (batch_idx * mat_b.strides()[0])) : mat_b.data();
+        float *c_ptr = mat_c.data() + (batch_idx * mat_c.strides()[0]);
 
-        if (info.has_avx512f) {
-            matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
-        } else if (info.has_avx2) {
-            matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
-        } else {
+        size_t problem_size = rows_m * cols_n * inner_k;
+
+        if (problem_size < SIMD_THRESHOLD_SMALL) {
             matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        } else if (problem_size < SIMD_THRESHOLD_MEDIUM) {
+            if (info.has_avx2) {
+                matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+            } else {
+                matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+            }
+        } else {
+            if (info.has_avx512f) {
+                matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+            } else if (info.has_avx2) {
+                matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+            } else {
+                matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+            }
         }
     }
 }

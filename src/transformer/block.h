@@ -10,7 +10,7 @@ namespace model {
 
 using core::autograd::Node;
 
-class KVCache;
+class PagedKVCache;
 
 class TransformerBlock
 {
@@ -19,10 +19,10 @@ class TransformerBlock
 
     /// Forward pass (pre-norm architecture)
     /// Input: (seq_len, d_model) or (batch_size, seq_len, d_model)
-    Node *forward(Node *input, KVCache *cache = nullptr) const;
+    Node *forward(Node *input, PagedKVCache *cache = nullptr) const;
 
     /// Optimized forward pass using fused kernels (e.g. fused_bias_gelu in FFN)
-    Node *forward_optimized(Node *input, KVCache *cache = nullptr) const;
+    Node *forward_optimized(Node *input, PagedKVCache *cache = nullptr) const;
 
     // Sub-layers
     LayerNorm norm1;

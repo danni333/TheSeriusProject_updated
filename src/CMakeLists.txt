@@ -15,9 +15,10 @@ add_library(serius_core
     transformer/attention.cpp
     transformer/ffn.cpp
     transformer/kv_cache.cpp
+    transformer/paged_kv_cache.cpp
     transformer/block.cpp
-    transformer/block_optimized.cpp
     transformer/model.cpp
+    attention/flash_attn.cpp
     tokenizer/bpe.cpp
     data/dataloader.cpp
     optim/adamw.cpp
@@ -29,6 +30,11 @@ add_library(serius_core
     quant/int4.cpp
     quant/dequant_matmul.cpp
     debug/tensor_logger.cpp
+    io/config_loader.cpp
+    io/gguf_loader.cpp
+    infer/sampler.cpp
+    safety/guardrails.cpp
+    debug/nan_debugger.cpp
 )
 
 if(SERIUS_USE_CUDA)
@@ -37,6 +43,7 @@ if(SERIUS_USE_CUDA)
         hal/fused_kernels.cu
         blas/matmul_cuda.cu
         quant/dequant_matmul.cu
+        attention/flash_attn_cuda.cu
     )
 endif()
 
@@ -72,3 +79,8 @@ else()
 endif()
 target_include_directories(serius_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json)
+
+# --- CLI executable (serve, chat) ---
+add_executable(serius app/main.cpp server/server.cpp)
+target_link_libraries(serius PRIVATE serius_core httplib::httplib)
+target_include_directories(serius PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

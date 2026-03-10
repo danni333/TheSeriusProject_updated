@@ -1,106 +1,65 @@
-# Architecture Overview
+# Architettura — TheSeriusProject
 
-Questa pagina descrive ad alto livello l'architettura interna di **TheSeriusProject**.
-
----
-
-## 1. Visione generale
-
-L'obiettivo del progetto è implementare un motore LLM locale in C++ con:
-
-- pipeline matematica controllabile,
-- backend multipli (CPU, SIMD, CUDA),
-- stack Transformer completo e modulare,
-- supporto alla formazione (training) e all'inferenza.
-
-La struttura dei sorgenti è pensata per essere leggibile e didattica, non solo performante.
+Panoramica dell’architettura interna per sviluppatori.
 
 ---
 
-## 2. Struttura delle directory principali
+## 1. Struttura sorgenti
 
-- `src/autograd/`
-  - `engine.*`: gestione del grafo computazionale e della propagazione del gradiente.
-  - `ops.*`: definizione delle operazioni di alto livello registrate nell'engine.
-
-- `src/blas/`
-  - `matmul_scalar.cpp`, `matmul_avx2.cpp`, `matmul_avx512.cpp`: varianti CPU di `matmul`.
-  - `matmul_cuda.*`: implementazioni CUDA per la moltiplicazione di matrici.
-  - `dispatch.cpp`: logica di selezione del backend in base alle capacità della macchina.
-
-- `src/tensor/`
-  - `tensor.*`: implementazione del tipo `Tensor`, gestione shape/stride, operazioni base.
-
-- `src/memory/`
-  - `pool_allocator.*`: gestione di un pool di memoria per ridurre le frammentazioni e le allocazioni frequenti.
-
-- `src/transformer/`
-  - `attention.*`, `ffn.*`, `layernorm.*`, `kv_cache.*`, `block.*`, `model.*`, `positional.*`:
-    implementano i building block di un Transformer moderno, dal singolo blocco fino al modello completo.
-
-- `src/train/`
-  - `trainer.*`: ciclo di training, scheduling, logging.
-  - `checkpoint.*`: salvataggio e ripristino dello stato del modello e dell'ottimizzatore.
-  - `optim/adamw.*`: implementazione dell'ottimizzatore AdamW.
-
-- `tests/`
-  - Test unitari e benchmark per i vari moduli (autograd, tensor, transformer, CUDA, quantizzazione, ecc.).
+```
+src/
+├── tensor/          Tensori, shape, strides, view/copy
+├── blas/            Matmul, matvec, element-wise, dispatch CPU/CUDA
+├── memory/          Memory pool, pool allocator
+├── autograd/        Grafo computazionale, Node, engine, ops (matmul, relu, softmax, …)
+├── transformer/     Attention, FFN, LayerNorm, RoPE, block, model, KV cache
+├── attention/       Flash attention (CPU + CUDA)
+├── optim/           AdamW, WSD scheduler, AMP
+├── train/           Trainer, checkpoint, freeze_parameters
+├── infer/           Sampler (temperature, top_k, top_p)
+├── io/              Config loader (JSON → ModelConfig)
+├── tokenizer/       BPE, vocab
+├── data/            DataLoader, Batch
+├── quant/           INT4, conversioni FP16/BF16, dequant matmul
+├── hal/             Backend CPU, CUDA, Metal/Vulkan (astrazione device)
+├── debug/           TensorLogger (statistiche tensori)
+├── server/          Server HTTP (health, /v1/chat/completions, /v1/models)
+└── app/             CLI (serius serve, serius chat)
+```
 
 ---
 
-## 3. Flow di esecuzione tipico (alto livello)
+## 2. Flusso training
 
-1. **Definizione del modello**  
-   Le componenti `transformer/*` definiscono il modello (stack di blocchi, embedding, output head, ecc.).
-
-2. **Inizializzazione dei tensori**  
-   I tensori sono allocati tramite il `pool_allocator` (dove possibile) per ottimizzare l'uso della memoria.
-
-3. **Esecuzione forward**  
-   Il modello usa il layer di astrazione BLAS (`src/blas`) per eseguire matmul e altre operazioni in modo efficiente su CPU/GPU.
-
-4. **(Opzionale) Backward & training**  
-   L'engine di autograd costruisce il grafo computazionale durante il forward e calcola i gradienti in backward.
-   L'ottimizzatore (es. AdamW) aggiorna i pesi usando i gradienti calcolati.
-
-5. **Checkpointing**  
-   Lo stato del modello e dell'allenamento viene salvato tramite il modulo `checkpoint`.
+1. **DataLoader** → Batch (input_ids, target_ids, padding_mask)
+2. **Trainer** → zero_grad, forward (modello), cross_entropy, backward, (AMP unscale), clip_grad_norm, optimizer.step
+3. **Optimizer** (AdamW) aggiorna solo i parametri con `requires_grad == true`
+4. **freeze_parameters(count)** imposta `requires_grad = false` sui primi `count` parametri (finetuning)
 
 ---
 
-## 4. Backend e ottimizzazioni
+## 3. Flusso inferenza (target)
 
-### 4.1 CPU
-
-- Implementazioni scalar e SIMD (AVX/AVX2/AVX‑512) di `matmul` e altre primitive.
-- Selezione dinamica del percorso migliore in base alle capacità della CPU rilevate all'avvio.
-
-### 4.2 GPU (CUDA)
-
-- Kernel CUDA dedicati per operazioni pesanti (matmul, kernel fused, ecc.) in `src/blas/matmul_cuda.*` e `src/hal/fused_kernels.cu`.
-- Meccanismi per minimizzare i trasferimenti host↔device dove possibile.
+1. Caricamento modello (config da JSON via `io::load_model_config`, pesi da GGUF/safetensors in fase di implementazione)
+2. Forward con KV cache (opzionale)
+3. **Sampler** sui logits (temperature, top_k, top_p) → token successivo
+4. Server espone `/v1/chat/completions`; il sampler sarà usato quando il modello è caricato in memoria
 
 ---
 
-## 5. Testing & Benchmark
+## 4. Configurazione modello
 
-La cartella `tests/` include:
-
-- **Test unitari** per blocchi logici (autograd, tensor, transformer, training).
-- **Benchmark** focalizzati (matmul, memoria, mixed precision, kv cache, ecc.).
-
-I risultati dei benchmark vengono spesso salvati in file `*_bench.txt` nella root del progetto per confronti successivi.
+- **ModelConfig** (transformer/model.h): vocab_size, d_model, n_heads, n_layers, d_ff, max_seq_len
+- **io::load_model_config(path)** legge un JSON in stile configs/model_7b.json e mappa i campi su ModelConfig (hidden_size → d_model, num_attention_heads → n_heads, ecc.)
 
 ---
 
-## 6. Estensioni future
+## 5. Namespace
 
-La roadmap nel folder `todo/` prevede:
-
-- Quantizzazione avanzata.
-- Distribuzione multi‑GPU / multi‑node.
-- Interfacce CLI e API compatibili con la specifica OpenAI.
-- Sistema di plugin, strumenti di benchmarking e profiling avanzato.
-
-Questa pagina verrà aggiornata man mano che l'architettura evolve e si stabilizza.
-
+- `serius::core` — tensor, blas, memory, autograd
+- `serius::model` — transformer, block, attention, ffn, layernorm
+- `serius::optim` — AdamW, scheduler, AMP
+- `serius::training` — Trainer, checkpoint
+- `serius::infer` — Sampler
+- `serius::io` — config loader
+- `serius::server` — HTTP server

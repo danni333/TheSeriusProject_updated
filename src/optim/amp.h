@@ -1,68 +1,124 @@
 #pragma once
 
-#include <stdexcept>
+#include <algorithm>
+#include <cmath>
+#include <vector>
 
-#include "../hal/device.h"
+#include "../autograd/node.h"
+#include "../autograd/ops.h"
+#include "../common/serius_check.h"
 #include "../tensor/tensor.h"
 
 namespace serius {
-namespace core {
 namespace optim {
 
+/**
+ * @brief Automatic Mixed Precision (AMP) helper for training.
+ *
+ * This class handles dynamic loss scaling to prevent underflow in FP16/BF16 gradients.
+ */
 class AutomaticMixedPrecision
 {
    public:
-    // Scaling factor to prevent underflow in FP16 during backward pass
-    static constexpr float DEFAULT_LOSS_SCALE = 65536.0f;
+    static constexpr float DEFAULT_LOSS_SCALE = 65536.0F;
+    static constexpr int DEFAULT_GROWTH_INTERVAL = 2000;
+    static constexpr float DEFAULT_BACKOFF_FACTOR = 0.5F;
+    static constexpr float DEFAULT_GROWTH_FACTOR = 2.0F;
 
-    /// Helper for mixed precision forward and backward passes
-    /// Forward pass uses FP16 for speed, backward uses FP32 for precision.
-    ///
-    /// @param forward_fn Lambda that takes FP16 input and returns FP16 output
-    /// @param backward_fn Lambda that computes gradients (output_fp16, grad_output_fp32 -> grad_input_fp32)
-    /// @param compute_loss Lambda that computes scalar loss from output
-    /// @param compute_grad Lambda that computes the initial gradient of the loss
-    template <typename FwdFn, typename BwdFn, typename LossFn, typename GradFn>
-    static void mixed_precision_forward_backward(FwdFn forward_fn, BwdFn backward_fn, LossFn compute_loss,
-                                                 GradFn compute_grad, const Tensor &input, Tensor &output, Tensor &loss,
-                                                 Tensor &grad_input)
+    struct Config
     {
-        // 1. Forward in FP16
-        Tensor input_fp16 = input.cast(hal::DType::Float16);
-        Tensor output_fp16 = forward_fn(input_fp16);
-        output = output_fp16.cast(hal::DType::Float32);  // Keep FP32 handle for user if needed
+        float init_scale = DEFAULT_LOSS_SCALE;
+        int growth_interval = DEFAULT_GROWTH_INTERVAL;
+    };
 
-        // 2. Compute Loss and apply scale
-        Tensor base_loss = compute_loss(output_fp16);
-        if (base_loss.size() != 1) {
-            throw std::runtime_error("Loss must be a scalar tensor");
-        }
-
-        // Convert to FP32 first so the scaling doesn't overflow FP16 max (65504)
-        Tensor base_loss_fp32 = base_loss.cast(hal::DType::Float32);
-        loss = base_loss_fp32 * DEFAULT_LOSS_SCALE;
-
-        // 3. Compute initial gradient in FP32 (unscaled so backward_fn doesn't overflow)
-        Tensor loss_unscaled = loss / DEFAULT_LOSS_SCALE;  // Both are now FP32
-        Tensor grad_output = compute_grad(loss_unscaled);
-
-        // 4. Backward in FP32
-        backward_fn(output_fp16, grad_output, grad_input);
+    explicit AutomaticMixedPrecision(const Config &config = {})
+        : current_scale_(config.init_scale), growth_interval_(config.growth_interval), steps_since_last_scale_(0)
+    {
     }
 
-    /// Converts all FP32 parameters in an iterable collection to FP16
-    /// Useful for preparing a model for inference-only execution
-    template <typename Iterable>
-    static void convert_model_to_fp16(Iterable &parameters)
+    /**
+     * @brief Scale the loss before the backward pass.
+     * @param loss The loss node from the model forward pass.
+     * @return A new scaled loss node.
+     */
+    core::autograd::Node *scale(core::autograd::Node *loss) const
     {
-        for (auto &param : parameters) {
-            if (param.dtype() == hal::DType::Float32) {
-                param = param.cast(hal::DType::Float16);
+        return core::autograd::ops::mul_scalar(loss, current_scale_);
+    }
+
+    /**
+     * @brief Unscale the gradients and check for NaNs/Infs.
+     * @param parameters List of model parameters (nodes) to unscale gradients for.
+     * @return True if gradients are finite (no overflow), False otherwise.
+     */
+    bool unscale_and_update(const std::vector<core::autograd::Node *> &parameters)
+    {
+        bool has_overflow = false;
+        const float inv_scale = 1.0F / current_scale_;
+
+        // Check for overflow (NaN or Inf) and unscale
+        for (auto *parameter : parameters) {
+            if (!parameter->requires_grad) {
+                continue;
+            }
+
+            parameter->grad.syncToHost();
+            for (size_t i = 0; i < parameter->grad.size(); ++i) {
+                const float grad_val = parameter->grad.item(i);
+                if (!std::isfinite(grad_val)) {
+                    has_overflow = true;
+                    break;
+                }
+            }
+            if (has_overflow) {
+                break;
             }
         }
+
+        if (has_overflow) {
+            // Back off: decrease scale and reset counter
+            current_scale_ *= DEFAULT_BACKOFF_FACTOR;
+            current_scale_ = std::max(current_scale_, 1.0F);
+            steps_since_last_scale_ = 0;
+
+            // Zero gradients to skip this step correctly
+            for (auto *parameter : parameters) {
+                if (parameter->requires_grad) {
+                    parameter->grad.zeros();
+                }
+            }
+            return false;
+        }
+
+        // No overflow: apply unscaling and increment growth counter
+        for (auto *parameter : parameters) {
+            if (!parameter->requires_grad) {
+                continue;
+            }
+
+            // Apply unscaling on host (since we already synced for overflow check)
+            for (size_t i = 0; i < parameter->grad.size(); ++i) {
+                parameter->grad.set_item(i, parameter->grad.item(i) * inv_scale);
+            }
+            parameter->grad.mark_dirty(core::Tensor::DataLocation::CPU);
+        }
+
+        steps_since_last_scale_++;
+        if (steps_since_last_scale_ >= growth_interval_) {
+            current_scale_ *= DEFAULT_GROWTH_FACTOR;
+            steps_since_last_scale_ = 0;
+        }
+
+        return true;
     }
+
+    float current_scale() const { return current_scale_; }
+
+   private:
+    float current_scale_;
+    int growth_interval_;
+    int steps_since_last_scale_;
 };
 
 }  // namespace optim
-}  // namespace core
 }  // namespace serius

@@ -2,6 +2,7 @@
 
 #include "../autograd/node.h"
 #include "../tensor/tensor.h"
+#include "paged_kv_cache.h"
 
 namespace serius {
 namespace model {
@@ -9,7 +10,7 @@ namespace model {
 using core::Tensor;
 using core::autograd::Node;
 
-class KVCache;
+class PagedKVCache;
 
 class MultiHeadAttention
 {
@@ -17,10 +18,8 @@ class MultiHeadAttention
     MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat = 0);
     ~MultiHeadAttention();
 
-    /// Forward pass
-    /// Input: (seq_len, d_model)
     /// Returns: (seq_len, d_model)
-    Node *forward(Node *input, KVCache *cache = nullptr) const;
+    Node *forward(Node *input, PagedKVCache *cache = nullptr) const;
 
     // Weight matrices for Multi-Head Latent Attention (MLA)
     Node *w_q;    // (d_model, d_model)

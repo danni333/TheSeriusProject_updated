@@ -1,0 +1,23 @@
+{
+    "model_name": "SeriusModel-7B",
+    "architecture": "transformer",
+    "hidden_size": 4096,
+    "num_layers": 32,
+    "num_attention_heads": 32,
+    "num_kv_heads": 8,
+    "intermediate_size": 14336,
+    "vocab_size": 128256,
+    "max_position_embeddings": 131072,
+    "rope_theta": 500000.0,
+    "rms_norm_eps": 1e-5,
+    "attention_type": "mla",
+    "moe": {
+        "enabled": false,
+        "num_experts": 0,
+        "top_k": 0
+    },
+    "quantization": {
+        "type": "none",
+        "bits": 16
+    }
+}
