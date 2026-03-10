@@ -92,3 +92,13 @@ gtest_discover_tests(test_stability DISCOVERY_TIMEOUT 10)
 add_executable(test_sampling test_sampling.cpp)
 target_link_libraries(test_sampling PRIVATE gtest_main serius_core)
 gtest_discover_tests(test_sampling DISCOVERY_TIMEOUT 10)
+
+# Safetensors Tests (Fase 15: Read/Write safetensors format)
+add_executable(test_safetensors test_safetensors.cpp)
+target_link_libraries(test_safetensors PRIVATE gtest_main serius_core)
+gtest_discover_tests(test_safetensors DISCOVERY_TIMEOUT 10)
+
+# LoRA Tests (Fase 19: Low-Rank Adaptation)
+add_executable(test_lora test_lora.cpp)
+target_link_libraries(test_lora PRIVATE gtest_main serius_core)
+gtest_discover_tests(test_lora DISCOVERY_TIMEOUT 10)

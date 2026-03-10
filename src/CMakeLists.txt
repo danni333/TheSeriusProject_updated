@@ -33,6 +33,9 @@ add_library(serius_core
     stability/ema.cpp
     inference/sampler.cpp
     inference/generate.cpp
+    io/safetensors.cpp
+    lora/lora_linear.cpp
+    lora/lora_adapter.cpp
 )
 
 if(SERIUS_USE_CUDA)
