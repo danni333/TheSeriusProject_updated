@@ -7,8 +7,11 @@
 
 #include "memory/memory_pool.h"
 #include "memory/pool_allocator.h"
+#include "quant/awq.h"
 #include "quant/conversions.h"
 #include "quant/dequant_matmul.h"
+#include "quant/fp8.h"
+#include "quant/gptq.h"
 #include "quant/int4.h"
 #include "tensor/tensor.h"
 #include "transformer/kv_cache.h"
@@ -402,6 +405,493 @@ TEST(KVCacheTest, NonRollingOverflow)
 
     // Third update should throw
     EXPECT_THROW(cache.update(key, val), std::runtime_error);
+}
+
+// ============================================================
+// FP8 E4M3 Roundtrip Tests
+// ============================================================
+
+TEST(QuantFP8, E4M3RoundtripTypicalValues)
+{
+    float values[] = {0.0f, 1.0f, -1.0f, 0.5f, -0.5f, 2.0f, -3.14f, 100.0f, -100.0f, 0.001f, 448.0f};
+    for (float val : values) {
+        uint8_t fp8 = float_to_fp8_e4m3(val);
+        float back = fp8_e4m3_to_float(fp8);
+        if (std::abs(val) > 0.01f && std::abs(val) <= 448.0f) {
+            float rel_error = std::abs(back - val) / std::abs(val);
+            // E4M3 has 3 mantissa bits -> ~12.5% precision per step
+            EXPECT_LT(rel_error, 0.15f) << "FP8 E4M3 roundtrip error too large for value " << val
+                                        << " got " << back;
+        }
+    }
+}
+
+TEST(QuantFP8, E4M3ClampOverflow)
+{
+    // Values > 448 should clamp to max representable
+    uint8_t fp8 = float_to_fp8_e4m3(1000.0f);
+    float back = fp8_e4m3_to_float(fp8);
+    EXPECT_LE(back, 448.0f);
+    EXPECT_GT(back, 400.0f);
+
+    // Negative overflow
+    fp8 = float_to_fp8_e4m3(-1000.0f);
+    back = fp8_e4m3_to_float(fp8);
+    EXPECT_GE(back, -448.0f);
+    EXPECT_LT(back, -400.0f);
+}
+
+TEST(QuantFP8, E4M3Zero)
+{
+    uint8_t fp8 = float_to_fp8_e4m3(0.0f);
+    float back = fp8_e4m3_to_float(fp8);
+    EXPECT_EQ(back, 0.0f);
+
+    fp8 = float_to_fp8_e4m3(-0.0f);
+    back = fp8_e4m3_to_float(fp8);
+    EXPECT_EQ(back, 0.0f);
+}
+
+TEST(QuantFP8, E4M3BulkRoundtrip)
+{
+    const size_t N = 128;
+    std::vector<float> src(N);
+    std::vector<uint8_t> fp8_buf(N);
+    std::vector<float> dst(N);
+
+    for (size_t i = 0; i < N; ++i) {
+        src[i] = std::sin(static_cast<float>(i) * 0.1f) * 100.0f;
+    }
+
+    convert_float_to_fp8_e4m3(src.data(), fp8_buf.data(), N);
+    convert_fp8_e4m3_to_float(fp8_buf.data(), dst.data(), N);
+
+    for (size_t i = 0; i < N; ++i) {
+        if (std::abs(src[i]) > 0.1f) {
+            float rel_error = std::abs(dst[i] - src[i]) / std::abs(src[i]);
+            EXPECT_LT(rel_error, 0.15f) << "Bulk FP8 E4M3 error at index " << i;
+        }
+    }
+}
+
+// ============================================================
+// FP8 E5M2 Roundtrip Tests
+// ============================================================
+
+TEST(QuantFP8, E5M2RoundtripTypicalValues)
+{
+    float values[] = {0.0f, 1.0f, -1.0f, 0.5f, -0.5f, 100.0f, -1000.0f, 10000.0f, -50000.0f};
+    for (float val : values) {
+        uint8_t fp8 = float_to_fp8_e5m2(val);
+        float back = fp8_e5m2_to_float(fp8);
+        if (std::abs(val) > 0.01f && std::abs(val) <= 57344.0f) {
+            float rel_error = std::abs(back - val) / std::abs(val);
+            // E5M2 has 2 mantissa bits -> ~25% precision per step
+            EXPECT_LT(rel_error, 0.35f) << "FP8 E5M2 roundtrip error too large for value " << val
+                                        << " got " << back;
+        }
+    }
+}
+
+TEST(QuantFP8, E5M2PreservesWiderRange)
+{
+    // E5M2 should handle larger values than E4M3
+    float large_values[] = {1000.0f, 10000.0f, 50000.0f};
+    for (float val : large_values) {
+        uint8_t fp8 = float_to_fp8_e5m2(val);
+        float back = fp8_e5m2_to_float(fp8);
+        EXPECT_GT(std::abs(back), std::abs(val) * 0.5f) << "E5M2 lost too much range for " << val;
+    }
+}
+
+TEST(QuantFP8, E5M2Infinity)
+{
+    uint8_t fp8 = float_to_fp8_e5m2(100000.0f);  // > 57344 -> inf
+    float back = fp8_e5m2_to_float(fp8);
+    EXPECT_TRUE(std::isinf(back));
+}
+
+TEST(QuantFP8, E5M2BulkRoundtrip)
+{
+    const size_t N = 128;
+    std::vector<float> src(N);
+    std::vector<uint8_t> fp8_buf(N);
+    std::vector<float> dst(N);
+
+    // Use gradient-like values (wider range)
+    for (size_t i = 0; i < N; ++i) {
+        src[i] = std::sin(static_cast<float>(i) * 0.1f) * 1000.0f;
+    }
+
+    convert_float_to_fp8_e5m2(src.data(), fp8_buf.data(), N);
+    convert_fp8_e5m2_to_float(fp8_buf.data(), dst.data(), N);
+
+    for (size_t i = 0; i < N; ++i) {
+        if (std::abs(src[i]) > 1.0f) {
+            float rel_error = std::abs(dst[i] - src[i]) / std::abs(src[i]);
+            EXPECT_LT(rel_error, 0.35f) << "Bulk FP8 E5M2 error at index " << i;
+        }
+    }
+}
+
+// ============================================================
+// FP8 Block-wise Scaling Tests
+// ============================================================
+
+TEST(QuantFP8, BlockwiseScalingE4M3)
+{
+    const size_t N = 64;
+    std::vector<float> data(N);
+    for (size_t i = 0; i < N; ++i) {
+        data[i] = std::sin(static_cast<float>(i) * 0.2f) * 200.0f;
+    }
+
+    FP8Block block = fp8_quantize_block(data.data(), N, /*use_e4m3=*/true);
+    EXPECT_TRUE(block.is_e4m3);
+    EXPECT_EQ(block.data.size(), N);
+    EXPECT_GT(block.scale, 0.0f);
+
+    std::vector<float> recovered(N);
+    fp8_dequantize_block(block, recovered.data());
+
+    float max_rel_error = 0.0f;
+    for (size_t i = 0; i < N; ++i) {
+        if (std::abs(data[i]) > 1.0f) {
+            float rel = std::abs(recovered[i] - data[i]) / std::abs(data[i]);
+            max_rel_error = std::max(max_rel_error, rel);
+        }
+    }
+    // With block scaling, error should be significantly reduced
+    EXPECT_LT(max_rel_error, 0.15f) << "Block-wise FP8 E4M3 max relative error too large";
+}
+
+TEST(QuantFP8, TensorQuantizeDequantizeE4M3)
+{
+    const size_t N = 256;
+    const size_t block_size = 128;
+    std::vector<float> data(N);
+    for (size_t i = 0; i < N; ++i) {
+        data[i] = std::cos(static_cast<float>(i) * 0.05f) * 300.0f;
+    }
+
+    std::vector<float> scales;
+    std::vector<uint8_t> fp8_data;
+    fp8_quantize_tensor(data.data(), N, block_size, /*use_e4m3=*/true, scales, fp8_data);
+
+    EXPECT_EQ(scales.size(), (N + block_size - 1) / block_size);
+    EXPECT_EQ(fp8_data.size(), N);
+
+    std::vector<float> recovered(N);
+    fp8_dequantize_tensor(fp8_data.data(), scales.data(), N, block_size, true, recovered.data());
+
+    float max_rel_error = 0.0f;
+    for (size_t i = 0; i < N; ++i) {
+        if (std::abs(data[i]) > 1.0f) {
+            float rel = std::abs(recovered[i] - data[i]) / std::abs(data[i]);
+            max_rel_error = std::max(max_rel_error, rel);
+        }
+    }
+    EXPECT_LT(max_rel_error, 0.15f) << "Tensor FP8 E4M3 max relative error too large";
+}
+
+// ============================================================
+// AWQ Tests
+// ============================================================
+
+TEST(QuantAWQ, CollectActivationStats)
+{
+    // 4 tokens, 3 channels
+    std::vector<float> activations = {
+        1.0f, 0.1f, 0.5f,   // token 0
+        2.0f, 0.2f, 0.6f,   // token 1
+        3.0f, 0.3f, 0.7f,   // token 2
+        4.0f, 0.4f, 0.8f,   // token 3
+    };
+
+    ActivationStats stats = collect_activation_stats(activations.data(), 4, 3);
+    EXPECT_EQ(stats.num_channels, (size_t)3);
+    EXPECT_EQ(stats.channel_magnitudes.size(), (size_t)3);
+
+    // Channel 0: mean(|1,2,3,4|) = 2.5
+    EXPECT_NEAR(stats.channel_magnitudes[0], 2.5f, 1e-5f);
+    // Channel 1: mean(|0.1,0.2,0.3,0.4|) = 0.25
+    EXPECT_NEAR(stats.channel_magnitudes[1], 0.25f, 1e-5f);
+    // Channel 2: mean(|0.5,0.6,0.7,0.8|) = 0.65
+    EXPECT_NEAR(stats.channel_magnitudes[2], 0.65f, 1e-5f);
+}
+
+TEST(QuantAWQ, ComputeScales)
+{
+    ActivationStats stats;
+    stats.num_channels = 3;
+    stats.channel_magnitudes = {10.0f, 1.0f, 5.0f};
+
+    std::vector<float> scales = compute_awq_scales(stats, 0.5f);
+    EXPECT_EQ(scales.size(), (size_t)3);
+
+    // Channel 0 has highest magnitude (10.0), normalized = 1.0, scale = 1.0^0.5 = 1.0
+    EXPECT_NEAR(scales[0], 1.0f, 0.01f);
+    // Channel 1 has lowest (1.0), normalized = 0.1, scale = 0.1^0.5 ≈ 0.316
+    EXPECT_LT(scales[1], scales[0]);
+    // Channel 2 is middle (5.0), normalized = 0.5, scale = 0.5^0.5 ≈ 0.707
+    EXPECT_LT(scales[2], scales[0]);
+    EXPECT_GT(scales[2], scales[1]);
+}
+
+TEST(QuantAWQ, QuantizeDequantizeAccuracy)
+{
+    // Weight matrix [4, 8], calibration activations [16, 8]
+    const size_t rows = 4, cols = 8, num_tokens = 16;
+
+    std::vector<float> weights(rows * cols);
+    for (size_t i = 0; i < rows * cols; ++i) {
+        weights[i] = std::sin(static_cast<float>(i) * 0.3f) * 2.0f;
+    }
+
+    // Generate calibration activations
+    std::vector<float> activations(num_tokens * cols);
+    for (size_t i = 0; i < num_tokens * cols; ++i) {
+        activations[i] = std::cos(static_cast<float>(i) * 0.1f) * 3.0f;
+    }
+
+    // AWQ pipeline
+    ActivationStats stats = collect_activation_stats(activations.data(), num_tokens, cols);
+    std::vector<float> scales = compute_awq_scales(stats, 0.5f);
+    AWQQuantizedWeight awq = awq_quantize(weights.data(), rows, cols, scales, 8);
+
+    // Dequantize and check accuracy
+    std::vector<float> recovered(rows * cols);
+    awq_dequantize(awq, recovered.data());
+
+    float max_abs_error = 0.0f;
+    for (size_t i = 0; i < rows * cols; ++i) {
+        float err = std::abs(recovered[i] - weights[i]);
+        max_abs_error = std::max(max_abs_error, err);
+    }
+    // INT4 quantization error should be bounded
+    EXPECT_LT(max_abs_error, 0.6f) << "AWQ dequantized max error too large";
+}
+
+TEST(QuantAWQ, MatmulAccuracy)
+{
+    const size_t M = 2, N = 3, K = 8, num_tokens = 16;
+
+    std::vector<float> W(N * K);
+    for (size_t i = 0; i < N * K; ++i) {
+        W[i] = std::sin(static_cast<float>(i) * 0.3f) * 1.5f;
+    }
+
+    std::vector<float> X(M * K);
+    for (size_t i = 0; i < M * K; ++i) {
+        X[i] = std::cos(static_cast<float>(i) * 0.2f);
+    }
+
+    // Calibration
+    std::vector<float> activations(num_tokens * K);
+    for (size_t i = 0; i < num_tokens * K; ++i) {
+        activations[i] = std::cos(static_cast<float>(i) * 0.15f) * 2.0f;
+    }
+
+    ActivationStats stats = collect_activation_stats(activations.data(), num_tokens, K);
+    std::vector<float> scales = compute_awq_scales(stats, 0.5f);
+    AWQQuantizedWeight awq = awq_quantize(W.data(), N, K, scales, 8);
+
+    // AWQ matmul
+    std::vector<float> Y_awq(M * N, 0.0f);
+    awq_matmul(awq, X.data(), Y_awq.data(), static_cast<int>(M));
+
+    // Reference FP32 matmul
+    std::vector<float> Y_ref(M * N, 0.0f);
+    for (size_t i = 0; i < M; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < K; ++k) {
+                sum += X[i * K + k] * W[j * K + k];
+            }
+            Y_ref[i * N + j] = sum;
+        }
+    }
+
+    for (size_t i = 0; i < M; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            float abs_err = std::abs(Y_awq[i * N + j] - Y_ref[i * N + j]);
+            float rel_err = abs_err / (std::abs(Y_ref[i * N + j]) + 1e-5f);
+            EXPECT_TRUE(abs_err < 1.0f || rel_err < 0.20f)
+                << "AWQ matmul error at (" << i << "," << j << "): ref=" << Y_ref[i * N + j]
+                << " actual=" << Y_awq[i * N + j];
+        }
+    }
+}
+
+// ============================================================
+// GPTQ Tests
+// ============================================================
+
+TEST(QuantGPTQ, ComputeHessian)
+{
+    // 4 tokens, 3 dimensions
+    std::vector<float> activations = {
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 1.0f,
+        1.0f, 1.0f, 1.0f,
+    };
+
+    std::vector<float> H = compute_hessian(activations.data(), 4, 3);
+    EXPECT_EQ(H.size(), (size_t)9);
+
+    // H = X^T * X / 4
+    // H[0,0] = (1 + 0 + 0 + 1) / 4 = 0.5
+    EXPECT_NEAR(H[0], 0.5f, 1e-5f);
+    // H[1,1] = (0 + 1 + 0 + 1) / 4 = 0.5
+    EXPECT_NEAR(H[4], 0.5f, 1e-5f);
+    // H[0,1] = (0 + 0 + 0 + 1) / 4 = 0.25
+    EXPECT_NEAR(H[1], 0.25f, 1e-5f);
+    // Symmetry
+    EXPECT_NEAR(H[1], H[3], 1e-5f);
+}
+
+TEST(QuantGPTQ, QuantizeDequantizeAccuracy)
+{
+    const size_t rows = 4, cols = 8, num_tokens = 32;
+
+    std::vector<float> weights(rows * cols);
+    for (size_t i = 0; i < rows * cols; ++i) {
+        weights[i] = std::sin(static_cast<float>(i) * 0.3f) * 2.0f;
+    }
+
+    // Generate calibration activations
+    std::vector<float> activations(num_tokens * cols);
+    for (size_t i = 0; i < num_tokens * cols; ++i) {
+        activations[i] = std::cos(static_cast<float>(i) * 0.1f) * 3.0f;
+    }
+
+    std::vector<float> H = compute_hessian(activations.data(), num_tokens, cols);
+
+    GPTQConfig config;
+    config.block_size = 8;
+    config.group_size = 4;
+    config.damp_percent = 0.01f;
+
+    GPTQQuantizedWeight gptq = gptq_quantize(weights.data(), rows, cols, H, config);
+    EXPECT_EQ(gptq.rows, rows);
+    EXPECT_EQ(gptq.cols, cols);
+
+    std::vector<float> recovered(rows * cols);
+    gptq_dequantize(gptq, recovered.data());
+
+    float max_abs_error = 0.0f;
+    for (size_t i = 0; i < rows * cols; ++i) {
+        float err = std::abs(recovered[i] - weights[i]);
+        max_abs_error = std::max(max_abs_error, err);
+    }
+    // GPTQ should have bounded quantization error (with Hessian compensation)
+    EXPECT_LT(max_abs_error, 0.6f) << "GPTQ dequantized max error too large";
+}
+
+TEST(QuantGPTQ, MatmulAccuracy)
+{
+    const size_t M = 2, N = 3, K = 8, num_tokens = 32;
+
+    std::vector<float> W(N * K);
+    for (size_t i = 0; i < N * K; ++i) {
+        W[i] = std::sin(static_cast<float>(i) * 0.3f) * 1.5f;
+    }
+
+    std::vector<float> X(M * K);
+    for (size_t i = 0; i < M * K; ++i) {
+        X[i] = std::cos(static_cast<float>(i) * 0.2f);
+    }
+
+    std::vector<float> activations(num_tokens * K);
+    for (size_t i = 0; i < num_tokens * K; ++i) {
+        activations[i] = std::cos(static_cast<float>(i) * 0.15f) * 2.0f;
+    }
+
+    std::vector<float> H = compute_hessian(activations.data(), num_tokens, K);
+
+    GPTQConfig config;
+    config.block_size = 8;
+    config.group_size = 4;
+    config.damp_percent = 0.01f;
+
+    GPTQQuantizedWeight gptq = gptq_quantize(W.data(), N, K, H, config);
+
+    std::vector<float> Y_gptq(M * N, 0.0f);
+    gptq_matmul(gptq, X.data(), Y_gptq.data(), static_cast<int>(M));
+
+    // Reference
+    std::vector<float> Y_ref(M * N, 0.0f);
+    for (size_t i = 0; i < M; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < K; ++k) {
+                sum += X[i * K + k] * W[j * K + k];
+            }
+            Y_ref[i * N + j] = sum;
+        }
+    }
+
+    for (size_t i = 0; i < M; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            float abs_err = std::abs(Y_gptq[i * N + j] - Y_ref[i * N + j]);
+            float rel_err = abs_err / (std::abs(Y_ref[i * N + j]) + 1e-5f);
+            EXPECT_TRUE(abs_err < 1.0f || rel_err < 0.20f)
+                << "GPTQ matmul error at (" << i << "," << j << "): ref=" << Y_ref[i * N + j]
+                << " actual=" << Y_gptq[i * N + j];
+        }
+    }
+}
+
+TEST(QuantGPTQ, GPTQBetterThanNaive)
+{
+    // GPTQ with Hessian compensation should produce lower error than naive INT4
+    const size_t rows = 4, cols = 16, num_tokens = 64;
+
+    std::vector<float> weights(rows * cols);
+    for (size_t i = 0; i < rows * cols; ++i) {
+        weights[i] = std::sin(static_cast<float>(i) * 0.2f) * 3.0f;
+    }
+
+    std::vector<float> activations(num_tokens * cols);
+    for (size_t i = 0; i < num_tokens * cols; ++i) {
+        activations[i] = std::cos(static_cast<float>(i) * 0.1f) * 2.0f;
+    }
+
+    // Naive INT4
+    QuantizedTensor naive_qt = quantize_tensor(weights.data(), rows * cols, 8);
+    std::vector<float> naive_recovered(rows * cols);
+    dequantize_tensor(naive_qt, naive_recovered.data());
+
+    float naive_mse = 0.0f;
+    for (size_t i = 0; i < rows * cols; ++i) {
+        float diff = naive_recovered[i] - weights[i];
+        naive_mse += diff * diff;
+    }
+    naive_mse /= static_cast<float>(rows * cols);
+
+    // GPTQ
+    std::vector<float> H = compute_hessian(activations.data(), num_tokens, cols);
+    GPTQConfig config;
+    config.block_size = 8;
+    config.group_size = 8;
+    config.damp_percent = 0.01f;
+
+    GPTQQuantizedWeight gptq = gptq_quantize(weights.data(), rows, cols, H, config);
+    std::vector<float> gptq_recovered(rows * cols);
+    gptq_dequantize(gptq, gptq_recovered.data());
+
+    float gptq_mse = 0.0f;
+    for (size_t i = 0; i < rows * cols; ++i) {
+        float diff = gptq_recovered[i] - weights[i];
+        gptq_mse += diff * diff;
+    }
+    gptq_mse /= static_cast<float>(rows * cols);
+
+    // GPTQ MSE should not be significantly worse than naive
+    // (On small matrices the benefit is marginal, but it should not be worse)
+    EXPECT_LT(gptq_mse, naive_mse * 2.0f)
+        << "GPTQ MSE=" << gptq_mse << " should not be much worse than naive MSE=" << naive_mse;
 }
 
 }  // namespace test

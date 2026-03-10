@@ -29,6 +29,9 @@ add_library(serius_core
     quant/conversions.cpp
     quant/int4.cpp
     quant/dequant_matmul.cpp
+    quant/fp8.cpp
+    quant/awq.cpp
+    quant/gptq.cpp
     debug/tensor_logger.cpp
     io/config_loader.cpp
     io/gguf_loader.cpp
