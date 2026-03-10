@@ -7,7 +7,6 @@
 #include <iostream>
 #include <stdexcept>
 
-
 #define CHECK_CUDA(call)                                                                             \
     do {                                                                                             \
         cudaError_t err = call;                                                                      \
@@ -26,6 +25,14 @@ void *CudaBackend::malloc(size_t size)
     if (size == 0) return nullptr;
     void *ptr = nullptr;
     CHECK_CUDA(cudaMalloc(&ptr, size));
+    return ptr;
+}
+
+void *CudaBackend::malloc_managed(size_t size)
+{
+    if (size == 0) return nullptr;
+    void *ptr = nullptr;
+    CHECK_CUDA(cudaMallocManaged(&ptr, size));
     return ptr;
 }
 

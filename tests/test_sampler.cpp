@@ -1,6 +1,8 @@
+#include <gtest/gtest.h>
+
 #include "infer/sampler.h"
 #include "tensor/tensor.h"
-#include <gtest/gtest.h>
+
 
 TEST(Sampler, Greedy)
 {
@@ -8,7 +10,7 @@ TEST(Sampler, Greedy)
     std::vector<size_t> shape = {10};
     serius::core::Tensor logits(shape);
     logits.fill(0.f);
-    logits.at(3) = 1.f;
+    logits[3] = 1.f;
     int tok = sampler.sample_greedy(logits);
     EXPECT_EQ(tok, 3);
 }

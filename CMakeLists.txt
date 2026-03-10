@@ -30,8 +30,13 @@ FetchContent_Declare(googletest
 FetchContent_Declare(httplib
     GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
     GIT_TAG v0.15.3)
+# SQLite for hub metadata
+FetchContent_Declare(sqlite3
+    URL https://www.sqlite.org/2024/sqlite-autoconf-3450300.tar.gz)
+# OpenSSL for authentication (optional for now)
+# JWT library (optional for now)
 
-FetchContent_MakeAvailable(json spdlog googletest httplib)
+FetchContent_MakeAvailable(json spdlog googletest httplib sqlite3)
 
 find_package(OpenMP)
 # OpenMP is handled per-target to avoid NVCC compatibility issues

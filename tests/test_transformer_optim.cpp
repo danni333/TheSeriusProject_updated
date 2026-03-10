@@ -7,14 +7,6 @@
 #include "transformer/model.h"
 #include "transformer/paged_kv_cache.h"
 
-int main(int argc, char **argv)
-{
-    fprintf(stderr, "[Main] Starting TransformerOptimTest\n");
-    fflush(stderr);
-    testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
-}
-
 namespace serius {
 namespace test {
 

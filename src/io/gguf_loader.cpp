@@ -33,6 +33,18 @@ GGUFMeta load_gguf_metadata(const std::string &path)
     if (!f || h.magic != GGUF_MAGIC) {
         return out;
     }
+
+    // Validate version: must be in a supported range
+    if (h.version < 1 || h.version > 10) {
+        return out;
+    }
+    // Validate tensor counts: must be reasonable positive values
+    if (h.n_tensors == 0 || h.n_tensors > 1000000) {
+        return out;
+    }
+    if (h.n_kv == 0 || h.n_kv > 1000000) {
+        return out;
+    }
     out.version = h.version;
     out.n_tensors = h.n_tensors;
     out.n_kv = h.n_kv;

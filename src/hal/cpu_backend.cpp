@@ -10,27 +10,20 @@ constexpr size_t ALIGNMENT = 64;
 
 void *CpuBackend::malloc(size_t size)
 {
-    if (size == 0) {
-        return nullptr;
-    }
-
+    if (size == 0) return nullptr;
 #if defined(_MSC_VER)
-    void *ptr = _aligned_malloc(size, ALIGNMENT);
+    return _aligned_malloc(size, ALIGNMENT);
 #else
     void *ptr = nullptr;
-    // posix_memalign requires size to be a multiple of alignment, but it's not strictly
-    // necessary for the allocated block itself, just the requested size.
-    // However, to be safe and consistent with std::aligned_alloc's behavior of
-    // requiring size to be a multiple of alignment, we ensure it here.
-    // The original code used (size + 63) & ~63 to ensure size was a multiple of 64.
-    // posix_memalign doesn't require this for the *requested* size, only that the
-    // alignment itself is a power of 2 and a multiple of sizeof(void*).
-    // Let's simplify and just pass the requested size.
-    if (posix_memalign(&ptr, ALIGNMENT, size) != 0) {
-        ptr = nullptr;
-    }
-#endif
+    if (posix_memalign(&ptr, ALIGNMENT, size) != 0) ptr = nullptr;
     return ptr;
+#endif
+}
+
+void *CpuBackend::malloc_managed(size_t size)
+{
+    // For CPU, managed is just local heap.
+    return malloc(size);
 }
 
 void CpuBackend::free(void *ptr)

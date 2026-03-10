@@ -16,6 +16,7 @@ class CudaBackend : public IBackend
     DeviceType get_type() const override { return DeviceType::CUDA; }
 
     void *malloc(size_t size) override;
+    void *malloc_managed(size_t size) override;
     void free(void *ptr) override;
 
     void memcpy_h2d(void *dst, const void *src, size_t size) override;

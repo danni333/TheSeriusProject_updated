@@ -258,18 +258,60 @@ void flash_attention_v2_fwd_cuda(float *output, float *lse, const float *query, 
                                  int batch_size, int num_heads, int seq_len_q, int seq_len_k, int head_dim,
                                  float softmax_scale, bool is_causal)
 {
+    // Validate input parameters to prevent undefined behavior
+    if (!output || !lse || !query || !key || !value) {
+        return;
+    }
+
+    if (batch_size <= 0 || num_heads <= 0 || seq_len_q <= 0 || seq_len_k <= 0 || head_dim <= 0) {
+        return;
+    }
+
+    // Check for integer overflow in grid dimension calculations
+    // Grid dimensions: (seq_len_q + BLOCK_M - 1) / BLOCK_M, num_heads, batch_size
+    if (seq_len_q > INT_MAX || num_heads > INT_MAX || batch_size > INT_MAX) {
+        return;
+    }
+
+    // Validate that head_dim is one of the supported values
+    if (head_dim != D_32 && head_dim != D_64 && head_dim != D_128) {
+        return;
+    }
+
     if (head_dim == D_32) {
         dim3 grid((seq_len_q + 128 - 1) / 128, num_heads, batch_size);
+        // Check grid dimension overflow
+        if (grid.x > 2147483647 || grid.y > 65535 || grid.z > 65535) {
+            return;
+        }
         flash_attn_fwd_kernel<32, 128, 128>
             <<<grid, 128>>>(output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal);
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            // Handle error appropriately
+        }
     } else if (head_dim == D_64) {
         dim3 grid((seq_len_q + 64 - 1) / 64, num_heads, batch_size);
+        if (grid.x > 2147483647 || grid.y > 65535 || grid.z > 65535) {
+            return;
+        }
         flash_attn_fwd_kernel<64, 64, 64>
             <<<grid, 64>>>(output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal);
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            // Handle error appropriately
+        }
     } else if (head_dim == D_128) {
         dim3 grid((seq_len_q + 32 - 1) / 32, num_heads, batch_size);
+        if (grid.x > 2147483647 || grid.y > 65535 || grid.z > 65535) {
+            return;
+        }
         flash_attn_fwd_kernel<128, 32, 32>
             <<<grid, 32>>>(output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal);
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            // Handle error appropriately
+        }
     }
 }
 

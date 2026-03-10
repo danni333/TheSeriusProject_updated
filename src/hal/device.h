@@ -19,6 +19,7 @@ class IBackend
 
     // Memory Management
     virtual void *malloc(size_t size) = 0;
+    virtual void *malloc_managed(size_t size) = 0;
     virtual void free(void *ptr) = 0;
 
     virtual void memcpy_h2d(void *dst, const void *src, size_t size) = 0;

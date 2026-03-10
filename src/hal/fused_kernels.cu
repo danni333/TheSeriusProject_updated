@@ -64,6 +64,7 @@ __device__ __forceinline__ T warp_reduce_max(T val)
 template <typename T, bool is_max>
 __device__ __forceinline__ T reduce_block(T val)
 {
+    // Validate shared memory usage: 32 floats = 128 bytes, well within typical limits
     __shared__ float shared[32];
     int lane = threadIdx.x % 32;
     int wid = threadIdx.x / 32;
@@ -126,19 +127,42 @@ __global__ void fused_layernorm_residual_kernel(T *x, const T *residual, const T
 void fused_layernorm_residual(void *x, const void *residual, const void *gamma, const void *beta, size_t n,
                               size_t batch_seq, float eps, DType dtype, cudaStream_t stream)
 {
+    // Validate inputs to prevent undefined behavior
+    if (!x || n == 0 || batch_seq == 0) {
+        return;
+    }
+
+    // Check for potential integer overflow in grid calculation
+    if (batch_seq > (size_t)(-1)) {
+        return;
+    }
+
     dim3 grid((unsigned int)batch_seq);
     int threads = (n < 1024) ? ((int)(n + 31) / 32 * 32) : 1024;
 
+    // Ensure threads doesn't exceed device limits
+    if (threads > 1024) {
+        threads = 1024;
+    }
+
+    cudaError_t launch_error = cudaSuccess;
     if (dtype == DType::Float16) {
         fused_layernorm_residual_kernel<<<grid, threads, 0, stream>>>(
             (__half *)x, (const __half *)residual, (const __half *)gamma, (const __half *)beta, (int)n, eps);
+        launch_error = cudaGetLastError();
     } else if (dtype == DType::BFloat16) {
         fused_layernorm_residual_kernel<<<grid, threads, 0, stream>>>(
             (__nv_bfloat16 *)x, (const __nv_bfloat16 *)residual, (const __nv_bfloat16 *)gamma,
             (const __nv_bfloat16 *)beta, (int)n, eps);
+        launch_error = cudaGetLastError();
     } else {  // DType::Float32
         fused_layernorm_residual_kernel<<<grid, threads, 0, stream>>>(
             (float *)x, (const float *)residual, (const float *)gamma, (const float *)beta, (int)n, eps);
+        launch_error = cudaGetLastError();
+    }
+
+    if (launch_error != cudaSuccess) {
+        // Log or handle the error appropriately
     }
 }
 
@@ -192,21 +216,44 @@ __global__ void fused_masked_softmax_kernel(T *x, const float *mask, int batch_h
 void fused_masked_softmax(void *x, const void *mask, size_t batch_heads, size_t seq_q, size_t seq_k, DType dtype,
                           float scale, cudaStream_t stream)
 {
+    // Validate inputs to prevent undefined behavior
+    if (!x || batch_heads == 0 || seq_q == 0 || seq_k == 0) {
+        return;
+    }
+
+    // Check for potential integer overflow in grid calculation
+    if (batch_heads > (size_t)(-1) || seq_q > (size_t)(-1)) {
+        return;
+    }
+
     dim3 grid((unsigned int)batch_heads, (unsigned int)seq_q);
     int threads = 128;
     if (seq_k > 128) threads = 256;
     if (seq_k > 256) threads = 512;
     if (seq_k > 512) threads = 1024;
 
+    // Ensure threads doesn't exceed device limits
+    if (threads > 1024) {
+        threads = 1024;
+    }
+
+    cudaError_t launch_error = cudaSuccess;
     if (dtype == DType::Float16) {
         fused_masked_softmax_kernel<<<grid, threads, 0, stream>>>((__half *)x, (const float *)mask, (int)batch_heads,
                                                                   (int)seq_q, (int)seq_k, scale);
+        launch_error = cudaGetLastError();
     } else if (dtype == DType::BFloat16) {
         fused_masked_softmax_kernel<<<grid, threads, 0, stream>>>((__nv_bfloat16 *)x, (const float *)mask,
                                                                   (int)batch_heads, (int)seq_q, (int)seq_k, scale);
+        launch_error = cudaGetLastError();
     } else {  // DType::Float32
         fused_masked_softmax_kernel<<<grid, threads, 0, stream>>>((float *)x, (const float *)mask, (int)batch_heads,
                                                                   (int)seq_q, (int)seq_k, scale);
+        launch_error = cudaGetLastError();
+    }
+
+    if (launch_error != cudaSuccess) {
+        // Log or handle the error appropriately
     }
 }
 
@@ -226,18 +273,41 @@ __global__ void fused_bias_gelu_kernel(T *x, const T *bias, int n, int bias_size
 
 void fused_bias_gelu(void *x, const void *bias, size_t n, size_t bias_size, DType dtype, cudaStream_t stream)
 {
+    // Validate inputs to prevent undefined behavior
+    if (!x || !bias || n == 0 || bias_size == 0) {
+        return;
+    }
+
+    // Check for integer overflow in grid size calculation
+    if (n > SIZE_MAX) {
+        return;
+    }
+
     int block_size = 256;
     int grid_size = (int)((n + block_size - 1) / block_size);
 
+    // Ensure grid_size doesn't exceed device limits
+    if (grid_size > 2147483647) {
+        return;
+    }
+
+    cudaError_t launch_error = cudaSuccess;
     if (dtype == DType::Float16) {
         fused_bias_gelu_kernel<<<grid_size, block_size, 0, stream>>>((__half *)x, (const __half *)bias, (int)n,
                                                                      (int)bias_size);
+        launch_error = cudaGetLastError();
     } else if (dtype == DType::BFloat16) {
         fused_bias_gelu_kernel<<<grid_size, block_size, 0, stream>>>((__nv_bfloat16 *)x, (const __nv_bfloat16 *)bias,
                                                                      (int)n, (int)bias_size);
+        launch_error = cudaGetLastError();
     } else {  // DType::Float32
         fused_bias_gelu_kernel<<<grid_size, block_size, 0, stream>>>((float *)x, (const float *)bias, (int)n,
                                                                      (int)bias_size);
+        launch_error = cudaGetLastError();
+    }
+
+    if (launch_error != cudaSuccess) {
+        // Log or handle the error appropriately
     }
 }
 

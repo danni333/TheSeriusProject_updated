@@ -80,7 +80,15 @@ endif()
 target_include_directories(serius_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json)
 
+# --- Server library ---
+add_library(serius_server STATIC server/server.cpp)
+target_link_libraries(serius_server PUBLIC serius_core httplib::httplib)
+target_include_directories(serius_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# --- Hub components (Phase 65) ---
+add_subdirectory(hub)
+
 # --- CLI executable (serve, chat) ---
-add_executable(serius app/main.cpp server/server.cpp)
-target_link_libraries(serius PRIVATE serius_core httplib::httplib)
+add_executable(serius app/main.cpp)
+target_link_libraries(serius PRIVATE serius_core serius_server)
 target_include_directories(serius PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

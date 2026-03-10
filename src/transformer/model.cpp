@@ -117,31 +117,20 @@ void TransformerModel::do_embedding_backward(Node *token_ids, const EmbeddingDim
 Node *TransformerModel::forward(Node *token_ids, std::vector<PagedKVCache *> *caches) const
 {
     using namespace core::autograd::ops;
-    fprintf(stderr, "[Model] Forward for IDs shape rank %zu\n", token_ids->data.ndim());
-    fflush(stderr);
 
     // Lookup embeddings
     Node *hidden_state = embedding_lookup(token_ids);
-    fprintf(stderr, "[Model] Embedding Done\n");
-    fflush(stderr);
-
     // Pass through transformer blocks
     for (size_t block_idx = 0; block_idx < blocks.size(); ++block_idx) {
-        fprintf(stderr, "[Model] Layer %zu Start\n", block_idx);
-        fflush(stderr);
         PagedKVCache *current_cache =
             (caches != nullptr && block_idx < caches->size()) ? (*caches)[block_idx] : nullptr;
         hidden_state = blocks[block_idx]->forward_optimized(hidden_state, current_cache);
     }
 
     // Final layer norm
-    fprintf(stderr, "[Model] Final Norm Start\n");
-    fflush(stderr);
     hidden_state = final_norm->forward(hidden_state);
 
     // Project to vocabulary
-    fprintf(stderr, "[Model] Output Proj Start\n");
-    fflush(stderr);
     return matmul(hidden_state, output_proj);
 }
 

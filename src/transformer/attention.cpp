@@ -152,14 +152,10 @@ Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
     Node *context_transposed = contiguous(transpose(context_heads, 1, 2));
     Node *context_merged = reshape(context_transposed, {batch_size, seq_len, d_model_});
 
-    fprintf(stderr, "[Attention] Projecting output\n");
-    fflush(stderr);
     // Final linear projection
     Node *output = matmul(context_merged, w_o);
 
     if (input->data.ndim() == 2) {
-        fprintf(stderr, "[Attention] Reshaping to 2D\n");
-        fflush(stderr);
         return reshape(output, {seq_len, d_model_});
     }
     return output;

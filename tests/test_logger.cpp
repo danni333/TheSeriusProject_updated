@@ -4,7 +4,7 @@
 #include <fstream>
 
 #include "../src/debug/tensor_logger.h"
-
+#include "autograd/node.h"
 
 using namespace serius;
 using namespace serius::debug;

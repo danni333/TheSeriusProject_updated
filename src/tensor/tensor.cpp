@@ -784,13 +784,6 @@ Tensor Tensor::operator+(const Tensor &other) const
         return result;
     }
 
-    fprintf(stderr, "[Tensor] Shapes mismatch for operator+: [");
-    for (size_t i = 0; i < ndim(); ++i) fprintf(stderr, "%zu%s", shape_[i], i == ndim() - 1 ? "" : ",");
-    fprintf(stderr, "] + [");
-    for (size_t i = 0; i < other.ndim(); ++i)
-        fprintf(stderr, "%zu%s", other.shape()[i], i == other.ndim() - 1 ? "" : ",");
-    fprintf(stderr, "]\n");
-    fflush(stderr);
     throw std::invalid_argument("Shapes must match or be broadcastable for operator+");
 }
 
