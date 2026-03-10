@@ -27,6 +27,12 @@ add_library(serius_core
     quant/conversions.cpp
     quant/int4.cpp
     quant/dequant_matmul.cpp
+    init/weight_init.cpp
+    stability/grad_clip.cpp
+    stability/loss_scaler.cpp
+    stability/ema.cpp
+    inference/sampler.cpp
+    inference/generate.cpp
 )
 
 if(SERIUS_USE_CUDA)

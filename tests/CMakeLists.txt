@@ -82,3 +82,13 @@ gtest_discover_tests(test_fused_cuda DISCOVERY_TIMEOUT 10)
 add_executable(test_quant test_quant.cpp)
 target_link_libraries(test_quant PRIVATE gtest_main serius_core)
 gtest_discover_tests(test_quant DISCOVERY_TIMEOUT 10)
+
+# Stability Tests (Fase 9: Weight Init, Gradient Clipping, Loss Scaling, EMA)
+add_executable(test_stability test_stability.cpp)
+target_link_libraries(test_stability PRIVATE gtest_main serius_core)
+gtest_discover_tests(test_stability DISCOVERY_TIMEOUT 10)
+
+# Sampling Tests (Fase 10: Top-K, Top-P, Temperature, Repetition Penalty)
+add_executable(test_sampling test_sampling.cpp)
+target_link_libraries(test_sampling PRIVATE gtest_main serius_core)
+gtest_discover_tests(test_sampling DISCOVERY_TIMEOUT 10)
