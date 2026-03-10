@@ -83,6 +83,9 @@ target_link_libraries(bench_memory PRIVATE serius_core)
 add_executable(bench_mixed_precision bench_mixed_precision.cpp)
 target_link_libraries(bench_mixed_precision PRIVATE serius_core)
 
+add_executable(bench_quant bench_quant.cpp)
+target_link_libraries(bench_quant PRIVATE serius_core)
+
 # Discovery
 gtest_discover_tests(test_tensor)
 gtest_discover_tests(test_autograd)
