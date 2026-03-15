@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "../tensor/tensor.h"
+
 namespace serius {
 namespace distributed {
 
@@ -56,28 +58,25 @@ class Communicator
 
     /// AllReduce: every process contributes data, every process receives the reduction.
     /// The result is written back to the same buffer (in-place).
-    ///
-    /// @param buffer  Data buffer (in/out), same size on all ranks
-    /// @param count   Number of float elements
-    /// @param op      Reduction operation (Sum, Avg, Min, Max)
     virtual void all_reduce(float *buffer, size_t count, ReduceOp op) = 0;
 
+    /// Tensor-based AllReduce
+    virtual void all_reduce(core::Tensor &tensor, ReduceOp op) = 0;
+
     /// Broadcast: rank `root` sends data to all other ranks.
-    /// After the call, all ranks have the same data in `buffer`.
-    ///
-    /// @param buffer  Data buffer (in on root, out on others)
-    /// @param count   Number of float elements
-    /// @param root    Rank of the sender
     virtual void broadcast(float *buffer, size_t count, int root = 0) = 0;
 
+    /// Tensor-based Broadcast
+    virtual void broadcast(core::Tensor &tensor, int root = 0) = 0;
+
     /// AllGather: every rank contributes `send_count` elements,
-    /// every rank receives all contributions concatenated.
-    ///
-    /// @param send_buf   Local data to contribute [send_count]
-    /// @param send_count Number of elements to send from this rank
-    /// @param recv_buf   Output buffer [send_count * world_size]
     virtual void all_gather(const float *send_buf, size_t send_count,
                             float *recv_buf) = 0;
+
+    /// Tensor-based AllGather
+    /// recv_tensor must have world_size times the size of send_tensor
+    virtual void all_gather(const core::Tensor &send_tensor,
+                             core::Tensor &recv_tensor) = 0;
 
     /// ReduceScatter: reduce across ranks, then scatter the result.
     /// Each rank receives a different chunk of the reduced data.

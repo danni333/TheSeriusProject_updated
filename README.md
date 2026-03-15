@@ -14,7 +14,8 @@ TheSeriusProject fornisce:
 
 - **Motore tensoriale custom**: implementazione di operazioni base (BLAS‑like), autograd e kernel specializzati.
 - **Supporto multi‑backend**: CPU scalar/AVX/AVX2/AVX‑512, CUDA (dove disponibile).
-- **Stack Transformer completo**: attenzione, FFN, layernorm, KV cache, positional encoding, training loop.
+- **Stack Transformer completo**: attenzione (MLA-like), RoPE, FFN, layernorm, KV cache, training loop.
+- **Calcolo Distribuito**: supporto per Data Parallelism (DP), Pipeline Parallelism (PP) e Tensor Parallelism (TP).
 - **Suite di test & benchmark**: test unitari granulari e benchmark per matmul, memoria, mixed precision, ecc.
 
 Il progetto è organizzato in più fasi (`todo/`), ciascuna focalizzata su un aspetto (fondamenta, tokenizer, quantizzazione, distribuzione, documentazione, ecc.).

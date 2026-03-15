@@ -69,7 +69,7 @@ Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
     Node *values = matmul(c_t, w_uv);
 
     // --- RoPE (Differentiable) ---
-    size_t pos_offset = cache ? cache->current_len() : 0;
+    size_t pos_offset = (cache != nullptr) ? cache->current_len() : 0;
     RoPEResult rope_out = rope(queries, keys, d_head_, DEFAULT_ROPE_BASE, pos_offset);
     Node *q_rot = rope_out.queries;
     Node *k_rot = rope_out.keys;
@@ -110,45 +110,65 @@ Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
 
     size_t total_seq_len = (cache != nullptr) ? cache->current_len() : seq_len;
 
-    // Flatten: (B, H, S, D_h) -> (B*H, S, D_h)
-    size_t batch_heads = batch_size * n_heads;
-    Node *q_flat = reshape(q_heads, {batch_heads, seq_len, d_head});
-    Node *k_flat = reshape(k_heads, {batch_heads, total_seq_len, d_head});
-    Node *v_flat = reshape(v_heads, {batch_heads, total_seq_len, d_head});
+    // --- Scaled Dot-Product Attention (Flash or Standard) ---
 
-    // --- Scaled Dot-Product Attention ---
+#ifdef SERIUS_USE_CUDA
+    // Use Flash Attention for CUDA during prefill (no cache) or training
+    if (q_heads->data.is_gpu() && cache == nullptr) {
+        serius::model::attention::FlashAttentionConfig flash_config;
+        flash_config.is_causal = true;
+        flash_config.softmax_scale = 1.0F / std::sqrt(static_cast<float>(d_head));
 
-    // 1. Scores = (Q * K^T) / sqrt(d_k)
-    Node *k_t = contiguous(transpose(k_flat, 1, 2));
-    Node *scores = matmul(q_flat, k_t);
+        Node *context_fused =
+            serius::model::attention::flash_attention(q_heads, k_heads, v_heads, flash_config);
 
-    float scale_factor = 1.0F / std::sqrt(static_cast<float>(d_head));
-    // 2. Causal Masking (Optimized: reuse cached mask if possible)
-    // In incremental mode (cache provided), seq_len is typically 1, but we need full attn mask relative to
-    // total_seq_len
-    if (mask_seq_len_ != total_seq_len) {
-        cached_mask_ = Tensor({total_seq_len, total_seq_len});
-        for (size_t r_idx = 0; r_idx < total_seq_len; ++r_idx) {
-            for (size_t c_idx = r_idx + 1; c_idx < total_seq_len; ++c_idx) {
-                cached_mask_.at(r_idx, c_idx) = 1.0F;
-            }
+        // Context heads from flash: (B, H, S, D_h)
+        Node *context_transposed = contiguous(transpose(context_fused, 1, 2));
+        Node *context_merged = reshape(context_transposed, {batch_size, seq_len, d_model_});
+
+        // Final linear projection
+        Node *output = matmul(context_merged, w_o);
+
+        if (input->data.ndim() == 2) {
+            return reshape(output, {seq_len, d_model_});
         }
-        mask_seq_len_ = total_seq_len;
+        return output;
+    }
+#endif
+
+    // Standard Path (CPU or fallbacks)
+    // Scores: (B, H, S_q, D_h) * (B, H, D_h, S_k) -> (B, H, S_q, S_k)
+    Node *k_heads_t = transpose(k_heads, 2, 3);
+    Node *scores = matmul(q_heads, k_heads_t);
+
+    float scale = 1.0F / std::sqrt(static_cast<float>(d_head));
+    Node *probs;
+
+    if (cache == nullptr) {
+        // Training or prefill: apply causal mask
+        if (mask_seq_len_ != total_seq_len) {
+            cached_mask_ = core::Tensor({total_seq_len, total_seq_len});
+            const float MASK_INIT_VAL = 0.0F; 
+            cached_mask_.fill(MASK_INIT_VAL); 
+            // Actually fused_masked_softmax handles the causal mask if we pass a proper mask tensor
+            // Generate causal mask: 1.0 where masked out (future), 0.0 where active
+            for (size_t i = 0; i < total_seq_len; ++i) {
+                for (size_t j = 0; j < total_seq_len; ++j) {
+                    cached_mask_.at(i, j) = (j > i) ? 1.0F : 0.0F;
+                }
+            }
+            mask_seq_len_ = total_seq_len;
+        }
+        probs = fused_masked_softmax(scores, cached_mask_, scale);
+    } else {
+        // Inference with KV cache: strictly 1D mask or no mask if seq_q = 1
+        probs = softmax(mul_scalar(scores, scale), -1);
     }
 
-    // Slice mask for current queries: [seq_len, total_seq_len]
-    // If seq_len=1 (inference), we need row [pos_offset] from mask
-    Tensor current_mask = cached_mask_.slice(0, pos_offset, pos_offset + seq_len);
-    current_mask = current_mask.slice(1, 0, total_seq_len);  // [seq_len, total_seq_len]
-
-    // 2. Fused Masked Softmax (scaling, masking, and softmax in one step)
-    Node *attn_probs = fused_masked_softmax(scores, current_mask, scale_factor);
-
-    // 4. Context = Attn * V
-    Node *context_flat = matmul(attn_probs, v_flat);
+    // Context: (B, H, S_q, S_k) * (B, H, S_k, D_h) -> (B, H, S_q, D_h)
+    Node *context_heads = matmul(probs, v_heads);
 
     // --- Unflatten and Merge ---
-    Node *context_heads = reshape(context_flat, {batch_size, n_heads, seq_len, d_head});
     Node *context_transposed = contiguous(transpose(context_heads, 1, 2));
     Node *context_merged = reshape(context_transposed, {batch_size, seq_len, d_model_});
 

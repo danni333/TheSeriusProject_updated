@@ -5,16 +5,18 @@
 #include <memory>
 #include <vector>
 
-#include "transformer/kv_cache.h"
 #include "transformer/model.h"
+#include "transformer/paged_kv_cache.h"
+
 
 namespace serius {
 namespace test {
 
 namespace autograd = core::autograd;
 using core::Tensor;
-using model::KVCache;
+using model::BlockManager;
 using model::ModelConfig;
+using model::PagedKVCache;
 using model::TransformerModel;
 
 TEST(KVCacheTest, IncrementalInferenceConsistency)
@@ -37,12 +39,12 @@ TEST(KVCacheTest, IncrementalInferenceConsistency)
     autograd::Node *full_logits_node = model.forward(&input_node);
     Tensor full_logits = full_logits_node->data;
 
-    // 2. Incremental forward with KV Cache
-    std::vector<std::unique_ptr<KVCache>> caches;
-    std::vector<KVCache *> cache_ptrs;
+    // 2. Incremental forward with Paged KV Cache
+    auto block_manager = std::make_shared<BlockManager>(128, 8, config.n_heads, config.d_model / config.n_heads);
+    std::vector<std::unique_ptr<PagedKVCache>> caches;
+    std::vector<PagedKVCache *> cache_ptrs;
     for (size_t i = 0; i < config.n_layers; ++i) {
-        caches.push_back(
-            std::make_unique<KVCache>(config.max_seq_len, config.n_heads, config.d_model / config.n_heads));
+        caches.push_back(std::make_unique<PagedKVCache>(block_manager));
         cache_ptrs.push_back(caches.back().get());
     }
 

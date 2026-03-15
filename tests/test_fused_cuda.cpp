@@ -1,3 +1,6 @@
+#include <cuda_fp16.h>
+#include <cuda_runtime.h>
+#include <device_launch_parameters.h>
 #include <gtest/gtest.h>
 
 #include <iostream>

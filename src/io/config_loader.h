@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../transformer/llama_model.h"
+#include "../transformer/qwen_model.h"
 #include "../transformer/model.h"
 
 #include <string>
@@ -16,6 +18,12 @@ model::ModelConfig load_model_config(const std::string &path);
 
 /// Load model config from JSON string (e.g. from API).
 model::ModelConfig load_model_config_from_string(const std::string &json_str);
+
+/// Load QwenConfig from a JSON file (standard config.json format).
+model::QwenConfig load_qwen_config(const std::string &path);
+
+/// Load QwenConfig from JSON string.
+model::QwenConfig load_qwen_config_from_string(const std::string &json_str);
 
 }  // namespace io
 }  // namespace serius

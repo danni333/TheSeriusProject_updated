@@ -106,7 +106,7 @@ TEST(TransformerTest, CausalMask)
 {
     // Use a small model to verify causal masking
     MultiHeadAttention mha(16, 2);
-    Tensor input({4, 16});
+    Tensor input({1, 4, 16});  // (batch, seq, d_model)
 
     // Set initial values
     input.fill(1.0F);
@@ -116,10 +116,10 @@ TEST(TransformerTest, CausalMask)
     Tensor out_full = out_full_node->data;
 
     // With causal mask, changing token 3 should NOT change outputs for tokens 0-2
-    Tensor input_modified({4, 16});
+    Tensor input_modified({1, 4, 16});
     input_modified.fill(1.0F);
     for (size_t di = 0; di < 16; ++di) {
-        input_modified.at(3, di) = 99.0F;
+        input_modified.at(0, 3, di) = 99.0F;
     }
 
     autograd::Node input_modified_node(input_modified, false);

@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "../blas/blas.h"
+#include "../attention/flash_attn.h"
 #ifdef SERIUS_USE_CUDA
 #include "../hal/fused_kernels.h"
 #endif
@@ -18,22 +19,82 @@ Node *matmul(Node *input_a, Node *input_b)
 {
     // Forward pass
     Tensor res({0});
-    if (input_a->data.ndim() == 3 || input_b->data.ndim() == 3) {
+    bool complex_reshape = (input_a->data.ndim() > 3 || input_b->data.ndim() > 3);
+
+    if (complex_reshape) {
+        // Flatten leading dimensions for batched matmul
+        std::vector<size_t> shape_a = input_a->data.shape();
+        std::vector<size_t> shape_b = input_b->data.shape();
+        size_t last_a = shape_a.back();
+        size_t next_last_a = shape_a[shape_a.size() - 2];
+        size_t batch_a = input_a->data.size() / (last_a * next_last_a);
+
+        size_t last_b = shape_b.back();
+        size_t next_last_b = shape_b[shape_b.size() - 2];
+        size_t batch_b = input_b->data.size() / (last_b * next_last_b);
+
+        Tensor a_cont = input_a->data.contiguous();
+        Tensor b_cont = input_b->data.contiguous();
+
+        Tensor a_flat = (input_a->data.ndim() > 2) 
+                        ? a_cont.reshape({batch_a, next_last_a, last_a})
+                        : a_cont;
+        Tensor b_flat = (input_b->data.ndim() > 2)
+                        ? b_cont.reshape({batch_b, next_last_b, last_b})
+                        : b_cont;
+        
+        Tensor res_flat = blas::batched_matmul(a_flat, b_flat);
+        
+        // Reconstruct output shape
+        std::vector<size_t> out_shape;
+        if (input_a->data.ndim() >= input_b->data.ndim()) {
+             out_shape = shape_a;
+             out_shape[out_shape.size() - 1] = last_b;
+        } else {
+             out_shape = shape_b;
+             out_shape[out_shape.size() - 2] = next_last_a;
+        }
+        res = res_flat.reshape(out_shape);
+    } else if (input_a->data.ndim() == 3 || input_b->data.ndim() == 3) {
         res = blas::batched_matmul(input_a->data, input_b->data);
     } else {
         res = blas::matmul(input_a->data, input_b->data);
     }
+    
     Node *out = new Node(std::move(res));
     out->children = {input_a, input_b};
     out->name = "matmul";
 
     // Backward pass
-    out->backward_fn = [input_a, input_b, out]() {
+    out->backward_fn = [input_a, input_b, out, complex_reshape]() {
         if (input_a->requires_grad) {
             // dL/dA = dL/dOut * B^T
             Tensor b_t = input_b->data.transpose();
             Tensor grad_a({0});
-            if (out->grad.ndim() == 3 || b_t.ndim() == 3) {
+            
+            if (complex_reshape || out->grad.ndim() > 3 || b_t.ndim() > 3) {
+                // Similar flattening logic for backward
+                size_t ma_rows = out->grad.shape()[out->grad.ndim() - 2];
+                size_t ma_cols = out->grad.shape().back();
+                size_t ma_batch = out->grad.size() / (ma_rows * ma_cols);
+                
+                size_t mb_rows = b_t.shape()[b_t.ndim() - 2];
+                size_t mb_cols = b_t.shape().back();
+                size_t mb_batch = b_t.size() / (mb_rows * mb_cols);
+                
+                Tensor ma_cont = out->grad.contiguous();
+                Tensor mb_cont = b_t.contiguous();
+
+                Tensor ma_flat = (out->grad.ndim() > 2)
+                                 ? ma_cont.reshape({ma_batch, ma_rows, ma_cols})
+                                 : ma_cont;
+                Tensor mb_flat = (b_t.ndim() > 2)
+                                 ? mb_cont.reshape({mb_batch, mb_rows, mb_cols})
+                                 : mb_cont;
+                
+                Tensor res_flat = blas::batched_matmul(ma_flat, mb_flat);
+                grad_a = res_flat.reshape(input_a->data.shape());
+            } else if (out->grad.ndim() == 3 || b_t.ndim() == 3) {
                 grad_a = blas::batched_matmul(out->grad, b_t);
             } else {
                 grad_a = blas::matmul(out->grad, b_t);
@@ -49,7 +110,29 @@ Node *matmul(Node *input_a, Node *input_b)
             // dL/dB = A^T * dL/dOut
             Tensor a_t = input_a->data.transpose();
             Tensor grad_b({0});
-            if (a_t.ndim() == 3 || out->grad.ndim() == 3) {
+            
+            if (complex_reshape || a_t.ndim() > 3 || out->grad.ndim() > 3) {
+                size_t ma_rows = a_t.shape()[a_t.ndim() - 2];
+                size_t ma_cols = a_t.shape().back();
+                size_t ma_batch = a_t.size() / (ma_rows * ma_cols);
+                
+                size_t mb_rows = out->grad.shape()[out->grad.ndim() - 2];
+                size_t mb_cols = out->grad.shape().back();
+                size_t mb_batch = out->grad.size() / (mb_rows * mb_cols);
+                
+                Tensor ma_cont = a_t.contiguous();
+                Tensor mb_cont = out->grad.contiguous();
+
+                Tensor ma_flat = (a_t.ndim() > 2)
+                                 ? ma_cont.reshape({ma_batch, ma_rows, ma_cols})
+                                 : ma_cont;
+                Tensor mb_flat = (out->grad.ndim() > 2)
+                                 ? mb_cont.reshape({mb_batch, mb_rows, mb_cols})
+                                 : mb_cont;
+                
+                Tensor res_flat = blas::batched_matmul(ma_flat, mb_flat);
+                grad_b = res_flat.reshape(input_b->data.shape());
+            } else if (a_t.ndim() == 3 || out->grad.ndim() == 3) {
                 grad_b = blas::batched_matmul(a_t, out->grad);
             } else {
                 grad_b = blas::matmul(a_t, out->grad);
@@ -168,6 +251,31 @@ Node *gelu(Node *input_node)
                 float deriv = (HALF * (ONE + tanh_val)) +
                               (HALF * x_val * sech2_val * SQRT_2_PI * (ONE + (THREE * GELU_COEFF * x_squared)));
                 input_node->grad[i] += out->grad[i] * deriv;
+            }
+        }
+    };
+    return out;
+}
+
+Node *silu(Node *input_node)
+{
+    // SiLU(x) = x * sigmoid(x)
+    Tensor res(input_node->data.shape());
+    for (size_t i = 0; i < input_node->data.size(); ++i) {
+        float x = input_node->data[i];
+        float s = (x >= 0.0f) ? (1.0f / (1.0f + std::exp(-x))) : (std::exp(x) / (1.0f + std::exp(x)));
+        res[i] = x * s;
+    }
+    Node *out = new Node(std::move(res));
+    out->children = {input_node};
+    out->name = "silu";
+    out->backward_fn = [input_node, out]() {
+        if (input_node->requires_grad) {
+            for (size_t i = 0; i < input_node->data.size(); ++i) {
+                float x = input_node->data[i];
+                float s = (x >= 0.0f) ? (1.0f / (1.0f + std::exp(-x))) : (std::exp(x) / (1.0f + std::exp(x)));
+                float ds = s * (1.0f - s);
+                input_node->grad[i] += out->grad[i] * (s + x * ds);
             }
         }
     };
@@ -625,6 +733,50 @@ Node *layernorm(Node *input, Node *gamma, Node *beta, float eps)
     return out;
 }
 
+Node *rmsnorm(Node *input, Node *gamma, float eps)
+{
+    const Tensor &in_data = input->data;
+    Tensor output_data(in_data.shape(), in_data.dtype());
+    size_t d_model = in_data.shape().back();
+    size_t batch_seq = in_data.size() / d_model;
+    for (size_t batch_idx = 0; batch_idx < batch_seq; ++batch_idx) {
+        float sum_sq = 0.0F;
+        for (size_t i = 0; i < d_model; ++i) {
+            float v = in_data.data()[batch_idx * d_model + i];
+            sum_sq += v * v;
+        }
+        float rms = std::sqrt(sum_sq / static_cast<float>(d_model) + eps);
+        for (size_t i = 0; i < d_model; ++i)
+            output_data.data()[batch_idx * d_model + i] =
+                (in_data.data()[batch_idx * d_model + i] / rms) * gamma->data[i];
+    }
+    Node *out = new Node(std::move(output_data));
+    out->children = {input, gamma};
+    out->name = "rmsnorm";
+    out->backward_fn = [input, gamma, out, eps]() {
+        if (!input->requires_grad && !gamma->requires_grad) return;
+        const Tensor &x = input->data;
+        const Tensor &go = out->grad;
+        size_t d_model = x.shape().back();
+        size_t batch_seq = x.size() / d_model;
+        for (size_t b = 0; b < batch_seq; ++b) {
+            float sum_sq = 0.0F;
+            for (size_t i = 0; i < d_model; ++i) sum_sq += x.data()[b * d_model + i] * x.data()[b * d_model + i];
+            float rms = std::sqrt(sum_sq / static_cast<float>(d_model) + eps);
+            float sum_gy = 0.0F;
+            for (size_t j = 0; j < d_model; ++j) sum_gy += go.data()[b * d_model + j] * gamma->data[j] * x.data()[b * d_model + j];
+            for (size_t i = 0; i < d_model; ++i) {
+                float x_hat = x.data()[b * d_model + i] / rms;
+                if (gamma->requires_grad) gamma->grad[i] += go.data()[b * d_model + i] * x_hat;
+                if (input->requires_grad)
+                    input->grad.data()[b * d_model + i] += (gamma->data[i] * go.data()[b * d_model + i] / rms) -
+                        (x.data()[b * d_model + i] * sum_gy / (static_cast<float>(d_model) * rms * rms * rms));
+            }
+        }
+    };
+    return out;
+}
+
 Node *fused_add_layernorm(Node *input, Node *residual, Node *gamma, Node *beta, float eps)
 {
 #ifdef SERIUS_USE_CUDA
@@ -865,6 +1017,23 @@ Node *fused_bias_gelu(Node *input, Node *bias)
 
     // Fallback for CPU / unsupported cases: perform standard add and gelu ops.
     return gelu(add(input, bias));
+}
+
+Node *flash_attention(Node *query, Node *key, Node *value, float scale, bool causal)
+{
+#ifdef SERIUS_USE_CUDA
+    serius::model::attention::FlashAttentionConfig config;
+    config.softmax_scale = scale;
+    config.is_causal = causal;
+    return serius::model::attention::flash_attention(query, key, value, config);
+#else
+    (void)query;
+    (void)key;
+    (void)value;
+    (void)scale;
+    (void)causal;
+    throw std::runtime_error("flash_attention requires SERIUS_USE_CUDA");
+#endif
 }
 
 }  // namespace ops

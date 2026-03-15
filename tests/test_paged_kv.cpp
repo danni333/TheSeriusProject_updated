@@ -113,12 +113,12 @@ TEST(PagedKVCacheTest, GatherLogic)
     Tensor gathered_k = cache.gather_keys();
     Tensor gathered_v = cache.gather_values();
 
-    EXPECT_EQ(gathered_k.shape()[1], 6);
-    EXPECT_EQ(gathered_v.shape()[1], 6);
+    EXPECT_EQ(gathered_k.shape()[2], 6);
+    EXPECT_EQ(gathered_v.shape()[2], 6);
 
     for (size_t i = 0; i < 6; ++i) {
-        EXPECT_NEAR(gathered_k.at(0, i, 0), static_cast<float>(i), 1e-5f);
-        EXPECT_NEAR(gathered_v.at(0, i, 0), static_cast<float>(10 + i), 1e-5f);
+        EXPECT_NEAR(gathered_k.at(0, 0, i, 0), static_cast<float>(i), 1e-5f);
+        EXPECT_NEAR(gathered_v.at(0, 0, i, 0), static_cast<float>(10 + i), 1e-5f);
     }
 }
 

@@ -19,7 +19,7 @@ target_link_libraries(hub
     httplib::httplib
     nlohmann_json::nlohmann_json
     spdlog::spdlog
-    sqlite3
+    # sqlite3
     # OpenSSL::SSL  # Requires OpenSSL - disabled for now
     # OpenSSL::Crypto
     # jwt-cpp  # Requires JWT - disabled for now

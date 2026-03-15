@@ -35,7 +35,13 @@ add_library(serius_core
     debug/tensor_logger.cpp
     io/config_loader.cpp
     io/gguf_loader.cpp
+    io/simple_weights_loader.cpp
+    io/safetensors_loader.cpp
+    io/hf_llama_loader.cpp
+    transformer/llama_model.cpp
+    transformer/qwen_model.cpp
     infer/sampler.cpp
+    infer/llama_inference.cpp
     safety/guardrails.cpp
     debug/nan_debugger.cpp
     distributed/local_comm.cpp
@@ -112,5 +118,5 @@ add_subdirectory(hub)
 
 # --- CLI executable (serve, chat) ---
 add_executable(serius app/main.cpp)
-target_link_libraries(serius PRIVATE serius_core serius_server)
+target_link_libraries(serius PRIVATE serius_core serius_server hub)
 target_include_directories(serius PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

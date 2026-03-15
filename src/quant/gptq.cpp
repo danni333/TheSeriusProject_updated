@@ -124,8 +124,7 @@ static float dequantize_single(uint8_t q, float scale, uint8_t zero_point)
     return (static_cast<float>(q) - static_cast<float>(zero_point)) * scale;
 }
 
-GPTQQuantizedWeight gptq_quantize(const float *weights, size_t rows, size_t cols,
-                                  const std::vector<float> &hessian,
+GPTQQuantizedWeight gptq_quantize(const float *weights, size_t rows, size_t cols, const std::vector<float> &hessian,
                                   const GPTQConfig &config)
 {
     if (hessian.size() != cols * cols) {
@@ -157,7 +156,7 @@ GPTQQuantizedWeight gptq_quantize(const float *weights, size_t rows, size_t cols
         for (size_t g = 0; g < num_groups_per_row; ++g) {
             size_t start = g * config.block_size;
             size_t end = std::min(start + config.block_size, cols);
-            size_t count = end - start;
+            // size_t count = end - start;
 
             // Find min/max for this group in the ORIGINAL weights
             float w_min = weights[i * cols + start];
@@ -272,8 +271,7 @@ void gptq_dequantize(const GPTQQuantizedWeight &gptq_weight, float *out)
     }
 }
 
-void gptq_matmul(const GPTQQuantizedWeight &gptq_weight, const float *X,
-                 float *Y, int M)
+void gptq_matmul(const GPTQQuantizedWeight &gptq_weight, const float *X, float *Y, int M)
 {
     int N = static_cast<int>(gptq_weight.rows);
     int K = static_cast<int>(gptq_weight.cols);

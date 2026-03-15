@@ -1,0 +1,58 @@
+---
+description: Stile e convenzioni C++ per TheSeriusProject (src/, tests/)
+globs: src/**/*.cpp, src/**/*.h, src/**/*.cu, tests/**/*.cpp
+alwaysApply: false
+---
+
+# Stile C++ — TheSeriusProject
+
+## Formattazione
+
+- **clang-format**: il progetto usa `.clang-format` (Google base, C++20, ColumnLimit 120, 4 spazi, no tab).
+- Prima di commit: applicare clang-format ai file modificati.
+
+## Header
+
+- `#pragma once` per guard.
+- Include: prima standard/esterni, poi `"../path/header.h"` relativi a `src/`. Per test usare include come nel resto di `src/`.
+- Per riferimenti incroci usare forward declaration quando possibile (es. `namespace memory { class MemoryPool; }`).
+
+## Classi e namespace
+
+- Namespace annidati: `namespace serius { namespace core { ... } }` o `namespace serius::core { ... }`.
+- Chiusura: `}  // namespace serius` (commento con nome namespace).
+- Access specifier: `public:` / `private:` con indentazione 4 spazi; stile Google (brace dopo class/struct/function).
+
+## Naming
+
+- Classi: `PascalCase` (es. `Tensor`, `TransformerModel`, `ModelConfig`).
+- Funzioni/metodi: `snake_case` (es. `forward`, `load_model_config`).
+- Member privati: `snake_case` con suffisso `_` opzionale (es. `config_`, `d_model`).
+- Costanti: `UPPER_SNAKE` per macro, `kConstantName` o `DEFAULT_*` per costanti in struct/class.
+
+## CMake
+
+- Nuovi `.cpp`/`.cu` vanno aggiunti in `src/CMakeLists.txt` in `add_library(serius_core ...)` o in `target_sources(serius_core PRIVATE ...)` per backend condizionali (CUDA/NCCL/MPI/Metal).
+- File SIMD: `matmul_avx2.cpp`, `matmul_avx512.cpp` hanno `COMPILE_FLAGS` dedicati (AVX2/AVX512); non mescolare in file generici.
+- Nuovi test: aggiungere in `tests/CMakeLists.txt` e usare `gtest_discover_tests` o target di test esistente.
+
+## Esempi rapidi
+
+```cpp
+// ✅ Header in namespace, include relativi a src/
+#pragma once
+#include "../common/serius_check.h"
+namespace serius {
+namespace model {
+struct ModelConfig { ... };
+}  // namespace model
+}  // namespace serius
+```
+
+```cpp
+// ✅ Assertioni progetto
+SERIUS_CHECK(ptr != nullptr, "ptr must not be null");
+SERIUS_ASSERT(shape.size() > 0);
+```
+
+Quando suggerisci codice C++ in questo progetto, adotta questi stili e la struttura di namespace/header descritta nella rule "theseriusproject". Per passi concreti di build, test e modifica di CMake usa la skill **theseriusproject**.

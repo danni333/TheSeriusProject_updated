@@ -1,0 +1,71 @@
+---
+description: Contesto progetto TheSeriusProject — LLM engine C++ from scratch
+alwaysApply: true
+---
+
+# TheSeriusProject — Regole di contesto
+
+## Cos'è il progetto
+
+- **Motore di inferenza LLM** scritto in C++ from scratch: tensori, BLAS, autograd, transformer, training, quantizzazione, distribuito.
+- **Target**: sviluppatori che vogliono capire/sperimentare un LLM engine; API C++ ancora in evoluzione.
+- **Build**: CMake 3.25+, C++20. Opzioni `SERIUS_USE_CUDA`, `SERIUS_USE_METAL`, `SERIUS_USE_NCCL`, `SERIUS_USE_MPI`.
+- **Test**: `tests/` con Google Test; esecuzione da `build/` con `ctest --output-on-failure`.
+
+## Struttura sorgenti (`src/`)
+
+| Directory | Ruolo |
+|-----------|--------|
+| `tensor/`, `memory/`, `blas/` | Core: Tensor, MemoryPool, matmul (scalar, AVX2, AVX512, CUDA), dispatch |
+| `autograd/` | Grafo computazionale, Node, Engine, ops (matmul, relu, softmax, …) |
+| `transformer/` | Attention, FFN, LayerNorm, RoPE, block, model, KV cache, ModelConfig |
+| `attention/` | Flash attention (CPU + CUDA) |
+| `optim/`, `train/` | AdamW, scheduler, AMP, Trainer, checkpoint |
+| `infer/` | Sampler (temperature, top_k, top_p) |
+| `io/` | Config loader (JSON → ModelConfig), GGUF loader |
+| `tokenizer/`, `data/` | BPE, vocab, DataLoader, Batch |
+| `quant/` | INT4, FP8, conversioni, dequant matmul, AWQ, GPTQ |
+| `hal/` | Backend CPU, CUDA, Metal (astrazione device) |
+| `distributed/` | Data/tensor/pipeline parallel, local_comm, nccl_comm, mpi_comm |
+| `hub/` | Model hub server, plugin, search, metadata |
+| `server/` | HTTP (health, /v1/chat/completions, /v1/models) |
+| `app/` | CLI (serius serve, serius chat) |
+| `debug/`, `safety/` | TensorLogger, NaN debugger, guardrails |
+
+## Namespace
+
+- `serius::core` — tensor, blas, memory, autograd
+- `serius::model` — transformer, block, attention, ffn, layernorm (ModelConfig in model.h)
+- `serius::optim` — AdamW, scheduler, AMP
+- `serius::training` — Trainer, checkpoint
+- `serius::infer` — Sampler
+- `serius::io` — config loader
+- `serius::server` — HTTP server
+
+Usare sempre i namespace corretti; chiudere con `}  // namespace serius` (o sottonamespace).
+
+## Dove mettere codice nuovo
+
+- Nuove operazioni autograd → `autograd/ops.cpp` + `ops.h`.
+- Nuovi backend BLAS → `blas/` (es. `matmul_*.cpp` o `.cu`), poi `dispatch.cpp`.
+- Nuovi componenti transformer → `transformer/`.
+- Nuovi test → `tests/` e aggiungere in `tests/CMakeLists.txt`.
+- Roadmap e task → `todo/` (faseN_*.md, task.md).
+
+## Asserzioni e errori
+
+- `SERIUS_CHECK(cond, msg)` — throw `serius::Error` se condizione falsa.
+- `SERIUS_ASSERT(cond)` — in Debug abort, in Release no-op (vedi `src/common/serius_check.h`).
+
+## Documentazione di riferimento
+
+- Architettura: `docs/architecture.md`
+- Installazione/build: `docs/installation.md`
+- Roadmap: `todo/task.md`, `todo/indice_globale.md`
+
+Quando proponi modifiche, rispetta la struttura esistente e le convenzioni del progetto.
+
+## Strumenti e skill
+
+- Per **build, test, aggiunta sorgenti/target CMake** e diagnosi errori di compilazione: usa la skill **theseriusproject** (`.cursor/skills/theseriusproject/SKILL.md`). Contiene comandi, dove aggiungere file in CMake e problemi comuni.
+- Script rapidi: `.cursor/skills/theseriusproject/scripts/build.ps1` e `test.ps1` (eseguibili dalla root del repo).

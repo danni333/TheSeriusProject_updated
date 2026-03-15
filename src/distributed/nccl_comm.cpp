@@ -56,16 +56,39 @@ void NCCLCommunicator::all_reduce(float *buffer, size_t count, ReduceOp op)
     CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
+void NCCLCommunicator::all_reduce(core::Tensor &tensor, ReduceOp op)
+{
+    tensor.syncToDevice();
+    all_reduce(tensor.data(), tensor.size(), op);
+    // Data is already on device, mark it dirty so future host syncs are correct
+    tensor.mark_dirty(hal::DeviceType::CUDA);
+}
+
 void NCCLCommunicator::broadcast(float *buffer, size_t count, int root)
 {
     NCCL_CHECK(ncclBroadcast(buffer, buffer, count, ncclFloat, root, comm_, stream_));
     CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
+void NCCLCommunicator::broadcast(core::Tensor &tensor, int root)
+{
+    tensor.syncToDevice();
+    broadcast(tensor.data(), tensor.size(), root);
+    tensor.mark_dirty(hal::DeviceType::CUDA);
+}
+
 void NCCLCommunicator::all_gather(const float *send_buf, size_t send_count, float *recv_buf)
 {
     NCCL_CHECK(ncclAllGather(send_buf, recv_buf, send_count, ncclFloat, comm_, stream_));
     CUDA_CHECK(cudaStreamSynchronize(stream_));
+}
+
+void NCCLCommunicator::all_gather(const core::Tensor &send_tensor, core::Tensor &recv_tensor)
+{
+    const_cast<core::Tensor&>(send_tensor).syncToDevice();
+    recv_tensor.syncToDevice();
+    all_gather(send_tensor.data(), send_tensor.size(), recv_tensor.data());
+    recv_tensor.mark_dirty(hal::DeviceType::CUDA);
 }
 
 void NCCLCommunicator::reduce_scatter(const float *send_buf, float *recv_buf,

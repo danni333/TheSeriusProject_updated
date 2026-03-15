@@ -5,6 +5,9 @@
 #include <cstring>
 #include <limits>
 
+#include "quant_kernels.h"
+#include "../hal/device.h"
+
 namespace serius {
 namespace quant {
 
@@ -19,7 +22,7 @@ namespace quant {
 static constexpr int E4M3_EXP_BITS = 4;
 static constexpr int E4M3_MAN_BITS = 3;
 static constexpr int E4M3_BIAS = 7;
-static constexpr float E4M3_MAX = 448.0f;   // 2^8 * 1.75
+static constexpr float E4M3_MAX = 448.0f;                 // 2^8 * 1.75
 static constexpr float E4M3_MIN_SUBNORM = 1.0f / 512.0f;  // 2^(-9)
 
 uint8_t float_to_fp8_e4m3(float f)
@@ -109,9 +112,7 @@ uint8_t float_to_fp8_e4m3(float f)
         man3 = 6;
     }
 
-    return static_cast<uint8_t>((sign << 7) |
-                                (static_cast<uint8_t>(e4m3_biased_exp) << E4M3_MAN_BITS) |
-                                (man3 & 0x07));
+    return static_cast<uint8_t>((sign << 7) | (static_cast<uint8_t>(e4m3_biased_exp) << E4M3_MAN_BITS) | (man3 & 0x07));
 }
 
 float fp8_e4m3_to_float(uint8_t v)
@@ -138,8 +139,7 @@ float fp8_e4m3_to_float(uint8_t v)
         }
     } else {
         // Normal: value = (1 + man/8) * 2^(exp - bias)
-        abs_val = (1.0f + static_cast<float>(man) / 8.0f) *
-                  std::ldexp(1.0f, static_cast<int>(exp) - E4M3_BIAS);
+        abs_val = (1.0f + static_cast<float>(man) / 8.0f) * std::ldexp(1.0f, static_cast<int>(exp) - E4M3_BIAS);
     }
 
     return sign ? -abs_val : abs_val;
@@ -232,9 +232,7 @@ uint8_t float_to_fp8_e5m2(float f)
         return static_cast<uint8_t>((sign << 7) | 0x7C);
     }
 
-    return static_cast<uint8_t>((sign << 7) |
-                                (static_cast<uint8_t>(e5m2_biased_exp) << E5M2_MAN_BITS) |
-                                (man2 & 0x03));
+    return static_cast<uint8_t>((sign << 7) | (static_cast<uint8_t>(e5m2_biased_exp) << E5M2_MAN_BITS) | (man2 & 0x03));
 }
 
 float fp8_e5m2_to_float(uint8_t v)
@@ -268,8 +266,7 @@ float fp8_e5m2_to_float(uint8_t v)
         }
     } else {
         // Normal: value = (1 + man/4) * 2^(exp - bias)
-        abs_val = (1.0f + static_cast<float>(man) / 4.0f) *
-                  std::ldexp(1.0f, static_cast<int>(exp) - E5M2_BIAS);
+        abs_val = (1.0f + static_cast<float>(man) / 4.0f) * std::ldexp(1.0f, static_cast<int>(exp) - E5M2_BIAS);
     }
 
     return sign ? -abs_val : abs_val;
@@ -325,7 +322,7 @@ FP8Block fp8_quantize_block(const float *data, size_t count, bool use_e4m3)
 
     if (amax == 0.0f) {
         block.scale = 1.0f;
-        std::fill(block.data.begin(), block.data.end(), 0);
+        std::fill(block.data.begin(), block.data.end(), uint8_t(0));
         return block;
     }
 
@@ -361,8 +358,7 @@ void fp8_dequantize_block(const FP8Block &block, float *out)
     }
 }
 
-void fp8_quantize_tensor(const float *data, size_t n, size_t block_size,
-                         bool use_e4m3, std::vector<float> &scales_out,
+void fp8_quantize_tensor(const float *data, size_t n, size_t block_size, bool use_e4m3, std::vector<float> &scales_out,
                          std::vector<uint8_t> &fp8_out)
 {
     size_t num_blocks = (n + block_size - 1) / block_size;
@@ -370,6 +366,18 @@ void fp8_quantize_tensor(const float *data, size_t n, size_t block_size,
     fp8_out.resize(n);
 
     float fp8_max = use_e4m3 ? E4M3_MAX : E5M2_MAX;
+
+#ifdef SERIUS_USE_CUDA
+    hal::IBackend* gpu = hal::get_gpu_backend();
+    if (gpu && gpu->is_available()) {
+        // Here we assume pointers might be on GPU or we use managed memory.
+        // For now, let's assume this is for GPU-side quantization.
+        // In a real scenario, we might need a temporary GPU buffer.
+        // For simplicity, we dispatch to the kernel which is expected to handle pointers.
+        cuda::fp8_quantize_tensor_cuda(data, fp8_out.data(), scales_out.data(), n, block_size, use_e4m3);
+        return;
+    }
+#endif
 
     for (size_t b = 0; b < num_blocks; ++b) {
         size_t start = b * block_size;
@@ -400,11 +408,18 @@ void fp8_quantize_tensor(const float *data, size_t n, size_t block_size,
     }
 }
 
-void fp8_dequantize_tensor(const uint8_t *fp8_data, const float *scales,
-                           size_t n, size_t block_size, bool use_e4m3,
+void fp8_dequantize_tensor(const uint8_t *fp8_data, const float *scales, size_t n, size_t block_size, bool use_e4m3,
                            float *out)
 {
     size_t num_blocks = (n + block_size - 1) / block_size;
+
+#ifdef SERIUS_USE_CUDA
+    hal::IBackend* gpu = hal::get_gpu_backend();
+    if (gpu && gpu->is_available()) {
+        cuda::fp8_dequantize_tensor_cuda(fp8_data, scales, out, n, block_size, use_e4m3);
+        return;
+    }
+#endif
 
     for (size_t b = 0; b < num_blocks; ++b) {
         size_t start = b * block_size;

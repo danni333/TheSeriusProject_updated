@@ -45,6 +45,7 @@ data/
 !CMakeLists.txt
 !README.md
 !LICENSE
+!**/CMakeLists.txt
 
 # Python scripts (one-off fixes)
 fix_elementwise.py
@@ -53,11 +54,17 @@ fix_elementwise.py
 docs/
 AUDIT_IMPLEMENTATION_RECOMMENDATIONS.md
 
+# Distributed Computing
+*.pmp
+*.rank
+
 # Misc
 .DS_Store
 Thumbs.db
 *.tmp
 .gemini/
+.idea/
+.vscode/
 
 # Todo / scratch notes
 # todo/

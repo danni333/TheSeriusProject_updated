@@ -11,6 +11,7 @@ Node *matmul(Node *input_a, Node *input_b);
 Node *add(Node *input_a, Node *input_b);
 Node *relu(Node *input_node);
 Node *gelu(Node *input_node);
+Node *silu(Node *input_node);  // SiLU(x) = x * sigmoid(x), used by LLaMA MLP
 Node *softmax(Node *input_node, int dimension = -1);
 Node *cross_entropy(Node *input_logits, Node *input_targets);
 
@@ -26,6 +27,7 @@ Node *rmsnorm(Node *input, Node *gamma, float eps = DEFAULT_EPS);
 Node *fused_add_layernorm(Node *input, Node *residual, Node *gamma, Node *beta, float eps = DEFAULT_EPS);
 Node *fused_masked_softmax(Node *input, const core::Tensor &mask, float scale = 1.0F);
 Node *fused_bias_gelu(Node *input, Node *bias);
+Node *flash_attention(Node *query, Node *key, Node *value, float scale, bool causal);
 
 struct RoPEResult
 {

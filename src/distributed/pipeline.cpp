@@ -7,12 +7,10 @@
 namespace serius {
 namespace distributed {
 
-PipelineExecutor::PipelineExecutor(Communicator *comm, const PipelineConfig &config)
-    : comm_(comm), config_(config)
+PipelineExecutor::PipelineExecutor(Communicator *comm, const PipelineConfig &config) : comm_(comm), config_(config)
 {
     if (config_.num_stages != comm_->world_size()) {
-        throw std::runtime_error(
-            "PipelineExecutor: num_stages must equal world_size");
+        throw std::runtime_error("PipelineExecutor: num_stages must equal world_size");
     }
     if (config_.hidden_size == 0) {
         throw std::runtime_error("PipelineExecutor: hidden_size must be > 0");
@@ -24,18 +22,16 @@ PipelineExecutor::PipelineExecutor(Communicator *comm, const PipelineConfig &con
     backward_buffers_.resize(n_mb, std::vector<float>(config_.hidden_size, 0.0f));
 }
 
-void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn,
-                               const float *input_data, float *output_data)
+void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn, const float *input_data,
+                               float *output_data)
 {
     int my_stage = stage();
     int n_mb = config_.num_micro_batches;
     size_t hs = config_.hidden_size;
 
     // Temporary buffers for this stage's input and output activations
-    std::vector<std::vector<float>> activations(static_cast<size_t>(n_mb),
-                                                 std::vector<float>(hs, 0.0f));
-    std::vector<std::vector<float>> outputs(static_cast<size_t>(n_mb),
-                                             std::vector<float>(hs, 0.0f));
+    std::vector<std::vector<float>> activations(static_cast<size_t>(n_mb), std::vector<float>(hs, 0.0f));
+    std::vector<std::vector<float>> outputs(static_cast<size_t>(n_mb), std::vector<float>(hs, 0.0f));
 
     // =============================================
     // Phase 1: Forward pass (all micro-batches)
@@ -45,9 +41,7 @@ void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn,
 
         if (is_first_stage()) {
             // First stage reads from input_data
-            std::memcpy(activations[mb_idx].data(),
-                         input_data + mb_idx * hs,
-                         hs * sizeof(float));
+            std::memcpy(activations[mb_idx].data(), input_data + mb_idx * hs, hs * sizeof(float));
         } else {
             // Receive activations from previous stage
             comm_->recv(activations[mb_idx].data(), hs, my_stage - 1);
@@ -59,9 +53,7 @@ void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn,
         if (is_last_stage()) {
             // Last stage writes to output_data
             if (output_data != nullptr) {
-                std::memcpy(output_data + mb_idx * hs,
-                             outputs[mb_idx].data(),
-                             hs * sizeof(float));
+                std::memcpy(output_data + mb_idx * hs, outputs[mb_idx].data(), hs * sizeof(float));
             }
         } else {
             // Send activations to next stage
@@ -73,7 +65,7 @@ void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn,
     // Phase 2: Backward pass (all micro-batches, reverse order)
     // =============================================
     for (int mb = n_mb - 1; mb >= 0; --mb) {
-        auto mb_idx = static_cast<size_t>(mb);
+        // auto mb_idx = static_cast<size_t>(mb);
 
         std::vector<float> grad_output(hs, 0.0f);
         std::vector<float> grad_input(hs, 0.0f);
@@ -102,8 +94,7 @@ void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn,
 float PipelineExecutor::bubble_ratio() const
 {
     if (config_.num_micro_batches <= 0) return 1.0f;
-    return static_cast<float>(config_.num_stages - 1) /
-           static_cast<float>(config_.num_micro_batches);
+    return static_cast<float>(config_.num_stages - 1) / static_cast<float>(config_.num_micro_batches);
 }
 
 }  // namespace distributed

@@ -12,9 +12,9 @@
 
 ### ⚡ Accelerazione Hardware (Fase 6–8)
 
-- [/] **Fase 6** — [Ibrido CPU+GPU](fase6_ibrido_cpu_gpu.md) (HAL base presente, serve migrazione automatica)
-- [/] **Fase 7** — [Quantizzazione](fase7_quantizzazione.md) (Presente INT4, manca FP8/BF16 refinement)
-- [ ] **Fase 8** — [Distribuito](fase8_distribuito.md)
+- [x] **Fase 6** — [Ibrido CPU+GPU](fase6_ibrido_cpu_gpu.md) (HAL base presente, serve migrazione automatica)
+- [x] **Fase 7** — [Quantizzazione](fase7_quantizzazione.md) (Presente INT4, manca FP8/BF16 refinement)
+- [/] **Fase 8** — [Distribuito](fase8_distribuito.md)
 
 ### 🛡️ Stabilità & Allineamento (Fase 9–10)
 
@@ -23,7 +23,7 @@
 
 ### 🚀 Ottimizzazioni Avanzate (Fase 11–15)
 
-- [/] **Fase 11** — [Flash Attention](fase11_flash_attention.md) (Implementazione CUDA presente)
+- [x] **Fase 11** — [Flash Attention](fase11_flash_attention.md) (Integrazione CUDA completata)
 - [x] **Fase 12** — [Profiling](fase12_profiling.md) (Tensor Logger completo)
 - [ ] **Fase 13** — [Deployment](fase13_deployment.md)
 - [ ] **Fase 14** — [Speculative Decoding](fase14_speculative_decoding.md)

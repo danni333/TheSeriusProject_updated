@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "attention/flash_attn.h"
+#include "autograd/engine.h"
 #include "tensor/tensor.h"
 
 namespace serius {
@@ -92,10 +93,11 @@ TEST(FlashAttentionTest, BackwardParity)
     auto *out_node = flash_attention(q_node, k_node, v_node, config);
 
     // Loss = sum(out)
-    out_node->grad = Tensor(out_node->data.shape()).fill(1.0F);
+    out_node->grad = core::Tensor(out_node->data.shape());
+    out_node->grad.fill(1.0F);
     out_node->grad.syncToDevice();
 
-    out_node->backward();
+    core::autograd::backward(out_node);
 
     q_node->grad.syncToHost();
     k_node->grad.syncToHost();

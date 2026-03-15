@@ -36,8 +36,13 @@ class NCCLCommunicator : public Communicator
     CommBackend backend() const override { return CommBackend::NCCL; }
 
     void all_reduce(float *buffer, size_t count, ReduceOp op) override;
+    void all_reduce(core::Tensor &tensor, ReduceOp op) override;
+
     void broadcast(float *buffer, size_t count, int root) override;
+    void broadcast(core::Tensor &tensor, int root = 0) override;
+
     void all_gather(const float *send_buf, size_t send_count, float *recv_buf) override;
+    void all_gather(const core::Tensor &send_tensor, core::Tensor &recv_tensor) override;
     void reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp op) override;
     void send(const float *buffer, size_t count, int dst) override;
     void recv(float *buffer, size_t count, int src) override;

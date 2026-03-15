@@ -102,16 +102,26 @@ void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
 #ifdef SERIUS_USE_CUDA
     size_t flops = 2 * rows_m * cols_n * inner_k;
     hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
-    // Use GPU for relatively large matrices or non-float32
-    if (backend && backend->is_available() && (flops > 1000000 || mat_a.dtype() != hal::DType::Float32)) {
+    
+    // Intelligent GPU preference:
+    // 1. Large problem size
+    // 2. Non-float32 (quantized) always on GPU if possible
+    // 3. IF any input is already on GPU, avoid moving it back!
+    bool any_on_gpu = (mat_a.location() != Tensor::DataLocation::CPU || 
+                       mat_b.location() != Tensor::DataLocation::CPU);
+    
+    if (backend && backend->is_available() && 
+        (flops > 1000000 || mat_a.dtype() != hal::DType::Float32 || any_on_gpu)) {
+        
         mat_a.syncToDevice();
         mat_b.syncToDevice();
         mat_c.syncToDevice();
+        
         matmul_cuda(mat_a.data_gpu(), mat_b.data_gpu(), mat_c.data_gpu(), rows_m, cols_n, inner_k, lda, ldb, ldc,
                     mat_a.dtype());
 
         mat_c.mark_dirty(Tensor::DataLocation::GPU);
-        mat_c.syncToHost();
+        // Removed forced mat_c.syncToHost() to allow lazy migration
         return;
     }
 #endif
@@ -236,7 +246,13 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
 #ifdef SERIUS_USE_CUDA
     size_t total_flops = 2 * batch_size * rows_m * cols_n * inner_k;
     hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
-    if (backend && backend->is_available() && (total_flops > 1000000 || mat_a.dtype() != hal::DType::Float32)) {
+    
+    bool any_on_gpu = (mat_a.location() != Tensor::DataLocation::CPU || 
+                       mat_b.location() != Tensor::DataLocation::CPU);
+
+    if (backend && backend->is_available() && 
+        (total_flops > 1000000 || mat_a.dtype() != hal::DType::Float32 || any_on_gpu)) {
+        
         mat_a.syncToDevice();
         mat_b.syncToDevice();
         mat_c.syncToDevice();
@@ -249,7 +265,7 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
                             lda, ldb, ldc, stride_a, stride_b, stride_c, mat_a.dtype());
 
         mat_c.mark_dirty(Tensor::DataLocation::GPU);
-        mat_c.syncToHost();
+        // Removed forced syncToHost()
         return;
     }
 #endif

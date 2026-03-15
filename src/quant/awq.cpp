@@ -8,8 +8,7 @@
 namespace serius {
 namespace quant {
 
-ActivationStats collect_activation_stats(const float *activations, size_t num_tokens,
-                                         size_t num_channels)
+ActivationStats collect_activation_stats(const float *activations, size_t num_tokens, size_t num_channels)
 {
     ActivationStats stats;
     stats.num_channels = num_channels;
@@ -41,8 +40,7 @@ std::vector<float> compute_awq_scales(const ActivationStats &stats, float alpha)
     if (n == 0) return scales;
 
     // Find the maximum magnitude to normalize
-    float max_mag = *std::max_element(stats.channel_magnitudes.begin(),
-                                       stats.channel_magnitudes.end());
+    float max_mag = *std::max_element(stats.channel_magnitudes.begin(), stats.channel_magnitudes.end());
 
     if (max_mag <= 0.0f) return scales;
 
@@ -76,8 +74,7 @@ std::vector<float> compute_awq_scales(const ActivationStats &stats, float alpha)
     return scales;
 }
 
-AWQQuantizedWeight awq_quantize(const float *weights, size_t rows, size_t cols,
-                                const std::vector<float> &scales,
+AWQQuantizedWeight awq_quantize(const float *weights, size_t rows, size_t cols, const std::vector<float> &scales,
                                 size_t block_size)
 {
     if (scales.size() != cols) {
@@ -107,7 +104,7 @@ AWQQuantizedWeight awq_quantize(const float *weights, size_t rows, size_t cols,
 
 void awq_dequantize(const AWQQuantizedWeight &awq_weight, float *out)
 {
-    size_t total = awq_weight.rows * awq_weight.cols;
+    // size_t total = awq_weight.rows * awq_weight.cols;
 
     // Step 1: Dequantize INT4 to get scaled weights
     dequantize_tensor(awq_weight.quantized, out);
@@ -120,8 +117,7 @@ void awq_dequantize(const AWQQuantizedWeight &awq_weight, float *out)
     }
 }
 
-void awq_matmul(const AWQQuantizedWeight &awq_weight, const float *X,
-                float *Y, int M)
+void awq_matmul(const AWQQuantizedWeight &awq_weight, const float *X, float *Y, int M)
 {
     int N = static_cast<int>(awq_weight.rows);
     int K = static_cast<int>(awq_weight.cols);

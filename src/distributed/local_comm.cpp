@@ -14,12 +14,10 @@ namespace distributed {
 // ProcessGroup
 // ============================================================
 
-ProcessGroup::ProcessGroup(int world_size)
-    : world_size_(world_size)
+ProcessGroup::ProcessGroup(int world_size) : world_size_(world_size)
 {
     rank_buffers_.resize(static_cast<size_t>(world_size));
-    mailboxes_.resize(static_cast<size_t>(world_size),
-                      std::vector<Mailbox>(static_cast<size_t>(world_size)));
+    mailboxes_.resize(static_cast<size_t>(world_size), std::vector<Mailbox>(static_cast<size_t>(world_size)));
 }
 
 void ProcessGroup::wait_for_all(std::unique_lock<std::mutex> &lock, int generation)
@@ -135,8 +133,7 @@ void ProcessGroup::broadcast(float *buffer, size_t count, int root, int rank)
     }
 }
 
-void ProcessGroup::all_gather(const float *send_buf, size_t send_count,
-                              float *recv_buf, int rank)
+void ProcessGroup::all_gather(const float *send_buf, size_t send_count, float *recv_buf, int rank)
 {
     std::unique_lock<std::mutex> lock(mutex_);
     int gen = generation_;
@@ -152,9 +149,8 @@ void ProcessGroup::all_gather(const float *send_buf, size_t send_count,
 
     // Concatenate all rank buffers into recv_buf
     for (int r = 0; r < world_size_; ++r) {
-        std::memcpy(recv_buf + static_cast<size_t>(r) * send_count,
-                     rank_buffers_[static_cast<size_t>(r)].data(),
-                     send_count * sizeof(float));
+        std::memcpy(recv_buf + static_cast<size_t>(r) * send_count, rank_buffers_[static_cast<size_t>(r)].data(),
+                    send_count * sizeof(float));
     }
 
     arrived_--;
@@ -166,8 +162,7 @@ void ProcessGroup::all_gather(const float *send_buf, size_t send_count,
     }
 }
 
-void ProcessGroup::reduce_scatter(const float *send_buf, float *recv_buf,
-                                  size_t recv_count, ReduceOp op, int rank)
+void ProcessGroup::reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp op, int rank)
 {
     std::unique_lock<std::mutex> lock(mutex_);
     int gen = generation_;
@@ -290,10 +285,7 @@ void ProcessGroup::barrier(int /*rank*/)
 // LocalCommunicator
 // ============================================================
 
-LocalCommunicator::LocalCommunicator()
-    : rank_(0), world_size_(1), group_(nullptr)
-{
-}
+LocalCommunicator::LocalCommunicator() : rank_(0), world_size_(1), group_(nullptr) {}
 
 LocalCommunicator::LocalCommunicator(std::shared_ptr<ProcessGroup> group, int rank)
     : rank_(rank), world_size_(group->world_size()), group_(std::move(group))
@@ -306,10 +298,25 @@ void LocalCommunicator::all_reduce(float *buffer, size_t count, ReduceOp op)
     group_->all_reduce(buffer, count, op, rank_);
 }
 
+void LocalCommunicator::all_reduce(core::Tensor &tensor, ReduceOp op)
+{
+    // For local simulation, we normally operate on host data
+    tensor.syncToHost();
+    all_reduce(tensor.data(), tensor.size(), op);
+    // Mark dirty if we were on GPU (simulated)
+    // Actually, tensor.data() syncs to host, so it's clean on host now.
+}
+
 void LocalCommunicator::broadcast(float *buffer, size_t count, int root)
 {
     if (world_size_ == 1) return;
     group_->broadcast(buffer, count, root, rank_);
+}
+
+void LocalCommunicator::broadcast(core::Tensor &tensor, int root)
+{
+    tensor.syncToHost();
+    broadcast(tensor.data(), tensor.size(), root);
 }
 
 void LocalCommunicator::all_gather(const float *send_buf, size_t send_count, float *recv_buf)
@@ -321,8 +328,14 @@ void LocalCommunicator::all_gather(const float *send_buf, size_t send_count, flo
     group_->all_gather(send_buf, send_count, recv_buf, rank_);
 }
 
-void LocalCommunicator::reduce_scatter(const float *send_buf, float *recv_buf,
-                                       size_t recv_count, ReduceOp op)
+void LocalCommunicator::all_gather(const core::Tensor &send_tensor, core::Tensor &recv_tensor)
+{
+    const_cast<core::Tensor&>(send_tensor).syncToHost();
+    recv_tensor.syncToHost();
+    all_gather(send_tensor.data(), send_tensor.size(), recv_tensor.data());
+}
+
+void LocalCommunicator::reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp op)
 {
     if (world_size_ == 1) {
         std::memcpy(recv_buf, send_buf, recv_count * sizeof(float));
@@ -366,9 +379,7 @@ std::vector<std::unique_ptr<LocalCommunicator>> create_local_group(int world_siz
     return comms;
 }
 
-std::unique_ptr<Communicator> Communicator::create(CommBackend backend,
-                                                   int world_size,
-                                                   int rank)
+std::unique_ptr<Communicator> Communicator::create(CommBackend backend, int world_size, int /*rank*/)
 {
     switch (backend) {
         case CommBackend::Local:

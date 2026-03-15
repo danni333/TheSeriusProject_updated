@@ -120,10 +120,10 @@ void PagedKVCache::update(const Tensor &key, const Tensor &value)
 Tensor PagedKVCache::gather_keys() const
 {
     if (current_len_ == 0) {
-        return Tensor({block_manager_->num_heads(), 0, block_manager_->head_dim()});
+        return Tensor({1, block_manager_->num_heads(), 0, block_manager_->head_dim()});
     }
 
-    Tensor gathered_keys({block_manager_->num_heads(), current_len_, block_manager_->head_dim()});
+    Tensor gathered_keys({1, block_manager_->num_heads(), current_len_, block_manager_->head_dim()});
     size_t num_blocks_in_cache = block_manager_->num_heads();
     size_t dim_size = block_manager_->head_dim();
     size_t blk_size = block_manager_->block_size();
@@ -137,7 +137,7 @@ Tensor PagedKVCache::gather_keys() const
             for (size_t head_dim_idx = 0; head_dim_idx < dim_size; ++head_dim_idx) {
                 float k_val =
                     block_manager_->get_k_pool().item({(size_t)physical_id, head_idx, offset_val, head_dim_idx});
-                gathered_keys.set_item({head_idx, iIdx, head_dim_idx}, k_val);
+                gathered_keys.set_item({0, head_idx, iIdx, head_dim_idx}, k_val);
             }
         }
     }
@@ -147,10 +147,10 @@ Tensor PagedKVCache::gather_keys() const
 Tensor PagedKVCache::gather_values() const
 {
     if (current_len_ == 0) {
-        return Tensor({block_manager_->num_heads(), 0, block_manager_->head_dim()});
+        return Tensor({1, block_manager_->num_heads(), 0, block_manager_->head_dim()});
     }
 
-    Tensor gathered_values({block_manager_->num_heads(), current_len_, block_manager_->head_dim()});
+    Tensor gathered_values({1, block_manager_->num_heads(), current_len_, block_manager_->head_dim()});
     size_t num_blocks_in_cache = block_manager_->num_heads();
     size_t dim_size = block_manager_->head_dim();
     size_t blk_size = block_manager_->block_size();
@@ -164,7 +164,7 @@ Tensor PagedKVCache::gather_values() const
             for (size_t head_dim_idx = 0; head_dim_idx < dim_size; ++head_dim_idx) {
                 float v_val =
                     block_manager_->get_v_pool().item({(size_t)physical_id, head_idx, offset_val, head_dim_idx});
-                gathered_values.set_item({head_idx, iIdx, head_dim_idx}, v_val);
+                gathered_values.set_item({0, head_idx, iIdx, head_dim_idx}, v_val);
             }
         }
     }
