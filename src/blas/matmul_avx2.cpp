@@ -7,6 +7,7 @@
 #endif
 
 #include <algorithm>
+#include <cstdint>
 
 namespace serius {
 namespace core {
@@ -49,15 +50,64 @@ void matmul_avx2(const float *A, const float *B, float *C, size_t M, size_t N, s
     const size_t MC = 64;
     const size_t NC = 64;
     const size_t KC = 256;
+ 
+    if (M == 1) {
+        // High-performance AVX2 vector-matrix multiplication
+        // Process 32 columns at once to reuse broadcasted A[k]
+        #pragma omp parallel for
+        for (int64_t j = 0; j < static_cast<int64_t>(N); j += 32) {
+            if (j + 32 <= static_cast<int64_t>(N)) {
+                __m256 sum0 = _mm256_setzero_ps();
+                __m256 sum1 = _mm256_setzero_ps();
+                __m256 sum2 = _mm256_setzero_ps();
+                __m256 sum3 = _mm256_setzero_ps();
+
+                for (size_t k = 0; k < K; ++k) {
+                    __m256 a_val = _mm256_set1_ps(A[k]);
+                    sum0 = _mm256_fmadd_ps(a_val, _mm256_loadu_ps(B + k * ldb + j + 0), sum0);
+                    sum1 = _mm256_fmadd_ps(a_val, _mm256_loadu_ps(B + k * ldb + j + 8), sum1);
+                    sum2 = _mm256_fmadd_ps(a_val, _mm256_loadu_ps(B + k * ldb + j + 16), sum2);
+                    sum3 = _mm256_fmadd_ps(a_val, _mm256_loadu_ps(B + k * ldb + j + 24), sum3);
+                }
+                _mm256_storeu_ps(C + j + 0, sum0);
+                _mm256_storeu_ps(C + j + 8, sum1);
+                _mm256_storeu_ps(C + j + 16, sum2);
+                _mm256_storeu_ps(C + j + 24, sum3);
+            } else {
+                // Fallback for remaining columns (per 8)
+                for (int64_t jj = j; jj < static_cast<int64_t>(N); jj += 8) {
+                    __m256 sum_vec = _mm256_setzero_ps();
+                    if (jj + 8 <= static_cast<int64_t>(N)) {
+                        for (size_t k = 0; k < K; ++k) {
+                            sum_vec = _mm256_fmadd_ps(_mm256_set1_ps(A[k]), _mm256_loadu_ps(B + k * ldb + jj), sum_vec);
+                        }
+                        _mm256_storeu_ps(C + jj, sum_vec);
+                    } else {
+                        // Scalar cleanup for individual columns
+                        for (size_t jjj = static_cast<size_t>(jj); jjj < N; ++jjj) {
+                            float s = 0.0f;
+                            for (size_t k = 0; k < K; ++k) {
+                                s += A[k] * B[k * ldb + jjj];
+                            }
+                            C[jjj] = s;
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
 
     // Zero the C matrix first, as our microkernel accumulates
-    for (size_t i = 0; i < M; ++i) {
+    #pragma omp parallel for
+    for (int64_t i = 0; i < static_cast<int64_t>(M); ++i) {
         for (size_t j = 0; j < N; ++j) {
             C[i * ldc + j] = 0.0f;
         }
     }
 
-    for (size_t i = 0; i < M; i += MC) {
+    #pragma omp parallel for
+    for (int64_t i = 0; i < static_cast<int64_t>(M); i += static_cast<int64_t>(MC)) {
         size_t m_end = std::min(i + MC, M);
         for (size_t j = 0; j < N; j += NC) {
             size_t n_end = std::min(j + NC, N);

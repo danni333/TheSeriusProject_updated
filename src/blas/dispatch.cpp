@@ -136,6 +136,18 @@ void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
 
     size_t problem_size = rows_m * cols_n * inner_k;
 
+    if (rows_m == 1) {
+        // Narrow matrix (vector-matrix): use best available SIMD path regardless of threshold
+        if (info.has_avx512f) {
+            matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        } else if (info.has_avx2) {
+            matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        } else {
+            matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+        }
+        return;
+    }
+
     if (problem_size < SIMD_THRESHOLD_SMALL) {
         // Small matrices: scalar is faster (no SIMD setup overhead)
         matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);

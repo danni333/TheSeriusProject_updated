@@ -11,6 +11,7 @@
 #include "../infer/llama_inference.h"
 #include <spdlog/spdlog.h>
 #include <chrono>
+#include <filesystem>
 
 #include <cstdlib>
 #include <fstream>
@@ -62,20 +63,33 @@ int cmd_chat(int argc, char **argv)
     if (model_type == "llama") {
         serius::model::LLamaConfig config;
         std::string model_dir = ".";
+        std::string actual_config_path = config_path;
+
         if (!config_path.empty()) {
-            config = serius::io::load_llama_config(config_path);
+            if (std::filesystem::is_directory(config_path)) {
+                model_dir = config_path;
+                actual_config_path = config_path + "/config.json";
+            } else {
+                size_t pos = config_path.find_last_of("/\\");
+                if (pos != std::string::npos) {
+                    model_dir = config_path.substr(0, pos);
+                } else {
+                    model_dir = ".";
+                }
+            }
+
+            config = serius::io::load_llama_config(actual_config_path);
             if (config.vocab_size == 0) {
                 config.vocab_size = 32000;
             }
-            size_t pos = config_path.find_last_of("/\\");
-            if (pos != std::string::npos) {
-                model_dir = config_path.substr(0, pos);
-            }
-            // Load vocab FIRST so the size check is accurate
+
+            // Load vocab
             std::string vocab_path = model_dir + "/vocab.json";
-            std::ifstream vocab_file(vocab_path);
-            if (vocab_file.good()) {
-                vocab_file.close();
+            if (!std::filesystem::exists(vocab_path)) {
+                vocab_path = model_dir + "/tokenizer.json";
+            }
+            
+            if (std::filesystem::exists(vocab_path)) {
                 tokenizer.load(vocab_path);
                 std::cout << "Loaded vocab (" << tokenizer.vocab_size() << " tokens) from " << vocab_path << "\n";
             }
@@ -86,7 +100,7 @@ int cmd_chat(int argc, char **argv)
         }
         serius::model::LLaMAModel model(config);
 
-        if (!config_path.empty()) {
+        if (!model_dir.empty()) {
             if (serius::io::load_llama_weights_from_dir(model_dir, &model)) {
                 std::cout << "Loaded .safetensors weights from " << model_dir << "\n";
             } else {
@@ -111,48 +125,48 @@ int cmd_chat(int argc, char **argv)
                 ids.push_back(serius::BPETokenizer::BOS_ID);
             }
 
-            // Autoregressive generation loop (inference-only, no autograd)
+            // Autoregressive generation loop with KV-Caching
             auto gen_start = std::chrono::steady_clock::now();
             size_t tokens_generated = 0;
-
-            for (size_t gen = 0; gen < MAX_GEN_TOKENS; ++gen) {
-                size_t cur_len = ids.size();
-                size_t ctx_len = std::min(cur_len, config.max_position_embeddings);
-                if (ctx_len == 0) { break; }
-
-                // Use only the last ctx_len tokens
-                size_t start = cur_len - ctx_len;
-                serius::core::Tensor input_tensor({ctx_len});
-                for (size_t i = 0; i < ctx_len; ++i) {
-                    input_tensor[i] = static_cast<float>(ids[start + i]);
-                }
-
-                // Use inference-only forward pass (no Node/autograd overhead)
-                serius::core::Tensor logits =
-                    serius::infer::llama_forward_inference(model, input_tensor);
-
+            
+            serius::infer::KVCache cache;
+            
+            // 1. Initial prompt processing
+            serius::core::Tensor prompt_input({ids.size()});
+            for (size_t i = 0; i < ids.size(); ++i) prompt_input[i] = static_cast<float>(ids[i]);
+            
+            // Now llama_forward_inference natively populates the cache in one parallel go.
+            cache.clear();
+            serius::core::Tensor logits = serius::infer::llama_forward_inference(model, prompt_input, &cache);
+            
+            int next_id = 0;
+            {
                 size_t vocab_size = logits.shape().back();
                 size_t last_row = logits.shape()[0] - 1;
-
                 serius::core::Tensor last_logits({vocab_size});
                 const float *src = logits.data() + (last_row * vocab_size);
-                for (size_t i = 0; i < vocab_size; ++i) {
-                    last_logits[i] = src[i];
-                }
+                std::copy(src, src + vocab_size, last_logits.data());
+                next_id = sampler.sample(last_logits);
+            }
 
-                int next_id = sampler.sample(last_logits);
-
-                // Stop on EOS
+            for (size_t gen = 0; gen < MAX_GEN_TOKENS; ++gen) {
                 if (next_id == serius::BPETokenizer::EOS_ID) { break; }
 
                 std::string tok_str = tokenizer.decode({static_cast<serius::TokenId>(next_id)});
                 std::cout << tok_str << std::flush;
 
+                size_t pos = ids.size();
                 ids.push_back(static_cast<serius::TokenId>(next_id));
                 ++tokens_generated;
+
+                // Fast path: use single token inference with KV-cache
+                serius::core::Tensor next_logits = 
+                    serius::infer::llama_forward_single_token(model, next_id, pos, &cache);
+                
+                next_id = sampler.sample(next_logits);
             }
             auto gen_end = std::chrono::steady_clock::now();
-            double elapsed = std::chrono::duration<double>(gen_end - gen_start).count();
+            double elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(gen_end - gen_start).count();
             if (tokens_generated > 0) {
                 std::cout << "\n[" << tokens_generated << " tokens in "
                           << elapsed << "s, "

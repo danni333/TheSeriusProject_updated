@@ -56,18 +56,76 @@ static inline void microkernel_16x16(const float *A, const float *B, float *C, s
 void matmul_avx512(const float *A, const float *B, float *C, size_t M, size_t N, size_t K, size_t lda, size_t ldb,
                    size_t ldc)
 {
+    if (M == 1) {
+#if defined(__AVX512F__) || defined(_MSC_VER)
+        // High-performance AVX-512 vector-matrix multiplication
+        // Process 64 columns at once to reuse broadcasted A[k]
+        // AVX-512 has 16 floats per vector (512 bits)
+        #pragma omp parallel for
+        for (int64_t j = 0; j < static_cast<int64_t>(N); j += 64) {
+            if (j + 64 <= static_cast<int64_t>(N)) {
+                __m512 sum0 = _mm512_setzero_ps();
+                __m512 sum1 = _mm512_setzero_ps();
+                __m512 sum2 = _mm512_setzero_ps();
+                __m512 sum3 = _mm512_setzero_ps();
+
+                for (size_t k = 0; k < K; ++k) {
+                    __m512 a_val = _mm512_set1_ps(A[k]);
+                    sum0 = _mm512_fmadd_ps(a_val, _mm512_loadu_ps(B + k * ldb + j + 0), sum0);
+                    sum1 = _mm512_fmadd_ps(a_val, _mm512_loadu_ps(B + k * ldb + j + 16), sum1);
+                    sum2 = _mm512_fmadd_ps(a_val, _mm512_loadu_ps(B + k * ldb + j + 32), sum2);
+                    sum3 = _mm512_fmadd_ps(a_val, _mm512_loadu_ps(B + k * ldb + j + 48), sum3);
+                }
+                _mm512_storeu_ps(C + j + 0, sum0);
+                _mm512_storeu_ps(C + j + 16, sum1);
+                _mm512_storeu_ps(C + j + 32, sum2);
+                _mm512_storeu_ps(C + j + 48, sum3);
+            } else {
+                // Fallback for remaining columns
+                for (int64_t jj = j; jj < static_cast<int64_t>(N); jj += 16) {
+                    __m512 sum_vec = _mm512_setzero_ps();
+                    if (jj + 16 <= static_cast<int64_t>(N)) {
+                        for (size_t k = 0; k < K; ++k) {
+                            sum_vec = _mm512_fmadd_ps(_mm512_set1_ps(A[k]), _mm512_loadu_ps(B + k * ldb + jj), sum_vec);
+                        }
+                        _mm512_storeu_ps(C + jj, sum_vec);
+                    } else {
+                        // Scalar cleanup
+                        for (size_t jjj = static_cast<size_t>(jj); jjj < N; ++jjj) {
+                            float s = 0.0f;
+                            for (size_t k = 0; k < K; ++k) s += A[k] * B[k * ldb + jjj];
+                            C[jjj] = s;
+                        }
+                    }
+                }
+            }
+        }
+#else
+        // Fallback to scalar (M=1)
+        for (size_t j = 0; j < N; ++j) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < K; ++k) sum += A[k] * B[k * ldb + j];
+            C[j] = sum;
+        }
+#endif
+        return;
+    }
+
     // Tiling parameters could be larger for AVX-512
     const size_t MC = 128;
     const size_t NC = 128;
     const size_t KC = 256;
 
-    for (size_t i = 0; i < M; ++i) {
+    // Zeroing C with OpenMP
+    #pragma omp parallel for
+    for (int64_t i = 0; i < static_cast<int64_t>(M); ++i) {
         for (size_t j = 0; j < N; ++j) {
             C[i * ldc + j] = 0.0f;
         }
     }
 
-    for (size_t i = 0; i < M; i += MC) {
+    #pragma omp parallel for
+    for (int64_t i = 0; i < static_cast<int64_t>(M); i += static_cast<int64_t>(MC)) {
         size_t m_end = std::min(i + MC, M);
         for (size_t j = 0; j < N; j += NC) {
             size_t n_end = std::min(j + NC, N);

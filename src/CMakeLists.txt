@@ -94,9 +94,9 @@ endif()
 # Set specific compiler flags for SIMD files
 if(MSVC)
     target_compile_options(serius_core PRIVATE 
-        $<$<COMPILE_LANGUAGE:CXX>:/W4 /WX>
+        $<$<COMPILE_LANGUAGE:CXX>:/W4 /WX /openmp>
     )
-    set_source_files_properties(blas/matmul_avx2.cpp PROPERTIES COMPILE_FLAGS "/arch:AVX2")
+    set_source_files_properties(blas/matmul_avx2.cpp infer/llama_inference.cpp PROPERTIES COMPILE_FLAGS "/arch:AVX2")
     set_source_files_properties(blas/matmul_avx512.cpp PROPERTIES COMPILE_FLAGS "/arch:AVX512")
 else()
     target_compile_options(serius_core PRIVATE 

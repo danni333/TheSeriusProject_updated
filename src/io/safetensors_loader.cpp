@@ -63,6 +63,14 @@ void f16_to_f32(const uint16_t *src, float *dst, size_t n)
     }
 }
 
+void bf16_to_f32(const uint16_t *src, float *dst, size_t n)
+{
+    for (size_t i = 0; i < n; ++i) {
+        uint32_t val_32 = static_cast<uint32_t>(src[i]) << 16;
+        std::memcpy(&dst[i], &val_32, 4);
+    }
+}
+
 }  // namespace
 
 bool load_safetensors(const std::string &path, SafetensorsFile *out)
@@ -135,6 +143,11 @@ bool SafetensorsFile::copy_tensor_to_float(const std::string &name, float *out, 
     if (m.dtype == "F16") {
         if (byte_len != static_cast<int64_t>(out_size * 2)) return false;
         f16_to_f32(reinterpret_cast<const uint16_t *>(data_.data() + m.data_start), out, out_size);
+        return true;
+    }
+    if (m.dtype == "BF16") {
+        if (byte_len != static_cast<int64_t>(out_size * 2)) return false;
+        bf16_to_f32(reinterpret_cast<const uint16_t *>(data_.data() + m.data_start), out, out_size);
         return true;
     }
     return false;
