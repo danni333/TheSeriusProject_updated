@@ -43,8 +43,6 @@ Node *matmul(Node *input_a, Node *input_b)
                         ? b_cont.reshape({batch_b, next_last_b, last_b})
                         : b_cont;
         
-        Tensor res_flat = blas::batched_matmul(a_flat, b_flat);
-        
         // Reconstruct output shape
         std::vector<size_t> out_shape;
         if (input_a->data.ndim() >= input_b->data.ndim()) {
@@ -54,7 +52,9 @@ Node *matmul(Node *input_a, Node *input_b)
              out_shape = shape_b;
              out_shape[out_shape.size() - 2] = next_last_a;
         }
-        res = res_flat.reshape(out_shape);
+        res = Tensor(out_shape, input_a->data.dtype());
+        Tensor res_3d = res.reshape({batch_a, next_last_a, last_b});
+        blas::batched_matmul(a_flat, b_flat, res_3d);
     } else if (input_a->data.ndim() == 3 || input_b->data.ndim() == 3) {
         res = blas::batched_matmul(input_a->data, input_b->data);
     } else {
@@ -92,8 +92,9 @@ Node *matmul(Node *input_a, Node *input_b)
                                  ? mb_cont.reshape({mb_batch, mb_rows, mb_cols})
                                  : mb_cont;
                 
-                Tensor res_flat = blas::batched_matmul(ma_flat, mb_flat);
-                grad_a = res_flat.reshape(input_a->data.shape());
+                grad_a = Tensor(input_a->data.shape(), input_a->data.dtype());
+                Tensor grad_a_3d = grad_a.reshape({ma_batch, ma_rows, mb_cols});
+                blas::batched_matmul(ma_flat, mb_flat, grad_a_3d);
             } else if (out->grad.ndim() == 3 || b_t.ndim() == 3) {
                 grad_a = blas::batched_matmul(out->grad, b_t);
             } else {
@@ -130,8 +131,9 @@ Node *matmul(Node *input_a, Node *input_b)
                                  ? mb_cont.reshape({mb_batch, mb_rows, mb_cols})
                                  : mb_cont;
                 
-                Tensor res_flat = blas::batched_matmul(ma_flat, mb_flat);
-                grad_b = res_flat.reshape(input_b->data.shape());
+                grad_b = Tensor(input_b->data.shape(), input_b->data.dtype());
+                Tensor grad_b_3d = grad_b.reshape({ma_batch, ma_rows, mb_cols});
+                blas::batched_matmul(ma_flat, mb_flat, grad_b_3d);
             } else if (a_t.ndim() == 3 || out->grad.ndim() == 3) {
                 grad_b = blas::batched_matmul(a_t, out->grad);
             } else {

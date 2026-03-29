@@ -7,15 +7,7 @@
 #include <iostream>
 #include <stdexcept>
 
-#define CHECK_CUDA(call)                                                                             \
-    do {                                                                                             \
-        cudaError_t err = call;                                                                      \
-        if (err != cudaSuccess) {                                                                    \
-            std::cerr << "CUDA error at " << __FILE__ << ":" << __LINE__ << " code=" << err << " \"" \
-                      << cudaGetErrorString(err) << "\"" << std::endl;                               \
-            throw std::runtime_error("CUDA error");                                                  \
-        }                                                                                            \
-    } while (0)
+#include "cuda_common.h"
 
 namespace serius {
 namespace hal {
@@ -36,10 +28,24 @@ void *CudaBackend::malloc_managed(size_t size)
     return ptr;
 }
 
+void *CudaBackend::malloc_pinned(size_t size)
+{
+    if (size == 0) return nullptr;
+    void *ptr = nullptr;
+    CHECK_CUDA(cudaMallocHost(&ptr, size));
+    return ptr;
+}
+
 void CudaBackend::free(void *ptr)
 {
     if (!ptr) return;
     CHECK_CUDA(cudaFree(ptr));
+}
+
+void CudaBackend::free_pinned(void *ptr)
+{
+    if (!ptr) return;
+    CHECK_CUDA(cudaFreeHost(ptr));
 }
 
 void CudaBackend::memcpy_h2d(void *dst, const void *src, size_t size)
@@ -60,6 +66,48 @@ void CudaBackend::memcpy_d2d(void *dst, const void *src, size_t size)
 {
     if (dst && src && size > 0) {
         CHECK_CUDA(cudaMemcpy(dst, src, size, cudaMemcpyDeviceToDevice));
+    }
+}
+
+void *CudaBackend::create_stream()
+{
+    cudaStream_t stream;
+    CHECK_CUDA(cudaStreamCreate(&stream));
+    return static_cast<void *>(stream);
+}
+
+void CudaBackend::destroy_stream(void *stream)
+{
+    if (stream) {
+        CHECK_CUDA(cudaStreamDestroy(static_cast<cudaStream_t>(stream)));
+    }
+}
+
+void CudaBackend::sync_stream(void *stream)
+{
+    if (stream) {
+        CHECK_CUDA(cudaStreamSynchronize(static_cast<cudaStream_t>(stream)));
+    }
+}
+
+void CudaBackend::memcpy_h2d_async(void *dst, const void *src, size_t size, void *stream)
+{
+    if (dst && src && size > 0) {
+        CHECK_CUDA(cudaMemcpyAsync(dst, src, size, cudaMemcpyHostToDevice, static_cast<cudaStream_t>(stream)));
+    }
+}
+
+void CudaBackend::memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream)
+{
+    if (dst && src && size > 0) {
+        CHECK_CUDA(cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToHost, static_cast<cudaStream_t>(stream)));
+    }
+}
+
+void CudaBackend::memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream)
+{
+    if (dst && src && size > 0) {
+        CHECK_CUDA(cudaMemcpyAsync(dst, src, size, cudaMemcpyDeviceToDevice, static_cast<cudaStream_t>(stream)));
     }
 }
 

@@ -7,6 +7,7 @@
 #include <random>
 
 #include "../hal/device.h"
+#include "../hal/fused_kernels.h"
 #include "../memory/memory_pool.h"
 #include "../quant/conversions.h"
 
@@ -56,7 +57,9 @@ Tensor::Tensor(const std::vector<size_t> &shape, hal::DType dtype)
       size_(shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>())),
       dtype_(dtype),
       owns_data_(true),
-      pool_(nullptr)  // This constructor does not use a pool directly
+      pool_(nullptr),
+      is_gpu_pool_(false),
+      is_pinned_(false)
 {
     if (size_ > 0) {
         // Use backend allocator directly if no pool
@@ -68,7 +71,7 @@ Tensor::Tensor(const std::vector<size_t> &shape, hal::DType dtype)
 }
 
 Tensor::Tensor(const std::vector<size_t> &shape, memory::MemoryPool *pool, hal::DType dtype)
-    : data_(nullptr),  // Initialize data_ to nullptr
+    : data_(nullptr),
       data_gpu_(nullptr),
       location_(DataLocation::CPU),
       shape_(shape),
@@ -76,7 +79,9 @@ Tensor::Tensor(const std::vector<size_t> &shape, memory::MemoryPool *pool, hal::
       size_(shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>())),
       dtype_(dtype),
       owns_data_(true),
-      pool_(pool)
+      pool_(pool),
+      is_gpu_pool_(false),
+      is_pinned_(false)
 {
     if (size_ > 0) {
         size_t bytes = size_ * element_size();
@@ -99,7 +104,9 @@ Tensor::Tensor(void *data_ptr, const std::vector<size_t> &shape)
       size_(shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>())),
       dtype_(hal::DType::Float32),
       owns_data_(false),
-      pool_(nullptr)
+      pool_(nullptr),
+      is_gpu_pool_(false),
+      is_pinned_(false)
 {
 }
 
@@ -111,7 +118,9 @@ Tensor::Tensor(void *data_ptr, const std::vector<size_t> &shape, const std::vect
       strides_(strides),
       dtype_(hal::DType::Float32),
       owns_data_(false),
-      pool_(nullptr)
+      pool_(nullptr),
+      is_gpu_pool_(false),
+      is_pinned_(false)
 {
     size_ = 1;
     for (auto dim : shape) size_ *= dim;
@@ -120,15 +129,17 @@ Tensor::Tensor(void *data_ptr, const std::vector<size_t> &shape, const std::vect
 // --- Copy/Move ---
 
 Tensor::Tensor(const Tensor &other)
-    : data_(nullptr),  // Initialize data_ to nullptr
+    : data_(nullptr),
       data_gpu_(nullptr),
-      location_(other.location_),  // Copy location from other
+      location_(other.location_),
       shape_(other.shape_),
       strides_(compute_strides(other.shape_)),
       size_(other.size_),
       dtype_(other.dtype_),
       owns_data_(true),
-      pool_(nullptr)  // Copy constructor does not inherit pool ownership
+      pool_(nullptr),
+      is_gpu_pool_(false),
+      is_pinned_(false)
 {
     if (size_ > 0) {
         hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
@@ -190,7 +201,9 @@ Tensor::Tensor(Tensor &&other) noexcept
       size_(other.size_),
       dtype_(other.dtype_),
       owns_data_(other.owns_data_),
-      pool_(other.pool_)
+      pool_(other.pool_),
+      is_gpu_pool_(other.is_gpu_pool_),
+      is_pinned_(other.is_pinned_)
 {
     other.data_ = nullptr;
     other.data_gpu_ = nullptr;
@@ -211,61 +224,85 @@ Tensor &Tensor::operator=(const Tensor &other)
 
 Tensor &Tensor::operator=(Tensor &&other) noexcept
 {
-    if (this != &other) {
-        // Free existing resources
-        if (owns_data_) {
-            if (data_ != nullptr && pool_ == nullptr) {
-                hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
-                backend->free(data_);
-            }
-            if (data_gpu_ != nullptr) {
-                hal::IBackend *backend = hal::get_gpu_backend();
-                if (backend != nullptr) {
-                    backend->free(data_gpu_);
-                }
-            }
-        }
-
-        data_ = other.data_;
-        data_gpu_ = other.data_gpu_;
-        location_ = other.location_;
-        shape_ = std::move(other.shape_);
-        strides_ = std::move(other.strides_);
-        size_ = other.size_;
-        dtype_ = other.dtype_;
-        owns_data_ = other.owns_data_;
-        pool_ = other.pool_;
-
-        other.data_ = nullptr;
-        other.data_gpu_ = nullptr;
-        other.location_ = DataLocation::CPU;
-        other.size_ = 0;
-        other.owns_data_ = false;
-        other.pool_ = nullptr;
+    if (this == &other) {
+        return *this;
     }
+
+    if (!other.owns_data_) {
+        // Source is a non-owning view. We must perform a DEEP COPY to become an owner.
+        // This prevents dangling pointers if the original owner of 'other' is destroyed.
+        // We use a temporary to safely handle cases where 'other' is a view of '*this'.
+        Tensor tmp(other); 
+        *this = std::move(tmp); // Recurse: now 'other' (as 'tmp') owns_data_ is true
+        return *this;
+    }
+
+    // Standard move assignment for owning tensors:
+    // 1. Free existing managed resources
+    free_data();
+
+    // 2. Transfer ownership/state from 'other'
+    data_ = other.data_;
+    data_gpu_ = other.data_gpu_;
+    location_ = other.location_;
+    shape_ = std::move(other.shape_);
+    strides_ = std::move(other.strides_);
+    size_ = other.size_;
+    dtype_ = other.dtype_;
+    owns_data_ = true; // 'other' was an owner, so we are now
+    pool_ = other.pool_;
+    is_gpu_pool_ = other.is_gpu_pool_;
+    is_pinned_ = other.is_pinned_;
+
+    // 3. Reset 'other' so its destructor doesn't free the memory we just took
+    other.data_ = nullptr;
+    other.data_gpu_ = nullptr;
+    other.location_ = DataLocation::CPU;
+    other.size_ = 0;
+    other.owns_data_ = false;
+    other.pool_ = nullptr;
+    other.is_gpu_pool_ = false;
+    other.is_pinned_ = false;
+
     return *this;
 }
 
-Tensor::~Tensor()
+void Tensor::free_data()
 {
     if (owns_data_) {
         // Free CPU memory using backend if no pool was used
         if (data_ != nullptr && pool_ == nullptr) {
             hal::IBackend *backend = hal::get_backend(hal::DeviceType::CPU);
-            backend->free(data_);
+            if (backend) {
+                if (is_pinned_) {
+                    backend->free_pinned(data_);
+                } else {
+                    backend->free(data_);
+                }
+            }
             data_ = nullptr;
         } else if (data_ != nullptr && pool_ != nullptr) {
             // Memory pool resets en-masse, no per-tensor deallocate required usually
             data_ = nullptr;
         }
-    }
-    if (data_gpu_ != nullptr) {
-        hal::IBackend *backend = hal::get_gpu_backend();
-        if (backend != nullptr) {
-            backend->free(data_gpu_);
-            data_gpu_ = nullptr;
+
+        if (data_gpu_ != nullptr) {
+            hal::IBackend *backend = hal::get_gpu_backend();
+            if (backend != nullptr) {
+                backend->free(data_gpu_);
+                data_gpu_ = nullptr;
+            }
         }
     }
+    // For non-owners, we just detach
+    data_ = nullptr;
+    data_gpu_ = nullptr;
+    owns_data_ = false;
+}
+
+Tensor::~Tensor()
+{
+    free_data();
 }
 
 // --- Element Access ---
@@ -388,12 +425,39 @@ void Tensor::set_item(const std::vector<size_t> &indices, float val)
 Tensor Tensor::contiguous() const
 {
     if (is_contiguous()) {
-        return Tensor(data_, shape_);  // Return a view
+        if (owns_data_) {
+            Tensor view(data_, shape_);
+            view.dtype_ = dtype_;
+            view.data_gpu_ = data_gpu_;
+            view.location_ = location_;
+            view.is_pinned_ = is_pinned_;
+            return view;
+        }
     }
 
     Tensor result(shape_, pool_, dtype_);
 
-    // Decompose and copy element by element
+    // Check if we can do GPU-native contiguous copy
+    if (location_ == DataLocation::GPU || location_ == DataLocation::SYNCED) {
+        hal::IBackend *gpu_backend = hal::get_gpu_backend();
+        if (gpu_backend != nullptr && gpu_backend->is_available()) {
+            // Allocate GPU memory for result
+            result.syncToDevice(); 
+            
+            // Call our new GPU-native copy layout kernel
+            hal::copy_layout(result.data_gpu_, this->data_gpu_, shape_.data(), strides_.data(), shape_.size(), dtype_);
+            
+            result.location_ = DataLocation::GPU;
+            return result;
+        }
+    }
+
+    // Fallback to CPU-side copy
+    if (location_ == DataLocation::GPU) {
+        syncToHost();
+    }
+
+    // Decompose and copy element by element on CPU
     std::vector<size_t> indices(shape_.size(), 0);
     for (size_t i = 0; i < size_; ++i) {
         result.set_item(i, this->item(indices));
@@ -403,6 +467,11 @@ Tensor Tensor::contiguous() const
             indices[d] = 0;
         }
     }
+
+    if (location_ == DataLocation::GPU || location_ == DataLocation::SYNCED) {
+        result.syncToDevice();
+    }
+
     return result;
 }
 
@@ -447,7 +516,13 @@ Tensor Tensor::reshape(const std::vector<size_t> &new_shape) const
         throw std::invalid_argument("Cannot reshape: total size mismatch");
     }
     if (!is_contiguous()) {
-        throw std::invalid_argument("Cannot reshape non-contiguous tensor (make a copy first)");
+        std::string shape_str = "[";
+        for (auto s : shape_) shape_str += std::to_string(s) + ",";
+        shape_str += "]";
+        std::string strides_str = "[";
+        for (auto s : strides_) strides_str += std::to_string(s) + ",";
+        strides_str += "]";
+        throw std::invalid_argument("Cannot reshape non-contiguous tensor (make a copy first). Shape: " + shape_str + " Strides: " + strides_str);
     }
     // Return a view with new shape
     Tensor res = Tensor(data_, new_shape);
@@ -995,11 +1070,7 @@ Tensor Tensor::operator/(float scalar) const
 
 void Tensor::syncToDevice() const
 {
-    if (size_ == 0 || data_ == nullptr) return;  // Nothing to sync
-
-    if (location_ == DataLocation::GPU || location_ == DataLocation::SYNCED) {
-        return;  // Already on GPU
-    }
+    if (size_ == 0) return;  // Nothing to sync
 
     hal::IBackend *backend = hal::get_gpu_backend();
     if (backend == nullptr || !backend->is_available()) {
@@ -1007,13 +1078,19 @@ void Tensor::syncToDevice() const
     }
 
     if (data_gpu_ == nullptr) {
-        // We cast const away here to modify internal state safely
         const_cast<Tensor *>(this)->data_gpu_ = backend->malloc(size_ * element_size());
+        if (data_gpu_ == nullptr) throw std::runtime_error("CUDA malloc failed in syncToDevice");
     }
 
-    if (data_ != nullptr && data_gpu_ != nullptr) {
-        backend->memcpy_h2d(data_gpu_, data_, size_ * element_size());
-        const_cast<Tensor *>(this)->location_ = DataLocation::SYNCED;
+    if (location_ == DataLocation::CPU) {
+        if (data_ != nullptr && data_gpu_ != nullptr) {
+            backend->memcpy_h2d(data_gpu_, data_, size_ * element_size());
+            const_cast<Tensor *>(this)->location_ = DataLocation::SYNCED;
+        }
+    } else if (location_ == DataLocation::GPU) {
+        // Already dirty on GPU, nothing to do
+    } else if (location_ == DataLocation::SYNCED) {
+        // Already synced, nothing to do
     }
 }
 
@@ -1022,16 +1099,23 @@ void Tensor::syncToHost() const
     if (size_ == 0 || data_gpu_ == nullptr) return;  // Nothing to sync
 
     if (location_ == DataLocation::CPU || location_ == DataLocation::SYNCED) {
-        return;  // Already on CPU
+        return;  // Already up-to-date on CPU
     }
 
-    hal::IBackend *backend = hal::get_gpu_backend();
-    if (backend == nullptr) {
+    hal::IBackend *gpu_backend = hal::get_gpu_backend();
+    if (gpu_backend == nullptr || !gpu_backend->is_available()) {
         return;
     }
 
+    // Ensure host memory is allocated before copying back
+    if (data_ == nullptr) {
+        hal::IBackend *cpu_backend = hal::get_backend(hal::DeviceType::CPU);
+        const_cast<Tensor *>(this)->data_ = cpu_backend->malloc(size_ * element_size());
+        if (data_ == nullptr) throw std::runtime_error("CPU malloc failed in syncToHost");
+    }
+
     if (data_ != nullptr && data_gpu_ != nullptr) {
-        backend->memcpy_d2h(data_, data_gpu_, size_ * element_size());
+        gpu_backend->memcpy_d2h(data_, data_gpu_, size_ * element_size());
         const_cast<Tensor *>(this)->location_ = DataLocation::SYNCED;
     }
 }

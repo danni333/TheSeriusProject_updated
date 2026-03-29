@@ -19,12 +19,25 @@ class IBackend
 
     // Memory Management
     virtual void *malloc(size_t size) = 0;
+    virtual void *malloc_pinned(size_t size) = 0;
     virtual void *malloc_managed(size_t size) = 0;
     virtual void free(void *ptr) = 0;
+    virtual void free_pinned(void *ptr) = 0;
 
     virtual void memcpy_h2d(void *dst, const void *src, size_t size) = 0;
     virtual void memcpy_d2h(void *dst, const void *src, size_t size) = 0;
     virtual void memcpy_d2d(void *dst, const void *src, size_t size) = 0;
+
+    // Stream Management
+    virtual void *create_stream() = 0;
+    virtual void destroy_stream(void *stream) = 0;
+    virtual void sync_stream(void *stream) = 0;
+
+    // Async Memory Management
+    virtual void memcpy_h2d_async(void *dst, const void *src, size_t size, void *stream) = 0;
+    virtual void memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream) = 0;
+    virtual void memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream) = 0;
+
 
     // Initialization check
     virtual bool is_available() const = 0;

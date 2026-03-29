@@ -8,6 +8,9 @@
 namespace serius {
 namespace core {
 namespace blas {
+
+void matmul_avx2(const float *a, const float *b, float *c, size_t m, size_t n, size_t k, size_t lda, size_t ldb, size_t ldc);
+
 namespace test {
 
 namespace core = serius::core;
@@ -65,8 +68,37 @@ TEST(BlasTest, MatmulLarge)
 
     matmul(A, B, C);
 
+    C.syncToHost();  // Ensure data is synced if matmul ran on GPU
+
     for (size_t i = 0; i < C.size(); ++i) {
         EXPECT_NEAR(C[i], C_expected[i], 1e-4f) << " at index " << i;
+    }
+}
+
+TEST(BlasTest, MatmulCPUAVX2)
+{
+    const size_t M = 200;
+    const size_t K = 256;
+    const size_t N = 200;
+
+    Tensor A({M, K});
+    Tensor B({K, N});
+    Tensor C_expected({M, N});
+    Tensor C({M, N});
+
+    A.rand();
+    B.rand();
+    C.zeros();
+    C_expected.zeros();
+
+    matmul_scalar(A.data(), B.data(), C_expected.data(), M, N, K, A.strides()[0], B.strides()[0],
+                  C_expected.strides()[0]);
+
+    // Force CPU AVX2 dispatch by calling it directly
+    matmul_avx2(A.data(), B.data(), C.data(), M, N, K, A.strides()[0], B.strides()[0], C.strides()[0]);
+
+    for (size_t i = 0; i < C.size(); ++i) {
+        EXPECT_NEAR(C.data()[i], C_expected.data()[i], 1e-4f) << " at index " << i;
     }
 }
 

@@ -57,7 +57,6 @@ MultiHeadAttention::~MultiHeadAttention()
 Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
 {
     using namespace core::autograd::ops;
-
     // Queries: input * w_q
     Node *queries = matmul(input, w_q);
 
@@ -80,61 +79,24 @@ Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
     size_t n_heads = n_heads_;
     size_t d_head = d_head_;
 
-    // Reshape: (B, S, D) -> (B, S, H, D_h)
     Node *q_split = reshape(q_rot, {batch_size, seq_len, n_heads, d_head});
     Node *k_split = reshape(k_rot, {batch_size, seq_len, n_heads, d_head});
     Node *v_split = reshape(values, {batch_size, seq_len, n_heads, d_head});
 
-    // Transpose: (B, S, H, D_h) -> (B, H, S, D_h)
     Node *q_heads = contiguous(transpose(q_split, 1, 2));
     Node *k_heads = contiguous(transpose(k_split, 1, 2));
     Node *v_heads = contiguous(transpose(v_split, 1, 2));
 
-    // --- KV Caching Integration ---
     if (cache != nullptr) {
-        // Update cache with CURRENT step rotated keys and values
-        // k_heads: (B, H, S, D_h), v_heads: (B, H, S, D_h)
         cache->update(k_heads->data, v_heads->data);
-
-        // Get FULL sequence from cache
         Tensor full_k = cache->gather_keys();
         Tensor full_v = cache->gather_values();
-
-        // Create new nodes for cached data (gradient flow stops here for cache for now)
         k_heads = new Node(std::move(full_k));
         v_heads = new Node(std::move(full_v));
-
         k_heads = contiguous(k_heads);
         v_heads = contiguous(v_heads);
     }
-
     size_t total_seq_len = (cache != nullptr) ? cache->current_len() : seq_len;
-
-    // --- Scaled Dot-Product Attention (Flash or Standard) ---
-
-#ifdef SERIUS_USE_CUDA
-    // Use Flash Attention for CUDA during prefill (no cache) or training
-    if (q_heads->data.is_gpu() && cache == nullptr) {
-        serius::model::attention::FlashAttentionConfig flash_config;
-        flash_config.is_causal = true;
-        flash_config.softmax_scale = 1.0F / std::sqrt(static_cast<float>(d_head));
-
-        Node *context_fused =
-            serius::model::attention::flash_attention(q_heads, k_heads, v_heads, flash_config);
-
-        // Context heads from flash: (B, H, S, D_h)
-        Node *context_transposed = contiguous(transpose(context_fused, 1, 2));
-        Node *context_merged = reshape(context_transposed, {batch_size, seq_len, d_model_});
-
-        // Final linear projection
-        Node *output = matmul(context_merged, w_o);
-
-        if (input->data.ndim() == 2) {
-            return reshape(output, {seq_len, d_model_});
-        }
-        return output;
-    }
-#endif
 
     // Standard Path (CPU or fallbacks)
     // Scores: (B, H, S_q, D_h) * (B, H, D_h, S_k) -> (B, H, S_q, S_k)
@@ -150,8 +112,6 @@ Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
             cached_mask_ = core::Tensor({total_seq_len, total_seq_len});
             const float MASK_INIT_VAL = 0.0F; 
             cached_mask_.fill(MASK_INIT_VAL); 
-            // Actually fused_masked_softmax handles the causal mask if we pass a proper mask tensor
-            // Generate causal mask: 1.0 where masked out (future), 0.0 where active
             for (size_t i = 0; i < total_seq_len; ++i) {
                 for (size_t j = 0; j < total_seq_len; ++j) {
                     cached_mask_.at(i, j) = (j > i) ? 1.0F : 0.0F;
@@ -161,7 +121,6 @@ Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
         }
         probs = fused_masked_softmax(scores, cached_mask_, scale);
     } else {
-        // Inference with KV cache: strictly 1D mask or no mask if seq_q = 1
         probs = softmax(mul_scalar(scores, scale), -1);
     }
 

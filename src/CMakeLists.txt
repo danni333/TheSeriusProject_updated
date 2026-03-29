@@ -56,8 +56,16 @@ if(SERIUS_USE_CUDA)
         hal/fused_kernels.cu
         blas/matmul_cuda.cu
         quant/dequant_matmul.cu
+        quant/quant_kernels.cu
         attention/flash_attn_cuda.cu
     )
+    target_compile_definitions(serius_core PRIVATE SERIUS_USE_CUDA)
+    if(NOT DEFINED CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES)
+        find_package(CUDAToolkit REQUIRED)
+        target_include_directories(serius_core PRIVATE ${CUDAToolkit_INCLUDE_DIRS})
+    else()
+        target_include_directories(serius_core PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
+    endif()
 endif()
 
 if(SERIUS_USE_VULKAN)
@@ -118,5 +126,5 @@ add_subdirectory(hub)
 
 # --- CLI executable (serve, chat) ---
 add_executable(serius app/main.cpp)
-target_link_libraries(serius PRIVATE serius_core serius_server hub)
+target_link_libraries(serius PRIVATE serius_core serius_server)
 target_include_directories(serius PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

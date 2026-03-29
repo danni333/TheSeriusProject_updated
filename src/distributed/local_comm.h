@@ -30,7 +30,7 @@ class ProcessGroup
 
     /// Submit data for an AllReduce and wait for all ranks to participate.
     /// Returns the reduced result in `buffer`.
-    void all_reduce(float *buffer, size_t count, ReduceOp op, int rank);
+    void all_reduce(float *buffer, size_t count, ReduceOp reduce_op, int rank);
 
     /// Submit data for a Broadcast and wait.
     void broadcast(float *buffer, size_t count, int root, int rank);
@@ -41,7 +41,7 @@ class ProcessGroup
 
     /// ReduceScatter: reduce then scatter.
     void reduce_scatter(const float *send_buf, float *recv_buf,
-                        size_t recv_count, ReduceOp op, int rank);
+                        size_t recv_count, ReduceOp reduce_op, int rank);
 
     /// Point-to-point send/recv using internal mailboxes.
     void send(const float *buffer, size_t count, int src, int dst);
@@ -57,7 +57,9 @@ class ProcessGroup
 
     // Staging area for collective ops
     int arrived_ = 0;              // Number of ranks that have arrived
+    int departed_ = 0;             // Number of ranks that have departed
     int generation_ = 0;           // Incremented after each collective completes
+    size_t expected_count_ = 0;                     // Expected count for consistency check
     std::vector<std::vector<float>> rank_buffers_;  // Per-rank staging data
     std::vector<float> result_buffer_;              // Reduced result
 
@@ -69,9 +71,6 @@ class ProcessGroup
         bool consumed = false;
     };
     std::vector<std::vector<Mailbox>> mailboxes_;  // [src][dst]
-
-    void wait_for_all(std::unique_lock<std::mutex> &lock, int generation);
-    void wait_for_last_rank(std::unique_lock<std::mutex> &lock, int generation);
 };
 
 class LocalCommunicator : public Communicator
@@ -87,15 +86,15 @@ class LocalCommunicator : public Communicator
     int world_size() const override { return world_size_; }
     CommBackend backend() const override { return CommBackend::Local; }
 
-    void all_reduce(float *buffer, size_t count, ReduceOp op) override;
-    void all_reduce(core::Tensor &tensor, ReduceOp op) override;
+    void all_reduce(float *buffer, size_t count, ReduceOp reduce_op) override;
+    void all_reduce(core::Tensor &tensor, ReduceOp reduce_op) override;
 
     void broadcast(float *buffer, size_t count, int root) override;
     void broadcast(core::Tensor &tensor, int root = 0) override;
 
     void all_gather(const float *send_buf, size_t send_count, float *recv_buf) override;
     void all_gather(const core::Tensor &send_tensor, core::Tensor &recv_tensor) override;
-    void reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp op) override;
+    void reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp reduce_op) override;
     void send(const float *buffer, size_t count, int dst) override;
     void recv(float *buffer, size_t count, int src) override;
     void barrier() override;

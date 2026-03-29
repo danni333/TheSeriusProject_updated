@@ -13,6 +13,8 @@
 #include "tensor/tensor.h"
 #include "tokenizer/bpe.h"
 #include "transformer/model.h"
+#include "infer/llama_inference.h"
+#include "infer/sampler.h"
 
 
 namespace serius {
@@ -164,6 +166,76 @@ BenchResult bench_quantization(size_t num_elements)
 
     return {"INT4 Quantization (" + std::to_string(num_elements / 1000) + "K)", ms, element_rate, "M elements/s"};
 }
+// ---------------------------------------------------------------------------
+// 6. End-to-End Generation (LLaMA-1B Synthetic)
+// ---------------------------------------------------------------------------
+
+void bench_generation_e2e()
+{
+    std::cout << "\n--- 6. End-to-End Generation (Synthetic TinyLlama-1.1B) ---\n";
+    
+    // TinyLlama-1.1B specs using LLaMAConfig
+    model::LLamaConfig config;
+    config.hidden_size = 2048;
+    config.num_attention_heads = 32;
+    config.num_key_value_heads = 4;
+    config.num_hidden_layers = 22;
+    config.intermediate_size = 5632;
+    config.vocab_size = 32000;
+    config.max_position_embeddings = 2048;
+    
+    std::cout << "  Initializing synthetic model (1.1B params)..." << std::flush;
+    auto start_init = high_resolution_clock::now();
+    model::LLaMAModel model(config);
+    // Force allocation and warmup (trigger some page faults)
+    model.layers()[0]->q_proj->data.data()[0] = 0.0f; 
+    auto end_init = high_resolution_clock::now();
+    std::cout << " done (" << duration<double, std::milli>(end_init - start_init).count() << " ms)\n";
+
+    infer::KVCache cache;
+    infer::Sampler sampler;
+
+    // Prompt evaluation (Prefill)
+    const size_t prompt_len = 128; // Standard prompt length for bench
+    Tensor prompt_ids({prompt_len}); // uses default Float32
+    float* p_data = prompt_ids.data();
+    for (size_t i = 0; i < prompt_len; ++i) {
+        p_data[i] = static_cast<float>(i % 1000 + 1); // dummy tokens
+    }
+
+    std::cout << "  Running prompt eval (" << prompt_len << " tokens)..." << std::flush;
+    auto start_prefill = high_resolution_clock::now();
+    Tensor logits = infer::llama_forward_inference(model, prompt_ids, &cache);
+    auto end_prefill = high_resolution_clock::now();
+    double prefill_ms = duration<double, std::milli>(end_prefill - start_prefill).count();
+    double prefill_toks = prompt_len / (prefill_ms / 1000.0);
+    std::cout << " done\n";
+
+    // Generation (Decode)
+    const size_t gen_len = 100;
+    std::cout << "  Running generation (" << gen_len << " tokens)..." << std::flush;
+    
+    int next_token = sampler.sample_greedy(logits);
+    
+    auto start_gen = high_resolution_clock::now();
+    for (size_t i = 0; i < gen_len; ++i) {
+        logits = infer::llama_forward_single_token(model, next_token, prompt_len + i, &cache);
+        next_token = sampler.sample_greedy(logits);
+    }
+    auto end_gen = high_resolution_clock::now();
+    double gen_ms = duration<double, std::milli>(end_gen - start_gen).count();
+    double gen_toks = gen_len / (gen_ms / 1000.0);
+    std::cout << " done\n\n";
+
+    // --- JSON OUTPUT ---
+    std::cout << "{\n";
+    std::cout << "  \"model\": \"TinyLlama-1.1B-Synthetic\",\n";
+    std::cout << "  \"prompt_tokens\": " << prompt_len << ",\n";
+    std::cout << "  \"generated_tokens\": " << gen_len << ",\n";
+    std::cout << "  \"prompt_eval_tok_per_sec\": " << std::fixed << std::setprecision(2) << prefill_toks << ",\n";
+    std::cout << "  \"generation_tok_per_sec\": " << std::fixed << std::setprecision(2) << gen_toks << "\n";
+    std::cout << "}\n";
+}
 
 void benchmark_full_pipeline()
 {
@@ -185,12 +257,15 @@ void benchmark_full_pipeline()
     print_result(bench_memory_pool(100000, 1024));
 
     std::cout << "\n--- 3. Transformer Throughput ---\n";
+    // Tiny model for fast generic throughput check
     print_result(bench_transformer_forward(1, 128, 512));
     print_result(bench_transformer_forward(8, 128, 512));
 
     std::cout << "\n--- 4. Dataloader & Quantization ---\n";
     print_result(bench_dataloader(100, 32));
     print_result(bench_quantization(1000000));
+    
+    bench_generation_e2e();
 
     std::cout << "\n============================================================\n";
     std::cout << "                    BENCHMARKS COMPLETE\n";

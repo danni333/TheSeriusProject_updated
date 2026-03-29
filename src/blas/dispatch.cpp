@@ -1,5 +1,6 @@
 #include <stdexcept>
 
+#include "../common/thread_pool.h"
 #include "../hal/device.h"
 #include "blas.h"
 
@@ -75,69 +76,29 @@ CpuInfo get_cpu_info()
 
 // --- Main Dispatcher ---
 
-void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
+// Helper for CPU matmul dispatch
+static void dispatch_cpu_matmul(const Tensor &A, const Tensor &B, Tensor &C)
 {
-    if (mat_a.ndim() != 2 || mat_b.ndim() != 2 || mat_c.ndim() != 2) {
-        throw std::invalid_argument("matmul supports only 2D tensors");
-    }
-
-    size_t rows_m = mat_a.shape()[0];
-    size_t inner_k = mat_a.shape()[1];
-    if (mat_b.shape()[0] != inner_k) {
-        throw std::invalid_argument("matmul dimension mismatch: A.cols != B.rows");
-    }
-    size_t cols_n = mat_b.shape()[1];
-
-    if (mat_c.shape()[0] != rows_m || mat_c.shape()[1] != cols_n) {
-        throw std::invalid_argument("matmul output tensor C must have shape [M, N]");
-    }
-
-    size_t lda = mat_a.strides()[0];
-    size_t ldb = mat_b.strides()[0];
-    size_t ldc = mat_c.strides()[0];
-
-    auto info = get_cpu_info();
-
-    // GPU Dispatch
-#ifdef SERIUS_USE_CUDA
-    size_t flops = 2 * rows_m * cols_n * inner_k;
-    hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
-    
-    // Intelligent GPU preference:
-    // 1. Large problem size
-    // 2. Non-float32 (quantized) always on GPU if possible
-    // 3. IF any input is already on GPU, avoid moving it back!
-    bool any_on_gpu = (mat_a.location() != Tensor::DataLocation::CPU || 
-                       mat_b.location() != Tensor::DataLocation::CPU);
-    
-    if (backend && backend->is_available() && 
-        (flops > 1000000 || mat_a.dtype() != hal::DType::Float32 || any_on_gpu)) {
-        
-        mat_a.syncToDevice();
-        mat_b.syncToDevice();
-        mat_c.syncToDevice();
-        
-        matmul_cuda(mat_a.data_gpu(), mat_b.data_gpu(), mat_c.data_gpu(), rows_m, cols_n, inner_k, lda, ldb, ldc,
-                    mat_a.dtype());
-
-        mat_c.mark_dirty(Tensor::DataLocation::GPU);
-        // Removed forced mat_c.syncToHost() to allow lazy migration
-        return;
-    }
-#endif
-
-    if (mat_a.dtype() != hal::DType::Float32) {
+    if (A.dtype() != hal::DType::Float32) {
         throw std::runtime_error("BLAS::matmul CPU path only supports Float32");
     }
 
-    const float *a_ptr = mat_a.data();
-    const float *b_ptr = mat_b.data();
-    float *c_ptr = mat_c.data();
+    const float *a_ptr = A.data();
+    const float *b_ptr = B.data();
+    float *c_ptr = C.data();
 
+    size_t rows_m = A.shape()[0];
+    size_t inner_k = A.shape()[1];
+    size_t cols_n = B.shape()[1];
+
+    size_t lda = A.strides()[0];
+    size_t ldb = B.strides()[0];
+    size_t ldc = C.strides()[0];
+
+    auto info = get_cpu_info();
     size_t problem_size = rows_m * cols_n * inner_k;
 
     if (rows_m == 1) {
-        // Narrow matrix (vector-matrix): use best available SIMD path regardless of threshold
         if (info.has_avx512f) {
             matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
         } else if (info.has_avx2) {
@@ -149,17 +110,14 @@ void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
     }
 
     if (problem_size < SIMD_THRESHOLD_SMALL) {
-        // Small matrices: scalar is faster (no SIMD setup overhead)
         matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
     } else if (problem_size < SIMD_THRESHOLD_MEDIUM) {
-        // Medium matrices: AVX2 if available, else scalar
         if (info.has_avx2) {
             matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
         } else {
             matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
         }
     } else {
-        // Large matrices: prefer AVX512 > AVX2 > scalar
         if (info.has_avx512f) {
             matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
         } else if (info.has_avx2) {
@@ -168,6 +126,46 @@ void matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
             matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
         }
     }
+}
+
+void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
+{
+    if (A.ndim() != 2 || B.ndim() != 2 || C.ndim() != 2) {
+        throw std::invalid_argument("matmul requires 2D tensors");
+    }
+
+    if (A.shape()[1] != B.shape()[0]) {
+        throw std::invalid_argument("Incompatible shapes for matmul");
+    }
+
+    if (C.shape()[0] != A.shape()[0] || C.shape()[1] != B.shape()[1]) {
+        throw std::invalid_argument("Output tensor C has incorrect shape");
+    }
+
+#ifdef SERIUS_USE_CUDA
+    hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
+    bool any_on_gpu = (A.is_gpu_dirty() || B.is_gpu_dirty() || C.is_gpu_dirty() || A.location() == Tensor::DataLocation::GPU);
+    size_t problem_size = A.shape()[0] * B.shape()[1] * A.shape()[1];
+    
+    if (backend && backend->is_available() && (problem_size > 1000000 || any_on_gpu)) {
+        A.syncToDevice();
+        B.syncToDevice();
+        C.syncToDevice();
+        
+        matmul_cuda(A.raw_data_gpu(), B.raw_data_gpu(), C.raw_data_gpu(), A.shape()[0], B.shape()[1], A.shape()[1], 
+                    A.strides()[0], B.strides()[0], C.strides()[0], A.dtype(), stream);
+        C.mark_dirty(Tensor::DataLocation::GPU);
+        return;
+    }
+    
+    // Fallback to CPU: ensure host data is current
+    A.syncToHost();
+    B.syncToHost();
+    C.syncToHost();
+#endif
+
+    dispatch_cpu_matmul(A, B, C);
+    C.mark_dirty(Tensor::DataLocation::CPU);
 }
 
 void matvec(const Tensor &mat_a, const Tensor &vec_x, Tensor &vec_y)
@@ -181,30 +179,35 @@ void matvec(const Tensor &mat_a, const Tensor &vec_x, Tensor &vec_y)
     if (vec_x.shape()[0] != inner_k) {
         throw std::invalid_argument("matvec dimension mismatch: A.cols != x.rows");
     }
-    size_t cols_n = 1;  // For matvec, N is always 1
+    size_t cols_n = 1;
 
     if (vec_y.shape()[0] != rows_m) {
         throw std::invalid_argument("matvec output tensor y must have shape [M]");
     }
 
     size_t lda = mat_a.strides()[0];
-    size_t ldx = vec_x.strides()[0];  // Stride for x (vector)
-    size_t ldy = vec_y.strides()[0];  // Stride for y (vector)
+    size_t ldx = vec_x.strides()[0];
+    size_t ldy = vec_y.strides()[0];
 
 #ifdef SERIUS_USE_CUDA
     hal::IBackend *gpu_backend = hal::get_gpu_backend();
+    bool any_on_gpu = (mat_a.is_gpu_dirty() || vec_x.is_gpu_dirty() || vec_y.is_gpu_dirty());
     if (gpu_backend && gpu_backend->is_available() &&
-        (rows_m * inner_k > 1000000 || mat_a.dtype() != hal::DType::Float32)) {
+        (rows_m * inner_k > 1000000 || mat_a.dtype() != hal::DType::Float32 || any_on_gpu)) {
         mat_a.syncToDevice();
         vec_x.syncToDevice();
         vec_y.syncToDevice();
 
-        matmul_cuda(mat_a.data_gpu(), vec_x.data_gpu(), vec_y.data_gpu(), rows_m, 1, inner_k, lda, 1, 1, mat_a.dtype());
+        matmul_cuda(mat_a.raw_data_gpu(), vec_x.raw_data_gpu(), vec_y.raw_data_gpu(), rows_m, 1, inner_k, lda, 1, 1, mat_a.dtype());
 
         vec_y.mark_dirty(Tensor::DataLocation::GPU);
-        vec_y.syncToHost();
         return;
     }
+
+    // Fallback to CPU: ensure host data is current
+    mat_a.syncToHost();
+    vec_x.syncToHost();
+    vec_y.syncToHost();
 #endif
 
     if (mat_a.dtype() != hal::DType::Float32) {
@@ -226,7 +229,7 @@ void matvec(const Tensor &mat_a, const Tensor &vec_x, Tensor &vec_y)
     }
 }
 
-void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
+void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, void *stream)
 {
     if (mat_a.ndim() != 3 || mat_c.ndim() != 3) {
         throw std::invalid_argument("batched_matmul expects A and C to be 3D tensors");
@@ -259,34 +262,48 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
     size_t total_flops = 2 * batch_size * rows_m * cols_n * inner_k;
     hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
     
-    bool any_on_gpu = (mat_a.location() != Tensor::DataLocation::CPU || 
-                       mat_b.location() != Tensor::DataLocation::CPU);
+    bool any_on_gpu = (mat_a.is_gpu_dirty() || mat_b.is_gpu_dirty() || mat_c.is_gpu_dirty());
 
     if (backend && backend->is_available() && 
         (total_flops > 1000000 || mat_a.dtype() != hal::DType::Float32 || any_on_gpu)) {
         
-        mat_a.syncToDevice();
-        mat_b.syncToDevice();
+        // CUDA kernels for matmul currently assume row-major layout with inner stride 1.
+        // We ensure contiguity here. Our improved contiguous() handles device pointers correctly.
+        const Tensor &a_cont = mat_a.is_contiguous() ? mat_a : mat_a.contiguous();
+        const Tensor &b_cont = mat_b.is_contiguous() ? mat_b : mat_b.contiguous();
+
+        a_cont.syncToDevice();
+        b_cont.syncToDevice();
         mat_c.syncToDevice();
 
-        size_t stride_a = mat_a.strides()[0];
-        size_t stride_b = (mat_b.ndim() == 3) ? mat_b.strides()[0] : 0;  // 0 stride if broadcasting 2D B
+        size_t lda_c = a_cont.strides()[1];
+        size_t ldb_c = (b_cont.ndim() == 3) ? b_cont.strides()[1] : b_cont.strides()[0];
+        size_t ldc_c = mat_c.strides()[1];
+
+        size_t stride_a = a_cont.strides()[0];
+        size_t stride_b = (b_cont.ndim() == 3) ? b_cont.strides()[0] : 0;
         size_t stride_c = mat_c.strides()[0];
 
-        batched_matmul_cuda(mat_a.data_gpu(), mat_b.data_gpu(), mat_c.data_gpu(), batch_size, rows_m, cols_n, inner_k,
-                            lda, ldb, ldc, stride_a, stride_b, stride_c, mat_a.dtype());
+        batched_matmul_cuda(a_cont.raw_data_gpu(), b_cont.raw_data_gpu(), mat_c.raw_data_gpu(), batch_size, rows_m, cols_n, inner_k,
+                            lda_c, ldb_c, ldc_c, stride_a, stride_b, stride_c, a_cont.dtype(), stream);
 
         mat_c.mark_dirty(Tensor::DataLocation::GPU);
-        // Removed forced syncToHost()
         return;
     }
+
+    // Fallback to CPU: ensure host data is current
+    mat_a.syncToHost();
+    mat_b.syncToHost();
+    mat_c.syncToHost();
 #endif
 
     if (mat_a.dtype() != hal::DType::Float32) {
         throw std::runtime_error("BLAS::batched_matmul CPU path only supports Float32");
     }
 
-    for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
+    #pragma omp parallel for
+    for (int64_t b = 0; b < static_cast<int64_t>(batch_size); ++b) {
+        size_t batch_idx = static_cast<size_t>(b);
         const float *a_ptr = mat_a.data() + (batch_idx * mat_a.strides()[0]);
         const float *b_ptr = (mat_b.ndim() == 3) ? (mat_b.data() + (batch_idx * mat_b.strides()[0])) : mat_b.data();
         float *c_ptr = mat_c.data() + (batch_idx * mat_c.strides()[0]);
@@ -315,7 +332,7 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c)
 
 // --- Convenience Wrappers ---
 
-Tensor matmul(const Tensor &mat_a, const Tensor &mat_b)
+Tensor matmul(const Tensor &mat_a, const Tensor &mat_b, void *stream)
 {
     if (mat_a.ndim() != 2 || mat_b.ndim() != 2) {
         throw std::invalid_argument("matmul supports only 2D tensors");
@@ -328,7 +345,7 @@ Tensor matmul(const Tensor &mat_a, const Tensor &mat_b)
     size_t cols_n = mat_b.shape()[1];
 
     Tensor mat_c({rows_m, cols_n}, mat_a.dtype());
-    matmul(mat_a, mat_b, mat_c);
+    matmul(mat_a, mat_b, mat_c, stream);
     return mat_c;
 }
 
@@ -343,22 +360,15 @@ Tensor matvec(const Tensor &mat_a, const Tensor &vec_x)
     return vec_y;
 }
 
-Tensor batched_matmul(const Tensor &mat_a, const Tensor &mat_b)
+Tensor batched_matmul(const Tensor &A, const Tensor &B, void *stream)
 {
-    if (mat_a.ndim() != 3) {
-        throw std::invalid_argument("batched_matmul wrapper supports only 3D A tensors");
-    }
-    if (mat_b.ndim() != 2 && mat_b.ndim() != 3) {
-        throw std::invalid_argument("batched_matmul wrapper supports only 2D/3D B tensors");
-    }
+    size_t batch_size = A.shape()[0];
+    size_t rows_m = A.shape()[1];
+    size_t cols_n = (B.ndim() == 3) ? B.shape()[2] : B.shape()[1];
 
-    size_t batch_size = mat_a.shape()[0];
-    size_t rows_m = mat_a.shape()[1];
-    size_t cols_n = (mat_b.ndim() == 3) ? mat_b.shape()[2] : mat_b.shape()[1];
-
-    Tensor mat_c({batch_size, rows_m, cols_n}, mat_a.dtype());
-    batched_matmul(mat_a, mat_b, mat_c);
-    return mat_c;
+    Tensor C({batch_size, rows_m, cols_n}, A.dtype());
+    batched_matmul(A, B, C, stream);
+    return C;
 }
 
 }  // namespace blas

@@ -37,9 +37,37 @@ void MetalBackend::memcpy_d2h(void *dst, const void *src, size_t size)
 
 void MetalBackend::memcpy_d2d(void *dst, const void *src, size_t size)
 {
-    if (dst && src && size > 0) {
-        // TODO: Metal BlitCommandEncoder
+    if (dst != nullptr && src != nullptr && size > 0) {
+        std::memcpy(dst, src, size);
     }
+}
+
+void *MetalBackend::create_stream()
+{
+    return nullptr;
+}
+
+void MetalBackend::destroy_stream(void *stream)
+{
+}
+
+void MetalBackend::sync_stream(void *stream)
+{
+}
+
+void MetalBackend::memcpy_h2d_async(void *dst, const void *src, size_t size, void *stream)
+{
+    memcpy_h2d(dst, src, size);
+}
+
+void MetalBackend::memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream)
+{
+    memcpy_d2h(dst, src, size);
+}
+
+void MetalBackend::memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream)
+{
+    memcpy_d2d(dst, src, size);
 }
 
 bool MetalBackend::is_available() const

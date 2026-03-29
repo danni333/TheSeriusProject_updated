@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
+include_directories(${CMAKE_SOURCE_DIR}/src)
 
 # GTest from root FetchContent (googletest)
 include(GoogleTest)
@@ -19,6 +20,9 @@ if(SERIUS_USE_CUDA)
 
     add_executable(test_fused_cuda test_fused_cuda.cpp)
     target_link_libraries(test_fused_cuda PRIVATE serius_core gtest_main)
+
+    add_executable(test_llama_inference_cuda test_llama_inference_cuda.cpp)
+    target_link_libraries(test_llama_inference_cuda PRIVATE serius_core gtest_main)
 endif()
 
 add_executable(test_paged_kv test_paged_kv.cpp)
@@ -54,6 +58,12 @@ target_link_libraries(test_sampler PRIVATE serius_core gtest_main)
 add_executable(test_guardrails test_guardrails.cpp)
 target_link_libraries(test_guardrails PRIVATE serius_core gtest_main)
 
+add_executable(test_distributed_llama test_distributed_llama.cpp)
+target_link_libraries(test_distributed_llama PRIVATE serius_core gtest_main)
+
+add_executable(test_pipeline_llama test_pipeline_llama.cpp)
+target_link_libraries(test_pipeline_llama PRIVATE serius_core gtest_main)
+
 add_executable(test_nan_debugger test_nan_debugger.cpp)
 target_link_libraries(test_nan_debugger PRIVATE serius_core gtest_main)
 
@@ -81,6 +91,9 @@ target_link_libraries(test_memory PRIVATE serius_core gtest_main)
 add_executable(test_distributed test_distributed.cpp)
 target_link_libraries(test_distributed PRIVATE serius_core gtest_main)
 
+add_executable(test_thread_pool test_thread_pool.cpp)
+target_link_libraries(test_thread_pool PRIVATE serius_core gtest_main)
+
 # Benchmarks
 add_executable(bench_full bench_full.cpp)
 target_link_libraries(bench_full PRIVATE serius_core)
@@ -102,8 +115,8 @@ gtest_discover_tests(test_tensor)
 gtest_discover_tests(test_autograd)
 gtest_discover_tests(test_hal)
 if(SERIUS_USE_CUDA)
-    gtest_discover_tests(test_cuda)
     gtest_discover_tests(test_fused_cuda)
+    gtest_discover_tests(test_llama_inference_cuda)
 endif()
 gtest_discover_tests(test_paged_kv)
 gtest_discover_tests(test_logger)
@@ -125,3 +138,4 @@ gtest_discover_tests(test_training)
 gtest_discover_tests(test_kv_cache_logic)
 gtest_discover_tests(test_memory)
 gtest_discover_tests(test_distributed)
+gtest_discover_tests(test_thread_pool)

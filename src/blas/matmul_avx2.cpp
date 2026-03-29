@@ -46,11 +46,8 @@ static inline void microkernel_8x8(const float *A, const float *B, float *C, siz
 void matmul_avx2(const float *A, const float *B, float *C, size_t M, size_t N, size_t K, size_t lda, size_t ldb,
                  size_t ldc)
 {
-    // Tiling parameters
-    const size_t MC = 64;
-    const size_t NC = 64;
-    const size_t KC = 256;
- 
+    printf("DEBUG: Entering matmul_avx2 (M=%zu, N=%zu, K=%zu)\n", M, N, K);
+
     if (M == 1) {
         // High-performance AVX2 vector-matrix multiplication
         // Process 32 columns at once to reuse broadcasted A[k]
@@ -98,45 +95,26 @@ void matmul_avx2(const float *A, const float *B, float *C, size_t M, size_t N, s
         return;
     }
 
-    // Zero the C matrix first, as our microkernel accumulates
-    #pragma omp parallel for
-    for (int64_t i = 0; i < static_cast<int64_t>(M); ++i) {
-        for (size_t j = 0; j < N; ++j) {
-            C[i * ldc + j] = 0.0f;
-        }
-    }
-
-    #pragma omp parallel for
-    for (int64_t i = 0; i < static_cast<int64_t>(M); i += static_cast<int64_t>(MC)) {
-        size_t m_end = std::min(i + MC, M);
-        for (size_t j = 0; j < N; j += NC) {
-            size_t n_end = std::min(j + NC, N);
-            for (size_t k = 0; k < K; k += KC) {
-                size_t k_end = std::min(k + KC, K);
-
-                // For the inner blocks, we can use our 8x8 microkernel if dimensions allow
-                for (size_t ii = i; ii < m_end; ii += 8) {
-                    for (size_t jj = j; jj < n_end; jj += 8) {
-                        if (ii + 8 <= m_end && jj + 8 <= n_end) {
-                            microkernel_8x8(A + ii * lda + k, B + k * ldb + jj, C + ii * ldc + jj, k_end - k, lda, ldb,
-                                            ldc);
-                        } else {
-                            // Boundary handling (scalar fallback for edges)
-                            size_t ii_end = std::min(ii + 8, m_end);
-                            size_t jj_end = std::min(jj + 8, n_end);
-                            for (size_t iii = ii; iii < ii_end; ++iii) {
-                                for (size_t jjj = jj; jjj < jj_end; ++jjj) {
-                                    float sum = 0.0f;
-                                    for (size_t kkk = k; kkk < k_end; ++kkk) {
-                                        sum += A[iii * lda + kkk] * B[kkk * ldb + jjj];
-                                    }
-                                    C[iii * ldc + jjj] += sum;
-                                }
-                            }
-                        }
-                    }
-                }
+    // General AVX2 matrix multiplication - process 8 columns at a time per row.
+    // Each row of A is multiplied against all columns of B, fully accumulating over K.
+    for (size_t i = 0; i < M; ++i) {
+        size_t j = 0;
+        for (; j + 8 <= N; j += 8) {
+            __m256 acc = _mm256_setzero_ps();
+            for (size_t k = 0; k < K; ++k) {
+                __m256 a_val = _mm256_set1_ps(A[i * lda + k]);
+                __m256 b_vec = _mm256_loadu_ps(B + k * ldb + j);
+                acc = _mm256_fmadd_ps(a_val, b_vec, acc);
             }
+            _mm256_storeu_ps(C + i * ldc + j, acc);
+        }
+        // Scalar cleanup for remaining columns
+        for (; j < N; ++j) {
+            float sum = 0.0f;
+            for (size_t k = 0; k < K; ++k) {
+                sum += A[i * lda + k] * B[k * ldb + j];
+            }
+            C[i * ldc + j] = sum;
         }
     }
 }

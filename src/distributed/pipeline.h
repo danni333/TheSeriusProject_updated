@@ -58,6 +58,9 @@ class PipelineExecutor
     void execute(ForwardFn forward_fn, BackwardFn backward_fn,
                  const float *input_data, float *output_data);
 
+    /// Execute only the forward pass (for inference).
+    void execute_forward(ForwardFn forward_fn, const float *input_data, float *output_data);
+
     /// Get the pipeline stage index for this rank
     int stage() const { return comm_->rank(); }
 

@@ -27,8 +27,8 @@ class AutomaticMixedPrecision
 
     struct Config
     {
-        float init_scale = DEFAULT_LOSS_SCALE;
-        int growth_interval = DEFAULT_GROWTH_INTERVAL;
+        float init_scale = 65536.0F;
+        int growth_interval = 2000;
     };
 
     explicit AutomaticMixedPrecision(const Config &config = {})

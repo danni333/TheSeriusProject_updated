@@ -26,6 +26,17 @@ void *CpuBackend::malloc_managed(size_t size)
     return malloc(size);
 }
 
+void *CpuBackend::malloc_pinned(size_t size)
+{
+    // For CPU, all memory is effectively pinned.
+    return malloc(size);
+}
+
+void CpuBackend::free_pinned(void *ptr)
+{
+    free(ptr);
+}
+
 void CpuBackend::free(void *ptr)
 {
     if (ptr != nullptr) {
@@ -58,6 +69,41 @@ void CpuBackend::memcpy_d2d(void *dst, const void *src, size_t size)
     if (dst != nullptr && src != nullptr && size > 0) {
         std::memcpy(dst, src, size);
     }
+}
+
+void *CpuBackend::create_stream()
+{
+    return nullptr;
+}
+
+void CpuBackend::destroy_stream(void *stream)
+{
+    (void)stream;
+    // No-op for CPU
+}
+
+void CpuBackend::sync_stream(void *stream)
+{
+    (void)stream;
+    // CPU operations are synchronous for now.
+}
+
+void CpuBackend::memcpy_h2d_async(void *dst, const void *src, size_t size, void *stream)
+{
+    (void)stream;
+    memcpy_h2d(dst, src, size);
+}
+
+void CpuBackend::memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream)
+{
+    (void)stream;
+    memcpy_d2h(dst, src, size);
+}
+
+void CpuBackend::memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream)
+{
+    (void)stream;
+    memcpy_d2d(dst, src, size);
 }
 
 // Global accessor singleton implementation

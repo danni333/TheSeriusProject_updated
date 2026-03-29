@@ -199,6 +199,8 @@ class Tensor
 
     const float *data_gpu() const { return static_cast<const float *>(data_gpu_); }
     float *data_gpu() { return static_cast<float *>(data_gpu_); }
+    const void *raw_data_gpu() const { return data_gpu_; }
+    void *raw_data_gpu() { return data_gpu_; }
 
     bool is_gpu() const { return data_gpu_ != nullptr; }
 
@@ -213,6 +215,9 @@ class Tensor
 
     DataLocation location() const { return location_; }
     void mark_dirty(DataLocation loc) { location_ = loc; }
+
+    bool is_gpu_dirty() const { return location_ == DataLocation::GPU; }
+    bool is_cpu_dirty() const { return location_ == DataLocation::CPU; }
 
     /// Synchronize data to the compute device (GPU if available)
     void syncToDevice() const;
@@ -231,6 +236,11 @@ class Tensor
     hal::DType dtype_;
     bool owns_data_;
     memory::MemoryPool *pool_;  // nullptr if heap-allocated
+    bool is_gpu_pool_;          // Is the GPU memory from a pool?
+    bool is_pinned_;            // Whether host memory is pinned
+
+    /// Internal memory cleanup (handles both CPU and GPU)
+    void free_data();
 
     /// Calculate strides from shape (row-major, C-order)
     static std::vector<size_t> compute_strides(const std::vector<size_t> &shape);

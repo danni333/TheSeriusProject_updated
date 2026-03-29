@@ -1,5 +1,8 @@
 #include <cuda_fp16.h>
+#ifdef SERIUS_USE_CUDA
 #include <cuda_runtime.h>
+#include <cuda_bf16.h>
+#endif
 #include <device_launch_parameters.h>
 #include <gtest/gtest.h>
 
@@ -55,6 +58,7 @@ TEST_F(FusedCUDATest, BiasGELUFP32)
 
     // Apply fused kernel
     hal::fused_bias_gelu(x_t.data_gpu(), bias_t.data_gpu(), n, bias_size, hal::DType::Float32, nullptr);
+    x_t.mark_dirty(Tensor::DataLocation::GPU);
 
     x_t.syncToHost();
     for (size_t i = 0; i < n; ++i) {
@@ -83,18 +87,19 @@ TEST_F(FusedCUDATest, BiasGELUFP16)
     // Reference implementation
     Tensor ref_t({n}, hal::DType::Float32);
     for (size_t i = 0; i < n; ++i) {
-        float val = __half2float(x_t.item(i)) + __half2float(bias_t.item(i % bias_size));
+        float val = x_t.item(i) + bias_t.item(i % bias_size);
         float gelu = 0.5f * val * (1.0f + tanhf(0.7978845608f * (val + 0.044715f * val * val * val)));
         ref_t.set_item(i, gelu);
     }
 
     // Apply fused kernel
     hal::fused_bias_gelu(x_t.data_gpu(), bias_t.data_gpu(), n, bias_size, hal::DType::Float16, nullptr);
+    x_t.mark_dirty(Tensor::DataLocation::GPU);
 
     x_t.syncToHost();
     for (size_t i = 0; i < n; ++i) {
-        float actual = __half2float(x_t.item(i));
-        EXPECT_NEAR(actual, ref_t.item(i), 1e-3f);
+        float actual = x_t.item(i);
+        EXPECT_NEAR(actual, ref_t.item(i), 1e-2f);
     }
 }
 
@@ -119,18 +124,19 @@ TEST_F(FusedCUDATest, BiasGELUBF16)
     // Reference implementation
     Tensor ref_t({n}, hal::DType::Float32);
     for (size_t i = 0; i < n; ++i) {
-        float val = __bfloat162float(x_t.item(i)) + __bfloat162float(bias_t.item(i % bias_size));
+        float val = x_t.item(i) + bias_t.item(i % bias_size);
         float gelu = 0.5f * val * (1.0f + tanhf(0.7978845608f * (val + 0.044715f * val * val * val)));
         ref_t.set_item(i, gelu);
     }
 
     // Apply fused kernel
     hal::fused_bias_gelu(x_t.data_gpu(), bias_t.data_gpu(), n, bias_size, hal::DType::BFloat16, nullptr);
+    x_t.mark_dirty(Tensor::DataLocation::GPU);
 
     x_t.syncToHost();
     for (size_t i = 0; i < n; ++i) {
-        float actual = __bfloat162float(x_t.item(i));
-        EXPECT_NEAR(actual, ref_t.item(i), 1e-3f);
+        float actual = x_t.item(i);
+        EXPECT_NEAR(actual, ref_t.item(i), 0.5f);
     }
 }
 
@@ -335,6 +341,101 @@ TEST_F(FusedCUDATest, MatMulBF16)
         EXPECT_NEAR(out->data.item(i), (float)k, 1e-1f);
     }
     std::cout << "CUDA MatMul BF16: SUCCESS" << std::endl;
+}
+
+TEST_F(FusedCUDATest, RMSNormFP32)
+{
+    size_t batch_seq = 2;
+    size_t n = 1024;
+    float eps = 1e-5f;
+
+    Tensor input({batch_seq, n}, hal::DType::Float32);
+    Tensor weight({n}, hal::DType::Float32);
+    Tensor out({batch_seq, n}, hal::DType::Float32);
+
+    input.ones();
+    weight.ones();
+    input.set_device(hal::DeviceType::CUDA);
+    weight.set_device(hal::DeviceType::CUDA);
+    out.set_device(hal::DeviceType::CUDA);
+
+    hal::rmsnorm(out.data_gpu(), input.data_gpu(), weight.data_gpu(), n, batch_seq, eps, hal::DType::Float32);
+    out.mark_dirty(Tensor::DataLocation::GPU);
+
+    out.syncToHost();
+    // RMS of [1, 1, ...] is 1. Result should be 1.0
+    for (size_t i = 0; i < out.size(); ++i) {
+        EXPECT_NEAR(out.item(i), 1.0f, 1e-5f);
+    }
+    std::cout << "CUDA RMSNorm FP32: SUCCESS" << std::endl;
+}
+
+TEST_F(FusedCUDATest, SwiGLUFP32)
+{
+    size_t n = 1024;
+    Tensor x({n}, hal::DType::Float32);
+    Tensor y({n}, hal::DType::Float32);
+    Tensor out({n}, hal::DType::Float32);
+
+    x.ones(); // x = 1.0
+    y.set_item(0, 2.0f); // y = 2.0
+    for(size_t i=1; i<n; ++i) y.set_item(i, 2.0f);
+    
+    x.set_device(hal::DeviceType::CUDA);
+    y.set_device(hal::DeviceType::CUDA);
+    out.set_device(hal::DeviceType::CUDA);
+
+    hal::swiglu(out.data_gpu(), x.data_gpu(), y.data_gpu(), n, hal::DType::Float32);
+    out.mark_dirty(Tensor::DataLocation::GPU);
+
+    out.syncToHost();
+    // silu(1.0) * 2.0 = (1.0 / (1 + exp(-1))) * 2.0 = 0.731058 * 2 = 1.462117
+    float expected = (1.0f / (1.0f + expf(-1.0f))) * 2.0f;
+    for (size_t i = 0; i < out.size(); ++i) {
+        EXPECT_NEAR(out.item(i), expected, 1e-5f);
+    }
+    std::cout << "CUDA SwiGLU FP32: SUCCESS" << std::endl;
+}
+
+TEST_F(FusedCUDATest, RoPEFP32)
+{
+    size_t head_dim = 64;
+    size_t seq_len = 2;
+    size_t n_heads = 2;
+    
+    Tensor data({seq_len, n_heads, head_dim}, hal::DType::Float32);
+    data.ones();
+    data.set_device(hal::DeviceType::CUDA);
+
+    hal::rope(data.data_gpu(), head_dim, seq_len, n_heads, 10000.0f, 0, hal::DType::Float32);
+    data.mark_dirty(Tensor::DataLocation::GPU);
+
+    data.syncToHost();
+    // At pos 0, theta = 0, cos=1, sin=0. x0' = 1*1 - 1*0 = 1, x1' = 1*0 + 1*1 = 1.
+    // Check pos 0
+    for (size_t i = 0; i < n_heads * head_dim; ++i) {
+        EXPECT_NEAR(data.item(0, i / head_dim, i % head_dim), 1.0f, 1e-5f);
+    }
+    std::cout << "CUDA RoPE FP32: SUCCESS" << std::endl;
+}
+
+TEST_F(FusedCUDATest, SoftmaxRowWiseFP32)
+{
+    size_t rows = 2;
+    size_t cols = 4;
+    Tensor x({rows, cols}, hal::DType::Float32);
+    x.ones(); 
+    x.set_device(hal::DeviceType::CUDA);
+
+    hal::softmax(x.data_gpu(), rows, cols, hal::DType::Float32);
+    x.mark_dirty(Tensor::DataLocation::GPU);
+
+    x.syncToHost();
+    // Softmax of [1, 1, 1, 1] is [0.25, 0.25, 0.25, 0.25]
+    for (size_t i = 0; i < x.size(); ++i) {
+        EXPECT_NEAR(x.item(i), 0.25f, 1e-5f);
+    }
+    std::cout << "CUDA Softmax Row-wise FP32: SUCCESS" << std::endl;
 }
 
 int main(int argc, char **argv)

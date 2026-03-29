@@ -89,7 +89,7 @@ __device__ float fp8_e5m2_to_float_dev(uint8_t v) {
     uint32_t sign = (v >> 7) & 1;
     uint32_t exp = (v >> 2) & 0x1F;
     uint32_t man = v & 0x3;
-    if (exp == 31) return (man == 0) ? (sign ? -huge_valf() : huge_valf()) : nanf("");
+    if (exp == 31) return (man == 0) ? (sign ? -CUDART_INF_F : CUDART_INF_F) : nanf("");
     float res;
     if (exp == 0) res = (float)man * (1.0f / 65536.0f);
     else res = (1.0f + (float)man / 4.0f) * __powf(2.0f, (float)exp - 15.0f);
@@ -152,21 +152,21 @@ __global__ void fp8_dequantize_block_kernel(const uint8_t* data, const float* sc
 // --- API Implementation ---
 
 void float_to_fp8_e4m3_cuda(const float* src, uint8_t* dst, size_t n) {
+    (void)src; (void)dst; (void)n;
     int threads = 256;
-    int blocks = (n + threads - 1) / threads;
     // (Reuse existing kernel or implement one specialized)
 }
 
 void fp8_quantize_tensor_cuda(const float* data, uint8_t* fp8_out, float* scales_out, size_t n, size_t block_size, bool use_e4m3) {
     int threads = 128; // Power of 2 for reduction
-    int blocks = (n + block_size - 1) / block_size;
+    int blocks = static_cast<int>((n + block_size - 1) / block_size);
     size_t shared_size = threads * sizeof(float);
     fp8_quantize_block_kernel<<<blocks, threads, shared_size>>>(data, fp8_out, scales_out, n, block_size, use_e4m3);
 }
 
 void fp8_dequantize_tensor_cuda(const uint8_t* fp8_data, const float* scales, float* out, size_t n, size_t block_size, bool use_e4m3) {
     int threads = 256;
-    int blocks = (n + block_size - 1) / block_size;
+    int blocks = static_cast<int>((n + block_size - 1) / block_size);
     fp8_dequantize_block_kernel<<<blocks, threads>>>(fp8_data, scales, out, n, block_size, use_e4m3);
 }
 

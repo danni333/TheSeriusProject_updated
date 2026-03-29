@@ -37,9 +37,37 @@ void VulkanBackend::memcpy_d2h(void *dst, const void *src, size_t size)
 
 void VulkanBackend::memcpy_d2d(void *dst, const void *src, size_t size)
 {
-    if (dst && src && size > 0) {
-        // TODO: Implement Vulkan buffer copy
+    if (dst != nullptr && src != nullptr && size > 0) {
+        std::memcpy(dst, src, size);
     }
+}
+
+void *VulkanBackend::create_stream()
+{
+    return nullptr;
+}
+
+void VulkanBackend::destroy_stream(void *stream)
+{
+}
+
+void VulkanBackend::sync_stream(void *stream)
+{
+}
+
+void VulkanBackend::memcpy_h2d_async(void *dst, const void *src, size_t size, void *stream)
+{
+    memcpy_h2d(dst, src, size);
+}
+
+void VulkanBackend::memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream)
+{
+    memcpy_d2h(dst, src, size);
+}
+
+void VulkanBackend::memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream)
+{
+    memcpy_d2d(dst, src, size);
 }
 
 bool VulkanBackend::is_available() const

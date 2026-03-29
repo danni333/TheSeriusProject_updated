@@ -121,8 +121,9 @@ int cmd_chat(int argc, char **argv)
             }
 
             std::vector<serius::TokenId> ids = tokenizer.encode(line);
-            if (ids.empty()) {
-                ids.push_back(serius::BPETokenizer::BOS_ID);
+            // Prepend BOS for LLaMA/Qwen models to ensure proper start-of-sequence
+            if (ids.empty() || ids[0] != serius::BPETokenizer::BOS_ID) {
+                ids.insert(ids.begin(), serius::BPETokenizer::BOS_ID);
             }
 
             // Autoregressive generation loop with KV-Caching

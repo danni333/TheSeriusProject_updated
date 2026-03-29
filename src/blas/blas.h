@@ -9,13 +9,13 @@ namespace blas {
 // --- Matrix Multiplication ---
 
 // C = A * B
-void matmul(const Tensor &A, const Tensor &B, Tensor &C);
+void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream = nullptr);
 
 // y = A * x
 void matvec(const Tensor &A, const Tensor &x, Tensor &y);
 
 // C = A * B (Batched). A is (B, M, K), B is (B, K, N) or (K, N)
-void batched_matmul(const Tensor &A, const Tensor &B, Tensor &C);
+void batched_matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream = nullptr);
 
 // --- Element-wise Operations ---
 
@@ -57,8 +57,8 @@ struct CpuInfo
 CpuInfo get_cpu_info();
 
 // --- Convenience Wrappers ---
-Tensor matmul(const Tensor &A, const Tensor &B);
-Tensor batched_matmul(const Tensor &A, const Tensor &B);
+Tensor matmul(const Tensor &A, const Tensor &B, void *stream = nullptr);
+Tensor batched_matmul(const Tensor &A, const Tensor &B, void *stream = nullptr);
 Tensor matvec(const Tensor &A, const Tensor &x);
 Tensor element_wise_add(const Tensor &A, const Tensor &B);
 Tensor element_wise_sub(const Tensor &A, const Tensor &B);

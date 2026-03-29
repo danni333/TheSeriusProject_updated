@@ -367,18 +367,6 @@ void fp8_quantize_tensor(const float *data, size_t n, size_t block_size, bool us
 
     float fp8_max = use_e4m3 ? E4M3_MAX : E5M2_MAX;
 
-#ifdef SERIUS_USE_CUDA
-    hal::IBackend* gpu = hal::get_gpu_backend();
-    if (gpu && gpu->is_available()) {
-        // Here we assume pointers might be on GPU or we use managed memory.
-        // For now, let's assume this is for GPU-side quantization.
-        // In a real scenario, we might need a temporary GPU buffer.
-        // For simplicity, we dispatch to the kernel which is expected to handle pointers.
-        cuda::fp8_quantize_tensor_cuda(data, fp8_out.data(), scales_out.data(), n, block_size, use_e4m3);
-        return;
-    }
-#endif
-
     for (size_t b = 0; b < num_blocks; ++b) {
         size_t start = b * block_size;
         size_t count = std::min(block_size, n - start);
@@ -412,14 +400,6 @@ void fp8_dequantize_tensor(const uint8_t *fp8_data, const float *scales, size_t 
                            float *out)
 {
     size_t num_blocks = (n + block_size - 1) / block_size;
-
-#ifdef SERIUS_USE_CUDA
-    hal::IBackend* gpu = hal::get_gpu_backend();
-    if (gpu && gpu->is_available()) {
-        cuda::fp8_dequantize_tensor_cuda(fp8_data, scales, out, n, block_size, use_e4m3);
-        return;
-    }
-#endif
 
     for (size_t b = 0; b < num_blocks; ++b) {
         size_t start = b * block_size;

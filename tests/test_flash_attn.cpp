@@ -92,12 +92,14 @@ TEST(FlashAttentionTest, BackwardParity)
 
     auto *out_node = flash_attention(q_node, k_node, v_node, config);
 
-    // Loss = sum(out)
+    // Simulate a gradient from the loss
     out_node->grad = core::Tensor(out_node->data.shape());
     out_node->grad.fill(1.0F);
     out_node->grad.syncToDevice();
 
-    core::autograd::backward(out_node);
+    if (out_node->backward_fn) {
+        out_node->backward_fn();
+    }
 
     q_node->grad.syncToHost();
     k_node->grad.syncToHost();

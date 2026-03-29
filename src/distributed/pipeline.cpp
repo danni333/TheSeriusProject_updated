@@ -91,9 +91,43 @@ void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn, con
     }
 }
 
+void PipelineExecutor::execute_forward(ForwardFn forward_fn, const float *input_data, float *output_data)
+{
+    const int my_stage = stage();
+    const int num_micro_batches = config_.num_micro_batches;
+    const size_t hidden_size = config_.hidden_size;
+
+    std::vector<std::vector<float>> activations(static_cast<size_t>(num_micro_batches), std::vector<float>(hidden_size, 0.0f));
+    std::vector<std::vector<float>> outputs(static_cast<size_t>(num_micro_batches), std::vector<float>(hidden_size, 0.0f));
+
+    for (int mb = 0; mb < num_micro_batches; ++mb) {
+        const auto mb_idx = static_cast<size_t>(mb);
+
+        if (is_first_stage()) {
+            if (input_data != nullptr) {
+                std::memcpy(activations[mb_idx].data(), input_data + (mb_idx * hidden_size), hidden_size * sizeof(float));
+            }
+        } else {
+            comm_->recv(activations[mb_idx].data(), hidden_size, my_stage - 1);
+        }
+
+        forward_fn(activations[mb_idx].data(), outputs[mb_idx].data(), hidden_size);
+
+        if (is_last_stage()) {
+            if (output_data != nullptr) {
+                std::memcpy(output_data + (mb_idx * hidden_size), outputs[mb_idx].data(), hidden_size * sizeof(float));
+            }
+        } else {
+            comm_->send(outputs[mb_idx].data(), hidden_size, my_stage + 1);
+        }
+    }
+}
+
 float PipelineExecutor::bubble_ratio() const
 {
-    if (config_.num_micro_batches <= 0) return 1.0f;
+    if (config_.num_micro_batches <= 0) {
+        return 1.0f;
+    }
     return static_cast<float>(config_.num_stages - 1) / static_cast<float>(config_.num_micro_batches);
 }
 
