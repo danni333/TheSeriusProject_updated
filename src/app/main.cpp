@@ -111,8 +111,50 @@ int cmd_chat(int argc, char **argv)
         }
 
         int next_id = sampler.sample(last_logits);
+
+        // Autoregressive generation loop
+        const size_t MAX_GEN_TOKENS = 128;
+        std::vector<serius::TokenId> generated_ids;
+        generated_ids.push_back(static_cast<serius::TokenId>(next_id));
+
         std::string out = tokenizer.decode({static_cast<serius::TokenId>(next_id)});
-        std::cout << out << std::endl;
+        std::cout << out;
+        std::cout.flush();
+
+        for (size_t step = 1; step < MAX_GEN_TOKENS; ++step) {
+            // Append generated token to input sequence
+            ids.push_back(static_cast<serius::TokenId>(next_id));
+
+            // Use a sliding window if exceeding max_seq_len
+            size_t cur_len = std::min(ids.size(), config.max_seq_len);
+
+            serius::core::Tensor inp({cur_len});
+            for (size_t i = 0; i < cur_len; ++i) {
+                inp[i] = static_cast<float>(ids[ids.size() - cur_len + i]);
+            }
+
+            serius::core::autograd::Node inp_node(inp, false);
+            serius::core::autograd::Node *logits_n = model.forward(&inp_node);
+
+            const serius::core::Tensor &lg = logits_n->data;
+            size_t vs = lg.shape().back();
+            size_t lr = lg.shape()[0] - 1;
+
+            serius::core::Tensor last_lg({vs});
+            const float *s = lg.data() + lr * vs;
+            for (size_t i = 0; i < vs; ++i) {
+                last_lg[i] = s[i];
+            }
+
+            next_id = sampler.sample(last_lg);
+            if (next_id == serius::BPETokenizer::EOS_ID) break;
+
+            std::string tok = tokenizer.decode({static_cast<serius::TokenId>(next_id)});
+            std::cout << tok;
+            std::cout.flush();
+            generated_ids.push_back(static_cast<serius::TokenId>(next_id));
+        }
+        std::cout << std::endl;
     }
 
     return 0;
