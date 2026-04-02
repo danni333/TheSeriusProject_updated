@@ -25,6 +25,7 @@ struct ModelConfig
     size_t vocab_size = DEFAULT_VOCAB_SIZE;
     size_t d_model = DEFAULT_D_MODEL;
     size_t n_heads = DEFAULT_N_HEADS;
+    size_t n_kv_heads = DEFAULT_N_HEADS;  // KV heads (for GQA), defaults to n_heads
     size_t n_layers = DEFAULT_N_LAYERS;
     size_t d_ff = DEFAULT_D_FF;
     size_t max_seq_len = DEFAULT_MAX_SEQ_LEN;
