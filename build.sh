@@ -1,24 +1,21 @@
 #!/bin/bash
 set -e
 
-echo "=== Building TheSeriusProject_updated ==="
+echo "Creating build directory..."
+mkdir -p build
 
-if [ ! -d "build" ]; then
-    echo "Creating build directory..."
-    mkdir -p build
-fi
-
-echo "Running CMake configuration..."
+echo "Running CMake..."
 if ! cmake -S . -B build; then
-    echo "FAILURE: CMake configuration failed"
+    echo "CMake configuration FAILED"
     exit 1
 fi
+echo "CMake configuration SUCCEEDED"
 
 echo "Building project..."
 if ! cmake --build build -j4; then
-    echo "FAILURE: Build failed"
+    echo "Build FAILED"
     exit 1
 fi
+echo "Build SUCCEEDED"
 
-echo "SUCCESS: Build completed successfully"
-exit 0
+echo "All steps completed successfully!"
