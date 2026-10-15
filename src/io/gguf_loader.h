@@ -3,11 +3,36 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <optional>
 
 namespace serius {
 namespace io {
 
-/// Minimal GGUF metadata (header only; no tensor data loaded).
+enum class GGMLType : uint32_t {
+    F32 = 0,
+    F16 = 1,
+    Q4_0 = 2,
+    Q4_1 = 3,
+    Q5_0 = 6,
+    Q5_1 = 7,
+    Q8_0 = 8,
+    Q8_1 = 9,
+    Q2_K = 10,
+    Q3_K = 11,
+    Q4_K = 12,
+    Q5_K = 13,
+    Q6_K = 14,
+    Q8_2 = 15,
+    Q8_3 = 16,
+    I8 = 18,
+    I16 = 19,
+    I32 = 20,
+    I64 = 21,
+    F64 = 21,
+    BF16 = 202
+};
+
 struct GGUFMeta
 {
     uint32_t version = 0;
@@ -16,11 +41,27 @@ struct GGUFMeta
     bool valid = false;
 };
 
-/// Read GGUF magic and metadata from file. Returns valid=false on error or wrong format.
+struct GGUFTensorInfo
+{
+    std::string name;
+    std::vector<uint64_t> shape;
+    GGMLType dtype;
+    uint64_t offset;
+};
+
 GGUFMeta load_gguf_metadata(const std::string &path);
 
-/// List tensor names from GGUF (requires scanning metadata). Returns empty on error.
 std::vector<std::string> gguf_tensor_names(const std::string &path);
+
+std::optional<GGUFTensorInfo> get_tensor_info(const std::string &path, const std::string &tensor_name);
+
+std::unordered_map<std::string, core::Tensor> load_all_tensors(const std::string &path);
+
+namespace model {
+struct ModelConfig;
+}
+
+model::ModelConfig gguf_to_model_config(const std::string &path);
 
 }  // namespace io
 }  // namespace serius
