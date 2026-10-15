@@ -1,0 +1,5 @@
+Running main() from C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\src\gtest_main.cc
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from DistributedLLaMA
+[ RUN      ] DistributedLLaMA.PipelineParallelInferenceEquivalence

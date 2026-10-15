@@ -1,0 +1,12 @@
+Note: Google Test filter = LLaMAInferenceCUDATest.SingleTokenWithKVCacheParity
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from LLaMAInferenceCUDATest
+[ RUN      ] LLaMAInferenceCUDATest.SingleTokenWithKVCacheParity
+[DEBUG] Starting forward for token 42 at pos 5
+[DEBUG] Embeddings gathered
+[DEBUG] Initializing cache for 2 layers
+[DEBUG] Starting layer loop
+[DEBUG] Final norm
+[DEBUG] Syncing logits to host
+[DEBUG] Done

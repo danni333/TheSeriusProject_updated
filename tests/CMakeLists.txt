@@ -94,6 +94,18 @@ target_link_libraries(test_distributed PRIVATE serius_core gtest_main)
 add_executable(test_thread_pool test_thread_pool.cpp)
 target_link_libraries(test_thread_pool PRIVATE serius_core gtest_main)
 
+add_executable(test_stability test_stability.cpp)
+target_link_libraries(test_stability PRIVATE serius_core gtest_main)
+
+add_executable(test_sampling test_sampling.cpp)
+target_link_libraries(test_sampling PRIVATE serius_core gtest_main)
+
+add_executable(test_safetensors test_safetensors.cpp)
+target_link_libraries(test_safetensors PRIVATE serius_core gtest_main)
+
+add_executable(test_lora test_lora.cpp)
+target_link_libraries(test_lora PRIVATE serius_core gtest_main)
+
 # Benchmarks
 add_executable(bench_full bench_full.cpp)
 target_link_libraries(bench_full PRIVATE serius_core)
@@ -139,3 +151,7 @@ gtest_discover_tests(test_kv_cache_logic)
 gtest_discover_tests(test_memory)
 gtest_discover_tests(test_distributed)
 gtest_discover_tests(test_thread_pool)
+gtest_discover_tests(test_stability)
+gtest_discover_tests(test_sampling)
+gtest_discover_tests(test_safetensors)
+gtest_discover_tests(test_lora)

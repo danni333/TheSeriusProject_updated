@@ -1,0 +1,26 @@
+============================================================
+             SERIUS UNIFIED BENCHMARK SUITE
+============================================================
+
+System Info:
+  AVX2: Yes | AVX512: Yes
+
+--- 1. BLAS Performance ---
+  MatMul 512x512                :    1371.71 ms (0.20 GFLOPS)
+  MatMul 1024x1024              :      12.07 ms (177.94 GFLOPS)
+
+--- 2. Memory Subsystem ---
+  MemoryPool Alloc/Reset (1000000):       3.84 ms (16.66 GB/s equivalent)
+  MemoryPool Alloc/Reset (100000):       0.41 ms (252.03 GB/s equivalent)
+
+--- 3. Transformer Throughput ---
+  Transformer Forward (B=1, S=128):     384.43 ms (332.96 tok/s)
+  Transformer Forward (B=8, S=128):    2983.18 ms (343.26 tok/s)
+
+--- 4. Dataloader & Quantization ---
+  Dataloader Throughput (100 batches):       0.00 ms (1000000000.00 batches/s)
+  INT4 Quantization (1000K)     :       7.96 ms (125.61 M elements/s)
+
+============================================================
+                    BENCHMARKS COMPLETE
+============================================================

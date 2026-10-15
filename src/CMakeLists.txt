@@ -38,6 +38,15 @@ add_library(serius_core
     io/simple_weights_loader.cpp
     io/safetensors_loader.cpp
     io/hf_llama_loader.cpp
+    io/safetensors.cpp
+    init/weight_init.cpp
+    stability/grad_clip.cpp
+    stability/loss_scaler.cpp
+    stability/ema.cpp
+    inference/sampler.cpp
+    inference/generate.cpp
+    lora/lora_linear.cpp
+    lora/lora_adapter.cpp
     transformer/llama_model.cpp
     transformer/qwen_model.cpp
     infer/sampler.cpp

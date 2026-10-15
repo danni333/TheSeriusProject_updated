@@ -1,0 +1,19 @@
+Note: Google Test filter = LLaMAInferenceCUDATest.SingleTokenWithKVCacheParity
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from LLaMAInferenceCUDATest
+[ RUN      ] LLaMAInferenceCUDATest.SingleTokenWithKVCacheParity
+unknown file: error: SEH exception with code 0xc0000005 thrown in the test body.
+Stack trace:
+
+
+[  FAILED  ] LLaMAInferenceCUDATest.SingleTokenWithKVCacheParity (1207 ms)
+[----------] 1 test from LLaMAInferenceCUDATest (1207 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (1207 ms total)
+[  PASSED  ] 0 tests.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] LLaMAInferenceCUDATest.SingleTokenWithKVCacheParity
+
+ 1 FAILED TEST

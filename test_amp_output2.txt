@@ -1,0 +1,23 @@
+Running main() from C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build\_deps\googletest-src\googletest\src\gtest_main.cc
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from AMPTest
+[ RUN      ] AMPTest.ForwardBackwardScaling
+C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\tests\test_amp.cpp(58): error: Expected equality of these values:
+  loss_fp32.data()[0]
+    Which is: inf
+  32.0f * AutomaticMixedPrecision::DEFAULT_LOSS_SCALE
+    Which is: 2097152
+
+[  FAILED  ] AMPTest.ForwardBackwardScaling (0 ms)
+[ RUN      ] AMPTest.ConvertModelToFP16
+[       OK ] AMPTest.ConvertModelToFP16 (0 ms)
+[----------] 2 tests from AMPTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 1 test.
+[  FAILED  ] 1 test, listed below:
+[  FAILED  ] AMPTest.ForwardBackwardScaling
+
+ 1 FAILED TEST

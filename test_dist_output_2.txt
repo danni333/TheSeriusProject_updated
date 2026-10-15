@@ -1,0 +1,40 @@
+Running main() from C:\Users\ddech\OneDrive\Desktop\TheSeriusProject_updated\build_cuda\_deps\googletest-src\googletest\src\gtest_main.cc
+Note: Google Test filter = DistributedComm.*
+[==========] Running 15 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 15 tests from DistributedComm
+[ RUN      ] DistributedComm.SingleRankCreation
+[       OK ] DistributedComm.SingleRankCreation (0 ms)
+[ RUN      ] DistributedComm.SingleRankAllReduceNoop
+[       OK ] DistributedComm.SingleRankAllReduceNoop (0 ms)
+[ RUN      ] DistributedComm.SingleRankBroadcastNoop
+[       OK ] DistributedComm.SingleRankBroadcastNoop (0 ms)
+[ RUN      ] DistributedComm.SingleRankAllGather
+[       OK ] DistributedComm.SingleRankAllGather (0 ms)
+[ RUN      ] DistributedComm.AllReduceSum4Ranks
+[       OK ] DistributedComm.AllReduceSum4Ranks (1 ms)
+[ RUN      ] DistributedComm.AllReduceAvg4Ranks
+[       OK ] DistributedComm.AllReduceAvg4Ranks (0 ms)
+[ RUN      ] DistributedComm.AllReduceMultiElement
+[       OK ] DistributedComm.AllReduceMultiElement (0 ms)
+[ RUN      ] DistributedComm.AllReduceMin
+[       OK ] DistributedComm.AllReduceMin (0 ms)
+[ RUN      ] DistributedComm.AllReduceMax
+[       OK ] DistributedComm.AllReduceMax (0 ms)
+[ RUN      ] DistributedComm.Broadcast3Ranks
+[       OK ] DistributedComm.Broadcast3Ranks (0 ms)
+[ RUN      ] DistributedComm.AllGather3Ranks
+[       OK ] DistributedComm.AllGather3Ranks (0 ms)
+[ RUN      ] DistributedComm.ReduceScatter2Ranks
+[       OK ] DistributedComm.ReduceScatter2Ranks (0 ms)
+[ RUN      ] DistributedComm.SendRecv
+[       OK ] DistributedComm.SendRecv (0 ms)
+[ RUN      ] DistributedComm.Barrier
+[       OK ] DistributedComm.Barrier (0 ms)
+[ RUN      ] DistributedComm.AllReduceLargeBuffer
+[       OK ] DistributedComm.AllReduceLargeBuffer (0 ms)
+[----------] 15 tests from DistributedComm (3 ms total)
+
+[----------] Global test environment tear-down
+[==========] 15 tests from 1 test suite ran. (3 ms total)
+[  PASSED  ] 15 tests.
