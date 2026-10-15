@@ -1,12 +1,66 @@
 #include "cpu_backend.h"
+#include "fused_kernels.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 namespace serius {
 namespace hal {
 
 constexpr size_t ALIGNMENT = 64;
+
+namespace {
+
+size_t dtype_size(DType dtype)
+{
+    switch (dtype) {
+        case DType::Float32:
+            return sizeof(float);
+        case DType::Float16:
+        case DType::BFloat16:
+            return sizeof(uint16_t);
+        case DType::Int8:
+            return sizeof(int8_t);
+        case DType::Int4:
+            return sizeof(uint8_t);
+        default:
+            return sizeof(float);
+    }
+}
+
+}  // namespace
+
+void copy_layout(void *dst, const void *src, const size_t *shape, const size_t *src_strides, size_t dims,
+                 DType dtype, cudaStream_t stream)
+{
+    (void)stream;
+    if (dst == nullptr || src == nullptr || dims == 0) {
+        return;
+    }
+
+    size_t total = 1;
+    for (size_t i = 0; i < dims; ++i) {
+        total *= shape[i];
+    }
+
+    const size_t elem_size = dtype_size(dtype);
+    const auto *src_bytes = static_cast<const uint8_t *>(src);
+    auto *dst_bytes = static_cast<uint8_t *>(dst);
+
+    for (size_t flat = 0; flat < total; ++flat) {
+        size_t rem = flat;
+        size_t src_offset = 0;
+        for (size_t d = 0; d < dims; ++d) {
+            const size_t dim_idx = dims - 1 - d;
+            const size_t coord = rem % shape[dim_idx];
+            rem /= shape[dim_idx];
+            src_offset += coord * src_strides[dim_idx];
+        }
+        const size_t dst_offset = flat * elem_size;
+        std::memcpy(dst_bytes + dst_offset, src_bytes + src_offset * elem_size, elem_size);
+    }
+}
 
 void *CpuBackend::malloc(size_t size)
 {

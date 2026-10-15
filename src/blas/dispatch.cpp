@@ -130,6 +130,7 @@ static void dispatch_cpu_matmul(const Tensor &A, const Tensor &B, Tensor &C)
 
 void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
 {
+    (void)stream;
     if (A.ndim() != 2 || B.ndim() != 2 || C.ndim() != 2) {
         throw std::invalid_argument("matmul requires 2D tensors");
     }
@@ -231,6 +232,7 @@ void matvec(const Tensor &mat_a, const Tensor &vec_x, Tensor &vec_y)
 
 void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, void *stream)
 {
+    (void)stream;
     if (mat_a.ndim() != 3 || mat_c.ndim() != 3) {
         throw std::invalid_argument("batched_matmul expects A and C to be 3D tensors");
     }

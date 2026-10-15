@@ -42,7 +42,7 @@ constexpr float ATTENTION_MASK_VAL = -1e9F;
 
 using core::Tensor;
 
-static size_t get_dtype_size(hal::DType dtype) {
+[[maybe_unused]] static size_t get_dtype_size(hal::DType dtype) {
     switch (dtype) {
         case hal::DType::Float32:
             return 4;

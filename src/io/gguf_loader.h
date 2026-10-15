@@ -6,6 +6,9 @@
 #include <unordered_map>
 #include <optional>
 
+#include "../tensor/tensor.h"
+#include "../transformer/model.h"
+
 namespace serius {
 namespace io {
 
@@ -57,11 +60,7 @@ std::optional<GGUFTensorInfo> get_tensor_info(const std::string &path, const std
 
 std::unordered_map<std::string, core::Tensor> load_all_tensors(const std::string &path);
 
-namespace model {
-struct ModelConfig;
-}
-
-model::ModelConfig gguf_to_model_config(const std::string &path);
+serius::model::ModelConfig gguf_to_model_config(const std::string &path);
 
 }  // namespace io
 }  // namespace serius

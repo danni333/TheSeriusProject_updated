@@ -4,6 +4,7 @@
 #include <cstring>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <sstream>
 
 #include "../transformer/config.h"
@@ -12,6 +13,8 @@ namespace serius {
 namespace io {
 
 namespace {
+
+using int4_t = std::int8_t;
 
 constexpr uint32_t GGUF_MAGIC = 0x46554747;  // "GGUF" little-endian
 
@@ -27,24 +30,25 @@ struct GGUFHeader
 
 float half_to_float(uint16_t half_val)
 {
-    int sign = (half_val >> 15) & 1;
-    int exp = (half_val >> 10) & 0x1F;
-    int mantissa = half_val & 0x3FF;
-    
-    if (exp == 0) {
-        if (mantissa == 0) return sign ? -0.0f : 0.0f;
-        exp = -1;
-        mantissa = 0;
-    } else if (exp == 31) {
-        mantissa = mantissa ? std::numeric_limits<float>::quiet_NaN() : 
-                             (sign ? -std::numeric_limits<float>::infinity() : std::numeric_limits<float>::infinity());
-        return mantissa;
+    const uint32_t sign = (static_cast<uint32_t>(half_val) >> 15) & 0x1u;
+    const uint32_t exp = (static_cast<uint32_t>(half_val) >> 10) & 0x1Fu;
+    const uint32_t mant = static_cast<uint32_t>(half_val) & 0x3FFu;
+
+    uint32_t bits = 0;
+    if (exp == 0u) {
+        bits = (sign << 31);
+        if (mant != 0u) {
+            // subnormal half -> normalize to float
+            const uint32_t mantissa = mant << 13;
+            bits |= mantissa;
+        }
+    } else if (exp == 0x1Fu) {
+        bits = (sign << 31) | 0x7F800000u | (mant << 13);
+    } else {
+        bits = (sign << 31) | ((exp + (127u - 15u)) << 23) | (mant << 13);
     }
-    
-    float result;
-    int ieee_exp = exp + (127 - 15);
-    int ieee_mantissa = mantissa << (23 - 10);
-    int bits = (sign << 31) | (ieee_exp << 23) | ieee_mantissa;
+
+    float result = 0.0f;
     std::memcpy(&result, &bits, sizeof(result));
     return result;
 }
@@ -168,6 +172,7 @@ GGUFTensorInfo read_tensor_info(std::ifstream &f)
 
 bool read_string_kv(std::ifstream &f, const std::string &key, std::string &out_value)
 {
+    (void)key;
     uint32_t type = 0;
     f.read(reinterpret_cast<char *>(&type), sizeof(type));
     if (!f || type != 8) return false;
@@ -180,6 +185,7 @@ bool read_string_kv(std::ifstream &f, const std::string &key, std::string &out_v
 
 bool read_uint_kv(std::ifstream &f, const std::string &key, uint64_t &out_value)
 {
+    (void)key;
     uint32_t type = 0;
     f.read(reinterpret_cast<char *>(&type), sizeof(type));
     if (!f) return false;
@@ -373,36 +379,34 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(const std::string
         for (uint64_t d : info.shape) {
             shape.push_back(static_cast<size_t>(d));
         }
-        core::Tensor tensor(shape, core::DType::Float32);
+        core::Tensor tensor(shape, hal::DType::Float32);
         for (size_t i = 0; i < n; ++i) {
             tensor[{i}] = tensor_data[i];
         }
         
-        result[info.name] = std::move(tensor);
+        result.emplace(info.name, std::move(tensor));
     }
     
     return result;
 }
 
-namespace model {
-
-model::ModelConfig gguf_to_model_config(const std::string &path)
+serius::model::ModelConfig gguf_to_model_config(const std::string &path)
 {
-    model::ModelConfig config;
-    
+    serius::model::ModelConfig config;
+
     GGUFMeta meta = load_gguf_metadata(path);
     if (!meta.valid) {
         return config;
     }
-    
+
     std::ifstream f(path, std::ios::binary);
     if (!f) {
         return config;
     }
-    
+
     f.seekg(sizeof(GGUFHeader));
     std::vector<KVEntry> kv_entries = read_kv_entries(f, meta.n_kv);
-    
+
     for (const auto &entry : kv_entries) {
         if (entry.key == "llama.vocab_size") {
             uint64_t val = 0;
@@ -449,11 +453,9 @@ model::ModelConfig gguf_to_model_config(const std::string &path)
             }
         }
     }
-    
+
     return config;
 }
-
-}  // namespace model
 
 }  // namespace io
 }  // namespace serius
