@@ -27,37 +27,23 @@ void DataLoader::load_files(const std::vector<std::string> &file_paths)
 std::optional<Batch> DataLoader::next_batch()
 {
     if (stopped_) return std::nullopt;
+    if (tokens_.empty() || cursor_ >= tokens_.size()) return std::nullopt;
 
-    // We need at least seq_len + 1 tokens for input/target pair
     size_t tokens_needed_per_sample = seq_len_ + 1;
 
-    // Check if we have enough tokens for at least one sample
-    if (cursor_ + tokens_needed_per_sample > tokens_.size()) {
-        return std::nullopt;
-    }
+    Batch batch(batch_size_, seq_len_);
 
-    // Determine actual batch size (might be smaller at the end)
-    size_t actual_batch = 0;
     for (size_t b = 0; b < batch_size_; b++) {
         size_t start = cursor_ + b * tokens_needed_per_sample;
-        if (start + tokens_needed_per_sample <= tokens_.size()) {
-            actual_batch++;
-        }
-    }
-
-    if (actual_batch == 0) return std::nullopt;
-
-    Batch batch(actual_batch, seq_len_);
-
-    for (size_t b = 0; b < actual_batch; b++) {
-        size_t start = cursor_ + b * tokens_needed_per_sample;
-        size_t available = std::min(tokens_needed_per_sample, tokens_.size() - start);
-        size_t input_len = std::min(seq_len_, available > 0 ? available - 1 : 0);
+        size_t available = (start < tokens_.size()) ? (tokens_.size() - start) : 0;
+        size_t input_len = std::min(seq_len_, available);
 
         for (size_t s = 0; s < seq_len_; s++) {
             if (s < input_len) {
                 batch.input_ids.at(b, s) = static_cast<float>(tokens_[start + s]);
-                batch.target_ids.at(b, s) = static_cast<float>(tokens_[start + s + 1]);
+                batch.target_ids.at(b, s) = (s + 1 < available)
+                    ? static_cast<float>(tokens_[start + s + 1])
+                    : static_cast<float>(BPETokenizer::PAD_ID);
                 batch.padding_mask.at(b, s) = 1.0f;
             } else {
                 batch.input_ids.at(b, s) = static_cast<float>(BPETokenizer::PAD_ID);
@@ -67,7 +53,7 @@ std::optional<Batch> DataLoader::next_batch()
         }
     }
 
-    cursor_ += actual_batch * tokens_needed_per_sample;
+    cursor_ += batch_size_ * tokens_needed_per_sample;
     return batch;
 }
 
