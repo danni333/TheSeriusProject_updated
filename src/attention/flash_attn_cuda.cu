@@ -5,27 +5,34 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <stdexcept>
+#include <string>
 
 namespace serius {
 namespace hal {
 
 namespace {
 constexpr float SOFTMAX_EPS = 1e-6F;
-// Hardware constraints and block sizes
-// constexpr int MAX_SHARED_MEM_PER_BLOCK = 49152; // 48 KB (kept for reference)
 constexpr int D_32 = 32;
 constexpr int D_64 = 64;
 constexpr int D_128 = 128;
+
+void check_cuda_status(cudaError_t status, const char *operation)
+{
+    if (status != cudaSuccess) {
+        throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
+    }
+}
 }  // namespace
 
 /**
  * @brief Flash Attention v2 Forward Kernel
  */
-template <int HEAD_DIM, int BLOCK_M, int BLOCK_N>
+template <int HEAD_DIM>
 __global__ void flash_attn_fwd_kernel(float *__restrict__ output, float *__restrict__ lse,
                                       const float *__restrict__ query, const float *__restrict__ key,
                                       const float *__restrict__ value, int seq_len_q, int seq_len_k,
-                                      float softmax_scale, bool is_causal)
+                                      float softmax_scale, bool is_causal, int block_m, int block_n)
 {
     const int q_block_idx = blockIdx.x;
     const int head_id = blockIdx.y;
@@ -42,9 +49,10 @@ __global__ void flash_attn_fwd_kernel(float *__restrict__ output, float *__restr
     float *output_head = output + head_offset;
     float *lse_head = lse + lse_head_offset;
 
-    __shared__ float s_query[BLOCK_M * HEAD_DIM];
-    __shared__ float s_key[BLOCK_N * HEAD_DIM];
-    __shared__ float s_value[BLOCK_N * HEAD_DIM];
+    extern __shared__ float shared_memory[];
+    float *s_query = shared_memory;
+    float *s_key = s_query + block_m * HEAD_DIM;
+    float *s_value = s_key + block_n * HEAD_DIM;
 
     float acc[HEAD_DIM];
 #pragma unroll
@@ -54,7 +62,7 @@ __global__ void flash_attn_fwd_kernel(float *__restrict__ output, float *__restr
     float l_i = 0.0F;
     float m_i = -FLT_MAX;
 
-    const int q_idx = (q_block_idx * BLOCK_M) + tid;
+    const int q_idx = (q_block_idx * block_m) + tid;
 
     if (q_idx < seq_len_q) {
 #pragma unroll
@@ -64,11 +72,11 @@ __global__ void flash_attn_fwd_kernel(float *__restrict__ output, float *__restr
     }
     __syncthreads();
 
-    const int num_n_blocks = (seq_len_k + BLOCK_N - 1) / BLOCK_N;
+    const int num_n_blocks = (seq_len_k + block_n - 1) / block_n;
     for (int n_block_idx = 0; n_block_idx < num_n_blocks; ++n_block_idx) {
-        const int k_start = n_block_idx * BLOCK_N;
+        const int k_start = n_block_idx * block_n;
 
-        for (int i_idx = tid; i_idx < BLOCK_N; i_idx += BLOCK_M) {
+        for (int i_idx = tid; i_idx < block_n; i_idx += block_m) {
             int k_idx = k_start + i_idx;
             if (k_idx < seq_len_k) {
 #pragma unroll
@@ -87,7 +95,7 @@ __global__ void flash_attn_fwd_kernel(float *__restrict__ output, float *__restr
         __syncthreads();
 
         if (q_idx < seq_len_q) {
-            for (int j_idx = 0; j_idx < BLOCK_N; ++j_idx) {
+            for (int j_idx = 0; j_idx < block_n; ++j_idx) {
                 const int k_idx = k_start + j_idx;
                 if (k_idx >= seq_len_k || (is_causal && q_idx < k_idx)) {
                     continue;
@@ -256,74 +264,68 @@ __global__ void flash_attn_bwd_kernel(float *__restrict__ dQ, float *__restrict_
 // Host dispatch
 void flash_attention_v2_fwd_cuda(float *output, float *lse, const float *query, const float *key, const float *value,
                                  int batch_size, int num_heads, int seq_len_q, int seq_len_k, int head_dim,
-                                 float softmax_scale, bool is_causal)
+                                 float softmax_scale, bool is_causal, int block_m, int block_n)
 {
     // Validate input parameters to prevent undefined behavior
     if (!output || !lse || !query || !key || !value) {
-        return;
+        throw std::invalid_argument("Flash attention forward: null device pointer");
     }
 
     if (batch_size <= 0 || num_heads <= 0 || seq_len_q <= 0 || seq_len_k <= 0 || head_dim <= 0) {
-        return;
-    }
-
-    // Check for integer overflow in grid dimension calculations
-    // Grid dimensions: (seq_len_q + BLOCK_M - 1) / BLOCK_M, num_heads, batch_size
-    if (seq_len_q > INT_MAX || num_heads > INT_MAX || batch_size > INT_MAX) {
-        return;
+        throw std::invalid_argument("Flash attention forward: dimensions must be positive");
     }
 
     // Validate that head_dim is one of the supported values
     if (head_dim != D_32 && head_dim != D_64 && head_dim != D_128) {
-        return;
+        throw std::invalid_argument("Flash attention forward: unsupported head dimension");
     }
 
-    if (head_dim == D_32) {
-        dim3 grid((seq_len_q + 128 - 1) / 128, num_heads, batch_size);
-        // Check grid dimension overflow
-        if (grid.x > 2147483647 || grid.y > 65535 || grid.z > 65535) {
-            return;
-        }
-        flash_attn_fwd_kernel<32, 128, 128>
-            <<<grid, 128>>>(output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal);
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            // Handle error appropriately
-        }
-    } else if (head_dim == D_64) {
-        dim3 grid((seq_len_q + 64 - 1) / 64, num_heads, batch_size);
-        if (grid.x > 2147483647 || grid.y > 65535 || grid.z > 65535) {
-            return;
-        }
-        flash_attn_fwd_kernel<64, 64, 64>
-            <<<grid, 64>>>(output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal);
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            // Handle error appropriately
-        }
-    } else if (head_dim == D_128) {
-        dim3 grid((seq_len_q + 32 - 1) / 32, num_heads, batch_size);
-        if (grid.x > 2147483647 || grid.y > 65535 || grid.z > 65535) {
-            return;
-        }
-        flash_attn_fwd_kernel<128, 32, 32>
-            <<<grid, 32>>>(output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal);
-        cudaError_t err = cudaGetLastError();
-        if (err != cudaSuccess) {
-            // Handle error appropriately
-        }
+    const auto is_supported_block = [](int block) { return block == 16 || block == 32 || block == 64 || block == 128; };
+    if (!is_supported_block(block_m) || !is_supported_block(block_n)) {
+        throw std::invalid_argument("Flash attention forward: block sizes must be 16, 32, 64, or 128");
     }
+    const size_t shared_memory_bytes =
+        (static_cast<size_t>(block_m) + 2 * static_cast<size_t>(block_n)) * static_cast<size_t>(head_dim) *
+        sizeof(float);
+    if (shared_memory_bytes > 48 * 1024) {
+        throw std::invalid_argument("Flash attention forward: blocks exceed the 48 KiB shared-memory limit");
+    }
+    dim3 grid((seq_len_q + block_m - 1) / block_m, num_heads, batch_size);
+    if (grid.y > 65535 || grid.z > 65535) {
+        throw std::invalid_argument("Flash attention forward: CUDA grid too large");
+    }
+    if (head_dim == D_32) {
+        flash_attn_fwd_kernel<32><<<grid, block_m, shared_memory_bytes>>>(
+            output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal, block_m, block_n);
+    } else if (head_dim == D_64) {
+        flash_attn_fwd_kernel<64><<<grid, block_m, shared_memory_bytes>>>(
+            output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal, block_m, block_n);
+    } else {
+        flash_attn_fwd_kernel<128><<<grid, block_m, shared_memory_bytes>>>(
+            output, lse, query, key, value, seq_len_q, seq_len_k, softmax_scale, is_causal, block_m, block_n);
+    }
+    check_cuda_status(cudaGetLastError(), "Flash attention forward kernel launch");
 }
 
 void flash_attention_v2_bwd_cuda(float *dq, float *dk, float *dv, const float *q, const float *k, const float *v,
                                  const float *o, const float *do_grad, const float *lse, int batch_size, int num_heads,
                                  int seq_len_q, int seq_len_k, int head_dim, float softmax_scale, bool is_causal)
 {
+    if (!dq || !dk || !dv || !q || !k || !v || !o || !do_grad || !lse) {
+        throw std::invalid_argument("Flash attention backward: null device pointer");
+    }
+    if (batch_size <= 0 || num_heads <= 0 || seq_len_q <= 0 || seq_len_k <= 0) {
+        throw std::invalid_argument("Flash attention backward: dimensions must be positive");
+    }
+    if (head_dim != D_32 && head_dim != D_64 && head_dim != D_128) {
+        throw std::invalid_argument("Flash attention backward: unsupported head dimension");
+    }
+
     size_t size_q = (size_t)batch_size * num_heads * seq_len_q * head_dim;
     size_t size_kv = (size_t)batch_size * num_heads * seq_len_k * head_dim;
-    cudaMemset(dq, 0, size_q * sizeof(float));
-    cudaMemset(dk, 0, size_kv * sizeof(float));
-    cudaMemset(dv, 0, size_kv * sizeof(float));
+    check_cuda_status(cudaMemset(dq, 0, size_q * sizeof(float)), "Flash attention clear dQ");
+    check_cuda_status(cudaMemset(dk, 0, size_kv * sizeof(float)), "Flash attention clear dK");
+    check_cuda_status(cudaMemset(dv, 0, size_kv * sizeof(float)), "Flash attention clear dV");
 
     if (head_dim == D_32) {
         // Reduced block size to fit shared memory (64*32*4*4 = 32KB < 48KB)
@@ -341,6 +343,7 @@ void flash_attention_v2_bwd_cuda(float *dq, float *dk, float *dv, const float *q
         flash_attn_bwd_kernel<128, 16, 16>
             <<<grid, 16>>>(dq, dk, dv, q, k, v, o, do_grad, lse, seq_len_q, seq_len_k, softmax_scale, is_causal);
     }
+    check_cuda_status(cudaGetLastError(), "Flash attention backward kernel launch");
 }
 
 }  // namespace hal

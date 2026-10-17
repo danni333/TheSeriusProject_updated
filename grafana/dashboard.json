@@ -1,0 +1,35 @@
+{
+  "title": "TheSeriusProject LLM Monitoring",
+  "panels": [
+    {
+      "title": "Request rate",
+      "type": "graph",
+      "targets": [{"expr": "rate(llm_requests_total[5m])"}]
+    },
+    {
+      "title": "Token throughput",
+      "type": "graph",
+      "targets": [{"expr": "rate(llm_tokens_generated_total[1m])"}]
+    },
+    {
+      "title": "TTFT P99",
+      "type": "graph",
+      "targets": [{"expr": "histogram_quantile(0.99, llm_ttft_seconds_bucket)"}]
+    },
+    {
+      "title": "VRAM usage (GB)",
+      "type": "graph",
+      "targets": [{"expr": "llm_vram_usage_bytes / 1024^3"}]
+    },
+    {
+      "title": "GPU temperature",
+      "type": "graph",
+      "targets": [{"expr": "llm_gpu_temperature_celsius"}]
+    },
+    {
+      "title": "Active requests",
+      "type": "graph",
+      "targets": [{"expr": "llm_active_requests"}]
+    }
+  ]
+}

@@ -8,7 +8,7 @@ Riferimento: `fase16_long_context.md`
 
 | Elemento | Stato | Nota |
 |----------|--------|-----|
-| RoPE scaling (NTK, YaRN, ecc.) per seq > train length | Da verificare | positional |
+| RoPE scaling (NTK, YaRN, ecc.) per seq > train length | ✅ supporto base + scaling configurabile | positional / autograd |
 | KV cache grande / paged (PagedAttention) | Parziale | paged_kv_cache.cpp/h |
 | Attention sparse / sliding window (opzionale) | ❌ | fase36 |
 | max_position_embeddings configurabile | Da verificare in config | |

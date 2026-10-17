@@ -1,8 +1,9 @@
 #include "model.h"
 
-#include <cmath>
+#include <stdexcept>
 
 #include "../autograd/ops.h"
+#include "../init/weight_init.h"
 
 namespace serius {
 namespace model {
@@ -12,23 +13,25 @@ using core::autograd::Node;
 
 TransformerModel::TransformerModel(const ModelConfig &config) : config_(config)
 {
-    float scale = 1.0F / std::sqrt(static_cast<float>(config.d_model));
+    config_.normalize_moe();
+    if (config_.moe_enabled && !config_.has_moe()) {
+        throw std::invalid_argument("MoE config requires 0 < top_k <= num_experts");
+    }
 
     // Initialize embedding
     Tensor emb_t({config.vocab_size, config.d_model});
-    emb_t.rand();
-    const float OFFSET = 0.5F;
-    const float SCALE_ADJ = 2.0F;
-    for (size_t idx = 0; idx < emb_t.size(); ++idx) {
-        emb_t[idx] = (emb_t[idx] - OFFSET) * SCALE_ADJ * scale;
-    }
+    init::embedding_init(emb_t, 42);
     embedding = new Node(std::move(emb_t));
     embedding->name = "embedding";
 
     // Create transformer blocks
     blocks.reserve(config.n_layers);
     for (size_t layer = 0; layer < config.n_layers; ++layer) {
-        blocks.push_back(new TransformerBlock(config.d_model, config.n_heads, config.d_ff));
+        const unsigned layer_seed = 44U + static_cast<unsigned>(layer) * 16U;
+        const bool use_moe = config_.has_moe();
+        blocks.push_back(new TransformerBlock(config_.d_model, config_.n_heads, config_.d_ff,
+                                              layer_seed, config_.num_experts, config_.top_k,
+                                              config_.shared_experts, use_moe));
     }
 
     // Final layernorm
@@ -36,10 +39,7 @@ TransformerModel::TransformerModel(const ModelConfig &config) : config_(config)
 
     // Initialize output projection
     Tensor proj_t({config.d_model, config.vocab_size});
-    proj_t.rand();
-    for (size_t idx = 0; idx < proj_t.size(); ++idx) {
-        proj_t[idx] = (proj_t[idx] - OFFSET) * SCALE_ADJ * scale;
-    }
+    init::xavier_uniform(proj_t, config.d_model, config.vocab_size, 43);
     output_proj = new Node(std::move(proj_t));
     output_proj->name = "output_proj";
 }
@@ -148,10 +148,16 @@ std::vector<Node *> TransformerModel::parameters() const
         params.push_back(block->norm1.beta_);
         params.push_back(block->norm2.gamma_);
         params.push_back(block->norm2.beta_);
-        params.push_back(block->ffn.w1);
-        params.push_back(block->ffn.b1);
-        params.push_back(block->ffn.w2);
-        params.push_back(block->ffn.b2);
+
+        if (block->has_moe()) {
+            const auto moe_params = block->moe_parameters();
+            params.insert(params.end(), moe_params.begin(), moe_params.end());
+        } else {
+            params.push_back(block->ffn->w1);
+            params.push_back(block->ffn->b1);
+            params.push_back(block->ffn->w2);
+            params.push_back(block->ffn->b2);
+        }
     }
     params.push_back(final_norm->gamma_);
     params.push_back(final_norm->beta_);

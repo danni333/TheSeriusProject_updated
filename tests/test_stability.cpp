@@ -1,11 +1,16 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <vector>
 
+#include "autograd/engine.h"
 #include "autograd/node.h"
+#include "autograd/ops.h"
 #include "init/weight_init.h"
+#include "optim/adamw.h"
 #include "stability/ema.h"
 #include "stability/grad_clip.h"
 #include "stability/loss_scaler.h"
@@ -226,12 +231,47 @@ TEST(LossScaler, ScaleLoss)
 
 TEST(LossScaler, OverflowReducesScale)
 {
-    stability::DynamicLossScaler scaler;
+    stability::DynamicLossScaler::Config cfg;
+    cfg.initial_scale = 8.0f;
+    stability::DynamicLossScaler scaler(cfg);
     float initial_scale = scaler.scale();
 
-    scaler.update(true);  // overflow detected
+    autograd::Node param(Tensor({1}));
+    param.grad = Tensor({1});
+    param.grad.data()[0] = std::numeric_limits<float>::infinity();
+    std::vector<autograd::Node *> params = {&param};
+
+    EXPECT_FALSE(scaler.unscale_grads(params));
+    scaler.update(true);
     EXPECT_FLOAT_EQ(scaler.scale(), initial_scale * 0.5f);
     EXPECT_EQ(scaler.overflow_count(), 1);
+
+    scaler.update(true);
+    scaler.update(true);
+    EXPECT_FLOAT_EQ(scaler.scale(), 1.0f);
+}
+
+TEST(LossScaler, RejectsInvalidConfig)
+{
+    stability::DynamicLossScaler::Config cfg;
+    cfg.initial_scale = 0.0f;
+    EXPECT_THROW((stability::DynamicLossScaler{cfg}), std::invalid_argument);
+
+    cfg = {};
+    cfg.initial_scale = std::numeric_limits<float>::infinity();
+    EXPECT_THROW((stability::DynamicLossScaler{cfg}), std::invalid_argument);
+
+    cfg = {};
+    cfg.growth_factor = 1.0f;
+    EXPECT_THROW((stability::DynamicLossScaler{cfg}), std::invalid_argument);
+
+    cfg = {};
+    cfg.backoff_factor = 1.0f;
+    EXPECT_THROW((stability::DynamicLossScaler{cfg}), std::invalid_argument);
+
+    cfg = {};
+    cfg.growth_interval = 0;
+    EXPECT_THROW((stability::DynamicLossScaler{cfg}), std::invalid_argument);
 }
 
 TEST(LossScaler, GrowthAfterGoodSteps)
@@ -350,4 +390,71 @@ TEST(EMA, Convergence)
     }
 
     EXPECT_NEAR(ema.shadow(0)[0], 42.0f, 0.01f);
+}
+
+TEST(StabilityIntegration, TrainingAndEmaValidationRemainFinite)
+{
+    constexpr float target = 2.0f;
+    constexpr int training_steps = 100;
+
+    autograd::Node parameter(Tensor({1}));
+    parameter.data.data()[0] = -5.0f;
+    std::vector<autograd::Node *> params = {&parameter};
+
+    optim::AdamWConfig optimizer_config;
+    optimizer_config.lr = 0.05f;
+    optimizer_config.weight_decay = 0.0f;
+    optim::AdamW optimizer(params, optimizer_config);
+
+    stability::DynamicLossScaler::Config scaler_config;
+    scaler_config.initial_scale = 16.0f;
+    scaler_config.growth_interval = 20;
+    stability::DynamicLossScaler loss_scaler(scaler_config);
+
+    stability::EMAWeights ema(0.9f);
+    ema.init(params);
+
+    const float initial_validation_loss =
+        (parameter.data.data()[0] - target) * (parameter.data.data()[0] - target);
+
+    for (int step = 0; step < training_steps; ++step) {
+        optimizer.zero_grad();
+
+        const float error = parameter.data.data()[0] - target;
+        autograd::Node loss(Tensor({1}));
+        loss.data.data()[0] = error * error;
+        loss.children = {&parameter};
+        loss.backward_fn = [&parameter, &loss, error]() {
+            parameter.grad.data()[0] += loss.grad.data()[0] * 2.0f * error;
+        };
+
+        autograd::Node *scaled_loss = autograd::ops::mul_scalar(&loss, loss_scaler.scale());
+        autograd::backward(scaled_loss);
+        EXPECT_TRUE(std::isfinite(loss.data.data()[0])) << "non-finite loss at step " << step;
+        const bool gradients_finite = loss_scaler.unscale_grads(params);
+        loss_scaler.update(!gradients_finite);
+        ASSERT_TRUE(gradients_finite) << "non-finite unscaled gradient at step " << step;
+
+        stability::clip_grad_norm(params, 1.0f);
+        EXPECT_FALSE(stability::has_nan_or_inf(params)) << "non-finite gradient at step " << step;
+
+        optimizer.step();
+        ema.update(params);
+        EXPECT_TRUE(std::isfinite(parameter.data.data()[0])) << "non-finite parameter at step " << step;
+    }
+
+    const float final_parameter = parameter.data.data()[0];
+    const float final_training_loss = (final_parameter - target) * (final_parameter - target);
+    EXPECT_TRUE(std::isfinite(final_training_loss));
+    EXPECT_LT(final_training_loss, initial_validation_loss);
+    EXPECT_GT(loss_scaler.scale(), scaler_config.initial_scale);
+
+    ema.apply(params);
+    const float ema_validation_loss =
+        (parameter.data.data()[0] - target) * (parameter.data.data()[0] - target);
+    EXPECT_TRUE(std::isfinite(ema_validation_loss));
+    EXPECT_LT(ema_validation_loss, initial_validation_loss);
+
+    ema.restore(params);
+    EXPECT_FLOAT_EQ(parameter.data.data()[0], final_parameter);
 }

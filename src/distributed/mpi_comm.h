@@ -32,6 +32,7 @@ class MPICommunicator : public Communicator
     MPICommunicator &operator=(const MPICommunicator &) = delete;
 
     int rank() const override { return rank_; }
+    int local_rank() const override { return local_rank_; }
     int world_size() const override { return world_size_; }
     CommBackend backend() const override { return CommBackend::MPI; }
 
@@ -50,6 +51,7 @@ class MPICommunicator : public Communicator
 
    private:
     int rank_;
+    int local_rank_;
     int world_size_;
     bool owns_mpi_;  // true if we called MPI_Init
 

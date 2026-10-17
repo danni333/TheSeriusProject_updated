@@ -7,6 +7,14 @@
 #include <numeric>
 #include <stdexcept>
 
+#ifdef SERIUS_USE_MPI
+#include "mpi_comm.h"
+#endif
+
+#ifdef SERIUS_USE_NCCL
+#include "nccl_comm.h"
+#endif
+
 namespace serius {
 namespace distributed {
 
@@ -413,7 +421,8 @@ std::vector<std::unique_ptr<LocalCommunicator>> create_local_group(int world_siz
     return comms;
 }
 
-std::unique_ptr<Communicator> Communicator::create(CommBackend backend, int world_size, int /*rank*/)
+std::unique_ptr<Communicator> Communicator::create(CommBackend backend, int world_size,
+                                                   int /*rank*/)
 {
     switch (backend) {
         case CommBackend::Local:
@@ -426,19 +435,30 @@ std::unique_ptr<Communicator> Communicator::create(CommBackend backend, int worl
 
         case CommBackend::NCCL:
 #ifdef SERIUS_USE_NCCL
-            // TODO: return std::make_unique<NCCLCommunicator>(world_size, rank);
-#endif
+            throw std::runtime_error(
+                "NCCL communicator creation requires a shared ncclUniqueId; use create_nccl()");
+#else
             throw std::runtime_error("NCCL backend not available (compile with SERIUS_USE_NCCL)");
+#endif
 
         case CommBackend::MPI:
 #ifdef SERIUS_USE_MPI
-            // TODO: return std::make_unique<MPICommunicator>();
-#endif
+            return std::make_unique<MPICommunicator>();
+#else
             throw std::runtime_error("MPI backend not available (compile with SERIUS_USE_MPI)");
+#endif
     }
 
     throw std::runtime_error("Unknown communicator backend");
 }
+
+#ifdef SERIUS_USE_NCCL
+std::unique_ptr<Communicator> Communicator::create_nccl(int world_size, int rank,
+                                                        ncclUniqueId id, int local_rank)
+{
+    return std::make_unique<NCCLCommunicator>(world_size, rank, id, local_rank);
+}
+#endif
 
 }  // namespace distributed
 }  // namespace serius

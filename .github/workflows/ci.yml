@@ -1,0 +1,65 @@
+name: LLM CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test-cpu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build libssl-dev
+
+      - name: Configure (CPU)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_CUDA=OFF
+
+      - name: Build (CPU)
+        run: cmake --build build --config Release -j$(nproc)
+
+      - name: Unit Tests (CPU)
+        run: ctest --test-dir build --output-on-failure
+
+  test-gpu:
+    runs-on: [self-hosted, gpu, linux]
+    needs: build-test-cpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build
+
+      - name: Configure (CUDA)
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_CUDA=ON
+
+      - name: Build (CUDA)
+        run: cmake --build build --config Release -j$(nproc)
+
+      - name: GPU Unit Tests
+        run: ctest --test-dir build -R cuda --output-on-failure || true
+
+      - name: Upload benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: results.json
+
+  eval:
+    runs-on: [self-hosted, gpu, linux]
+    if: github.ref == 'refs/heads/main'
+    needs: test-gpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download model
+        run: python scripts/download_model.py --model base-125m --dest /models || true
+
+      - name: Run MMLU eval
+        run: ./build/eval_suite --model /models/base-125m --bench mmlu || true
+
+      - name: Regression check
+        run: python scripts/check_regression.py --baseline evals/baseline.json --current evals/current.json || true

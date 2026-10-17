@@ -84,6 +84,26 @@ TEST(TransformerTest, RoPEApplication)
     EXPECT_TRUE(changed) << "RoPE did not modify position 1";
 }
 
+TEST(TransformerTest, RoPEContextScaling)
+{
+    Tensor q({2, 8});
+    Tensor k({2, 8});
+    q.ones();
+    k.ones();
+
+    const float scaled_base = compute_rope_base(DEFAULT_ROPE_BASE, 8, 16, 32);
+    EXPECT_GT(scaled_base, DEFAULT_ROPE_BASE);
+
+    Tensor q_scaled = q.copy();
+    Tensor k_scaled = k.copy();
+    apply_rope(q_scaled, k_scaled, 8, DEFAULT_ROPE_BASE, 0, 16, 32);
+
+    EXPECT_FALSE(std::isnan(q_scaled.at(1, 0)));
+    EXPECT_FALSE(std::isnan(k_scaled.at(1, 0)));
+    EXPECT_NE(q_scaled.at(1, 0), q.at(1, 0));
+    EXPECT_NE(k_scaled.at(1, 0), k.at(1, 0));
+}
+
 // ===== Attention Tests =====
 
 TEST(TransformerTest, AttentionShape)

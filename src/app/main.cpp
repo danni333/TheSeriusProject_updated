@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,7 @@ void print_usage(const char *prog)
               << "  chat [--config PATH]       Interactive chat with local model\n"
               << "  chat [--model PATH]        Alias for --config (config JSON)\n"
               << "       [--type TYPE]         Model type: 'transformer', 'llama', or 'qwen'\n"
+              << "       [--max-new-tokens N]  Limit Transformer/LLaMA output (default 128)\n"
               << "  --help                     Show this help\n";
 }
 
@@ -48,12 +50,31 @@ int cmd_chat(int argc, char **argv)
 {
     std::string config_path;
     std::string model_type = "transformer";
+    size_t max_new_tokens = 128;
     for (int i = 2; i < argc; i++) {
         std::string arg = argv[i];
         if ((arg == "--config" || arg == "--model") && i + 1 < argc) {
             config_path = argv[++i];
         } else if (arg == "--type" && i + 1 < argc) {
             model_type = argv[++i];
+        } else if (arg == "--max-new-tokens") {
+            if (i + 1 >= argc) {
+                std::cerr << "Missing value for --max-new-tokens.\n";
+                return 1;
+            }
+            const char *value = argv[++i];
+            if (*value == '-') {
+                std::cerr << "Invalid value for --max-new-tokens: expected a positive integer.\n";
+                return 1;
+            }
+            char *end = nullptr;
+            const unsigned long long parsed = std::strtoull(value, &end, 10);
+            if (end == value || *end != '\0' || parsed == 0 ||
+                parsed > static_cast<unsigned long long>(std::numeric_limits<size_t>::max())) {
+                std::cerr << "Invalid value for --max-new-tokens: expected a positive integer.\n";
+                return 1;
+            }
+            max_new_tokens = static_cast<size_t>(parsed);
         }
     }
 
@@ -111,8 +132,6 @@ int cmd_chat(int argc, char **argv)
         std::cout << "Chat LLaMA (config: hidden_size=" << config.hidden_size << ", layers=" << config.num_hidden_layers
                   << "). Type a line and press Enter. Empty line to quit.\n";
 
-        constexpr size_t MAX_GEN_TOKENS = 128;
-
         while (true) {
             std::cout << "> " << std::flush;
             std::string line;
@@ -150,15 +169,18 @@ int cmd_chat(int argc, char **argv)
                 next_id = sampler.sample(last_logits);
             }
 
-            for (size_t gen = 0; gen < MAX_GEN_TOKENS; ++gen) {
+            for (size_t gen = 0; gen < max_new_tokens; ++gen) {
                 if (next_id == serius::BPETokenizer::EOS_ID) { break; }
 
                 std::string tok_str = tokenizer.decode({static_cast<serius::TokenId>(next_id)});
                 std::cout << tok_str << std::flush;
 
+                ++tokens_generated;
+                if (gen + 1 == max_new_tokens) {
+                    break;
+                }
                 size_t pos = ids.size();
                 ids.push_back(static_cast<serius::TokenId>(next_id));
-                ++tokens_generated;
 
                 // Fast path: use single token inference with KV-cache
                 serius::core::Tensor next_logits = 
@@ -240,6 +262,7 @@ int cmd_chat(int argc, char **argv)
     serius::model::ModelConfig config;
     if (!config_path.empty()) {
         config = serius::io::load_model_config(config_path);
+        config.normalize_moe();
         if (config.vocab_size == 0) {
             config.vocab_size = serius::model::ModelConfig::DEFAULT_VOCAB_SIZE;
         }
@@ -258,8 +281,11 @@ int cmd_chat(int argc, char **argv)
                   << " < model vocab_size " << config.vocab_size << ". Using tokenizer vocab for encode/decode.\n";
     }
 
-    std::cout << "Chat Transformer (config: d_model=" << config.d_model << ", layers=" << config.n_layers
-              << "). Type a line and press Enter. Empty line to quit.\n";
+    std::cout << "Chat Transformer (config: d_model=" << config.d_model << ", layers=" << config.n_layers;
+    if (config.moe_enabled) {
+        std::cout << ", moe_enabled=true, experts=" << config.num_experts << ", top_k=" << config.top_k;
+    }
+    std::cout << "). Type a line and press Enter. Empty line to quit.\n";
 
     while (true) {
         std::cout << "> ";
@@ -297,21 +323,18 @@ int cmd_chat(int argc, char **argv)
 
         int next_id = sampler.sample(last_logits);
 
-        // Autoregressive generation loop
-        const size_t MAX_GEN_TOKENS = 128;
-        std::vector<serius::TokenId> generated_ids;
-        generated_ids.push_back(static_cast<serius::TokenId>(next_id));
+        for (size_t step = 0; step < max_new_tokens; ++step) {
+            if (next_id == serius::BPETokenizer::EOS_ID) {
+                break;
+            }
 
-        std::string out = tokenizer.decode({static_cast<serius::TokenId>(next_id)});
-        std::cout << out;
-        std::cout.flush();
+            std::cout << tokenizer.decode({static_cast<serius::TokenId>(next_id)}) << std::flush;
+            if (step + 1 == max_new_tokens) {
+                break;
+            }
 
-        for (size_t step = 1; step < MAX_GEN_TOKENS; ++step) {
-            // Append generated token to input sequence
             ids.push_back(static_cast<serius::TokenId>(next_id));
-
-            // Use a sliding window if exceeding max_seq_len
-            size_t cur_len = std::min(ids.size(), config.max_seq_len);
+            const size_t cur_len = std::min(ids.size(), config.max_seq_len);
 
             serius::core::Tensor inp({cur_len});
             for (size_t i = 0; i < cur_len; ++i) {
@@ -322,8 +345,8 @@ int cmd_chat(int argc, char **argv)
             serius::core::autograd::Node *logits_n = model.forward(&inp_node);
 
             const serius::core::Tensor &lg = logits_n->data;
-            size_t vs = lg.shape().back();
-            size_t lr = lg.shape()[0] - 1;
+            const size_t vs = lg.shape().back();
+            const size_t lr = lg.shape()[0] - 1;
 
             serius::core::Tensor last_lg({vs});
             const float *s = lg.data() + lr * vs;
@@ -332,12 +355,6 @@ int cmd_chat(int argc, char **argv)
             }
 
             next_id = sampler.sample(last_lg);
-            if (next_id == serius::BPETokenizer::EOS_ID) break;
-
-            std::string tok = tokenizer.decode({static_cast<serius::TokenId>(next_id)});
-            std::cout << tok;
-            std::cout.flush();
-            generated_ids.push_back(static_cast<serius::TokenId>(next_id));
         }
         std::cout << std::endl;
     }

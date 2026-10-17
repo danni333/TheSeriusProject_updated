@@ -61,6 +61,17 @@ cmake --build . --config Release
 
 L'output di build e gli eventuali errori vengono registrati nei file `build_*.txt` nella root del progetto.
 
+### Configurazione MoE e prova locale
+
+Il loader JSON supporta sia il blocco annidato `moe` sia i campi flat `moe_enabled`, `num_experts`, `top_k`, ecc. Per provare il percorso completo di inferenza su CPU usa il modello dimostrativo piccolo:
+
+```bash
+./build/serius chat --config configs/model_moe_demo.json --type transformer --max-new-tokens 16
+```
+
+`--max-new-tokens` limita la generazione per prove rapide. `configs/model_moe_1b.json` è invece un profilo molto più grande e richiede memoria significativamente maggiore.
+Il profilo demo usa pesi inizializzati casualmente: serve a verificare parsing, routing MoE e inferenza end-to-end, non a produrre risposte linguistiche utili.
+
 ### Esecuzione test
 
 All'interno della cartella `build`:

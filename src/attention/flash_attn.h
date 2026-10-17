@@ -12,19 +12,13 @@ namespace serius {
 namespace model {
 namespace attention {
 
-// Default block sizes for Flash Attention tuning
-namespace {
-constexpr int DEFAULT_BLOCK_M = 128;
-constexpr int DEFAULT_BLOCK_N = 128;
-}  // namespace
-
 struct FlashAttentionConfig
 {
     bool is_causal = true;
     float softmax_scale = 1.0F;
-    // Block size defaults that can be adjusted for tuning performance
-    int block_m = DEFAULT_BLOCK_M;  // Sequence length block size for Query
-    int block_n = DEFAULT_BLOCK_N;  // Sequence length block size for Key/Value
+    // Forward tile sizes: zero selects the benchmarked profile; explicit values must be 16, 32, 64, or 128.
+    int block_m = 0;
+    int block_n = 0;
 };
 
 // Forward version for inference (no logsumexp returned)

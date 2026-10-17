@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-inference
+  labels:
+    app: llm
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: llm
+  template:
+    metadata:
+      labels:
+        app: llm
+    spec:
+      containers:
+      - name: llm
+        image: registry.example.com/theseriusproject:latest
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+            memory: "32Gi"
+          requests:
+            memory: "16Gi"
+            cpu: "4"
+        env:
+        - name: MODEL_PATH
+          value: "/models/model.safetensors"
+        - name: NUM_THREADS
+          value: "8"
+        volumeMounts:
+        - name: model-weights
+          mountPath: /models
+      volumes:
+      - name: model-weights
+        persistentVolumeClaim:
+          claimName: model-pvc

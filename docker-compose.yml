@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  llm-server:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models
+      - ./data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - MODEL_PATH=/models/model.safetensors
+      - NUM_THREADS=8
+    restart: unless-stopped

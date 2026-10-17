@@ -13,6 +13,16 @@ namespace model {
 using core::Tensor;
 using core::autograd::Node;
 
+struct MoEConfig
+{
+    bool enabled = false;
+    size_t num_experts = 0;
+    size_t top_k = 0;
+    size_t shared_experts = 1;
+    float load_balance_alpha = 0.01f;
+    bool load_balance = true;
+};
+
 struct ModelConfig
 {
     static constexpr size_t DEFAULT_VOCAB_SIZE = 32000;
@@ -29,6 +39,48 @@ struct ModelConfig
     size_t n_layers = DEFAULT_N_LAYERS;
     size_t d_ff = DEFAULT_D_FF;
     size_t max_seq_len = DEFAULT_MAX_SEQ_LEN;
+
+    bool moe_enabled = false;
+    size_t num_experts = 0;
+    size_t top_k = 0;
+    size_t shared_experts = 1;
+    float load_balance_alpha = 0.01f;
+    bool load_balance = true;
+    MoEConfig moe;
+
+    bool has_moe() const
+    {
+        return moe_enabled && num_experts > 0 && top_k > 0 && top_k <= num_experts;
+    }
+
+    void normalize_moe()
+    {
+        if (moe.enabled && !moe_enabled) {
+            moe_enabled = true;
+        }
+        if (num_experts == 0 && moe.num_experts > 0) {
+            num_experts = moe.num_experts;
+        }
+        if (top_k == 0 && moe.top_k > 0) {
+            top_k = moe.top_k;
+        }
+        if (shared_experts == 1 && moe.shared_experts != 1) {
+            shared_experts = moe.shared_experts;
+        }
+        if (load_balance_alpha == 0.01f && moe.load_balance_alpha != 0.01f) {
+            load_balance_alpha = moe.load_balance_alpha;
+        }
+        if (load_balance && !moe.load_balance) {
+            load_balance = false;
+        }
+
+        moe.enabled = moe_enabled;
+        moe.num_experts = num_experts;
+        moe.top_k = top_k;
+        moe.shared_experts = shared_experts;
+        moe.load_balance_alpha = load_balance_alpha;
+        moe.load_balance = load_balance;
+    }
 };
 
 class PagedKVCache;

@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 
 #include "../blas/blas.h"
 #include "../attention/flash_attn.h"
@@ -428,6 +430,103 @@ Node *cross_entropy(Node *input_logits, Node *input_targets)
     return out;
 }
 
+Node *masked_cross_entropy(Node *input_logits, Node *input_targets, const core::Tensor &loss_mask)
+{
+    const Tensor &logits = input_logits->data;
+    const Tensor &targets = input_targets->data;
+    if ((logits.ndim() != 2 && logits.ndim() != 3) || logits.shape().empty()) {
+        throw std::invalid_argument("masked_cross_entropy: logits must have shape (N, V) or (B, S, V).");
+    }
+
+    const size_t vocab_size = logits.shape().back();
+    if (vocab_size == 0) {
+        throw std::invalid_argument("masked_cross_entropy: vocabulary dimension cannot be empty.");
+    }
+    const size_t row_count = logits.size() / vocab_size;
+    const std::vector<size_t> expected_target_shape =
+        logits.ndim() == 2 ? std::vector<size_t>{logits.shape()[0]}
+                           : std::vector<size_t>{logits.shape()[0], logits.shape()[1]};
+    if (targets.shape() != expected_target_shape || loss_mask.shape() != expected_target_shape) {
+        throw std::invalid_argument("masked_cross_entropy: target and mask shapes must match the logits rows.");
+    }
+
+    Tensor probabilities(logits.shape());
+    const float *logits_data = logits.data();
+    const float *targets_data = targets.data();
+    const float *mask_data = loss_mask.data();
+    float *probabilities_data = probabilities.data();
+    float total_loss = 0.0F;
+    size_t active_rows = 0;
+
+    for (size_t row = 0; row < row_count; ++row) {
+        const float mask_value = mask_data[row];
+        if (!std::isfinite(mask_value)) {
+            throw std::invalid_argument("masked_cross_entropy: loss mask values must be finite.");
+        }
+        if (mask_value <= 0.0F) continue;
+
+        const float target_value = targets_data[row];
+        if (!std::isfinite(target_value) || target_value < 0.0F ||
+            target_value >= static_cast<float>(vocab_size) || std::floor(target_value) != target_value) {
+            throw std::invalid_argument("masked_cross_entropy: active targets must be valid vocabulary indices.");
+        }
+
+        const float *row_logits = logits_data + row * vocab_size;
+        float *row_probabilities = probabilities_data + row * vocab_size;
+        float max_logit = -std::numeric_limits<float>::infinity();
+        for (size_t token = 0; token < vocab_size; ++token) {
+            if (!std::isfinite(row_logits[token])) {
+                throw std::invalid_argument("masked_cross_entropy: active logits must be finite.");
+            }
+            max_logit = std::max(max_logit, row_logits[token]);
+        }
+
+        float exp_sum = 0.0F;
+        for (size_t token = 0; token < vocab_size; ++token) {
+            row_probabilities[token] = std::exp(row_logits[token] - max_logit);
+            exp_sum += row_probabilities[token];
+        }
+
+        const float log_partition = max_logit + std::log(exp_sum);
+        total_loss += log_partition - row_logits[static_cast<size_t>(target_value)];
+        for (size_t token = 0; token < vocab_size; ++token) {
+            row_probabilities[token] /= exp_sum;
+        }
+        ++active_rows;
+    }
+
+    if (active_rows == 0) {
+        throw std::invalid_argument("masked_cross_entropy: loss mask must select at least one target.");
+    }
+
+    Node *out = new Node(Tensor({1}));
+    out->data[0] = total_loss / static_cast<float>(active_rows);
+    out->children = {input_logits};
+    out->name = "masked_cross_entropy";
+    const Tensor mask_copy = loss_mask.copy();
+    out->backward_fn = [input_logits, input_targets, out, probabilities, mask_copy, row_count, vocab_size,
+                        active_rows]() {
+        if (!input_logits->requires_grad) return;
+
+        const float scale = out->grad[0] / static_cast<float>(active_rows);
+        const float *target_data = input_targets->data.data();
+        const float *mask_values = mask_copy.data();
+        const float *probability_values = probabilities.data();
+        float *gradient_values = input_logits->grad.data();
+
+        for (size_t row = 0; row < row_count; ++row) {
+            if (mask_values[row] <= 0.0F) continue;
+            const size_t target = static_cast<size_t>(target_data[row]);
+            const float *row_probabilities = probability_values + row * vocab_size;
+            float *row_gradient = gradient_values + row * vocab_size;
+            for (size_t token = 0; token < vocab_size; ++token) {
+                row_gradient[token] += scale * (row_probabilities[token] - (token == target ? 1.0F : 0.0F));
+            }
+        }
+    };
+    return out;
+}
+
 Node *reshape(Node *input_node, const std::vector<size_t> &new_shape)
 {
     Tensor res = input_node->data.reshape(new_shape);
@@ -512,15 +611,33 @@ Node *mul_scalar(Node *input_node, float scalar_value)
     return out;
 }
 
-void apply_rope_to_data(Tensor &rot_data, size_t batch_size, size_t seq_len, size_t d_head, size_t d_model,
-                        bool is_batched, float rope_base, size_t pos_offset)
+namespace {
+
+float resolve_rope_base(float rope_base, size_t d_head, size_t training_ctx, size_t target_ctx)
 {
+    if (training_ctx == 0 || target_ctx <= training_ctx) {
+        return rope_base;
+    }
+    if (d_head <= 2) {
+        return rope_base;
+    }
+    const float scale_ratio = static_cast<float>(target_ctx) / static_cast<float>(training_ctx);
+    return rope_base * std::pow(scale_ratio, static_cast<float>(d_head) / static_cast<float>(d_head - 2));
+}
+
+}  // namespace
+
+void apply_rope_to_data(Tensor &rot_data, size_t batch_size, size_t seq_len, size_t d_head, size_t d_model,
+                        bool is_batched, float rope_base, size_t pos_offset, size_t training_ctx,
+                        size_t target_ctx)
+{
+    const float effective_base = resolve_rope_base(rope_base, d_head, training_ctx, target_ctx);
     for (size_t b_idx = 0; b_idx < batch_size; ++b_idx) {
         for (size_t p_idx = 0; p_idx < seq_len; ++p_idx) {
             size_t absolute_pos = p_idx + pos_offset;
             for (size_t h_idx = 0; h_idx < d_model; h_idx += d_head) {
                 for (size_t i_idx = 0; i_idx < d_head; i_idx += 2) {
-                    float freq = 1.0F / std::pow(rope_base, static_cast<float>(i_idx) / static_cast<float>(d_head));
+                    float freq = 1.0F / std::pow(effective_base, static_cast<float>(i_idx) / static_cast<float>(d_head));
                     float theta = static_cast<float>(absolute_pos) * freq;
                     float cos_val = std::cos(theta);
                     float sin_val = std::sin(theta);
@@ -544,17 +661,19 @@ void apply_rope_to_data(Tensor &rot_data, size_t batch_size, size_t seq_len, siz
 }
 
 void apply_rope_backward_impl(Node *input_node, Node *out, size_t batch_size, size_t seq_len, size_t d_head,
-                              size_t d_model, bool is_batched, float rope_base, size_t pos_offset)
+                              size_t d_model, bool is_batched, float rope_base, size_t pos_offset,
+                              size_t training_ctx, size_t target_ctx)
 {
     if (!input_node->requires_grad) {
         return;
     }
+    const float effective_base = resolve_rope_base(rope_base, d_head, training_ctx, target_ctx);
     for (size_t b_idx = 0; b_idx < batch_size; ++b_idx) {
         for (size_t p_idx = 0; p_idx < seq_len; ++p_idx) {
             size_t absolute_pos = p_idx + pos_offset;
             for (size_t h_idx = 0; h_idx < d_model; h_idx += d_head) {
                 for (size_t i_idx = 0; i_idx < d_head; i_idx += 2) {
-                    float freq = 1.0F / std::pow(rope_base, static_cast<float>(i_idx) / static_cast<float>(d_head));
+                    float freq = 1.0F / std::pow(effective_base, static_cast<float>(i_idx) / static_cast<float>(d_head));
                     float theta = static_cast<float>(absolute_pos) * freq;
                     float cos_val = std::cos(theta);
                     float sin_val = std::sin(theta);
@@ -578,35 +697,37 @@ void apply_rope_backward_impl(Node *input_node, Node *out, size_t batch_size, si
 }
 
 Node *apply_rope_impl(Node *input_node, size_t batch_size, size_t seq_len, size_t d_head, bool is_batched,
-                      bool is_query, float rope_base, size_t pos_offset)
+                      bool is_query, float rope_base, size_t pos_offset, size_t training_ctx, size_t target_ctx)
 {
     Tensor rot_data = input_node->data.copy();
     size_t d_model = is_batched ? input_node->data.shape()[2] : input_node->data.shape()[1];
 
-    apply_rope_to_data(rot_data, batch_size, seq_len, d_head, d_model, is_batched, rope_base, pos_offset);
+    apply_rope_to_data(rot_data, batch_size, seq_len, d_head, d_model, is_batched, rope_base, pos_offset,
+                       training_ctx, target_ctx);
 
     Node *out = new Node(std::move(rot_data));
     out->name = is_query ? "rope_q" : "rope_k";
     out->children = {input_node};
 
-    out->backward_fn = [input_node, out, batch_size, seq_len, d_head, d_model, is_batched, rope_base, pos_offset]() {
-        // Backward for RoPE also needs the offset
-        // For simplicity, let's assume we don't need full autograd for KV cache yet,
-        // but let's keep it consistent.
+    out->backward_fn = [input_node, out, batch_size, seq_len, d_head, d_model, is_batched, rope_base, pos_offset,
+                        training_ctx, target_ctx]() {
         apply_rope_backward_impl(input_node, out, batch_size, seq_len, d_head, d_model, is_batched, rope_base,
-                                 pos_offset);
+                                 pos_offset, training_ctx, target_ctx);
     };
     return out;
 }
 
-RoPEResult rope(Node *query_node, Node *key_node, size_t d_head, float rope_base, size_t pos_offset)
+RoPEResult rope(Node *query_node, Node *key_node, size_t d_head, float rope_base, size_t pos_offset,
+                size_t training_ctx, size_t target_ctx)
 {
     bool is_batched = (query_node->data.ndim() == 3);
     size_t batch_size = is_batched ? query_node->data.shape()[0] : 1;
     size_t seq_len = is_batched ? query_node->data.shape()[1] : query_node->data.shape()[0];
 
-    Node *out_q = apply_rope_impl(query_node, batch_size, seq_len, d_head, is_batched, true, rope_base, pos_offset);
-    Node *out_k = apply_rope_impl(key_node, batch_size, seq_len, d_head, is_batched, false, rope_base, pos_offset);
+    Node *out_q = apply_rope_impl(query_node, batch_size, seq_len, d_head, is_batched, true, rope_base, pos_offset,
+                                 training_ctx, target_ctx);
+    Node *out_k = apply_rope_impl(key_node, batch_size, seq_len, d_head, is_batched, false, rope_base, pos_offset,
+                                 training_ctx, target_ctx);
 
     return {out_q, out_k};
 }

@@ -1,12 +1,17 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "autograd/engine.h"
 #include "autograd/ops.h"
+#include "data/dataloader.h"
 #include "optim/adamw.h"
 #include "optim/lr_schedule.h"
 #include "tensor/tensor.h"
+#include "tokenizer/bpe.h"
 #include "train/trainer.h"
 #include "transformer/config.h"
 #include "transformer/model.h"
@@ -118,6 +123,54 @@ TEST_F(TrainingTest, FullTrainingStep)
     EXPECT_TRUE(has_grad);
 
     optimizer.step();
+}
+
+TEST_F(TrainingTest, MixedPrecisionTrainingKeepsParametersFinite)
+{
+    TransformerModel model(config);
+
+    AdamWConfig adam_config;
+    adam_config.lr = 1e-3F;
+    auto params = model.parameters();
+    AdamW optimizer(params, adam_config);
+
+    WSDScheduler scheduler(adam_config.lr, 10, 10, 10);
+    TrainerConfig trainer_config;
+    trainer_config.max_epochs = 1;
+    trainer_config.use_amp = true;
+    Trainer trainer(model, optimizer, scheduler, trainer_config);
+    std::vector<Tensor> initial_params;
+    initial_params.reserve(params.size());
+    for (const auto *param : params) {
+        initial_params.push_back(param->data.copy());
+    }
+
+    const std::filesystem::path data_path =
+        std::filesystem::temp_directory_path() / "serius_training_amp_test.txt";
+    {
+        std::ofstream data_file(data_path);
+        ASSERT_TRUE(data_file.is_open());
+        data_file << "ABCDEFGHIJKLMNOPQRSTUVWX";
+    }
+
+    DataLoader loader(std::make_shared<BPETokenizer>(), 1, 8, 1);
+    loader.load_files({data_path.string()});
+    ASSERT_TRUE(loader.next_batch().has_value());
+    loader.reset();
+
+    trainer.train(loader);
+    std::filesystem::remove(data_path);
+
+    bool parameters_updated = false;
+    for (size_t param_idx = 0; param_idx < params.size(); ++param_idx) {
+        const auto *param = params[param_idx];
+        for (size_t i = 0; i < param->data.size(); ++i) {
+            const float value = param->data.item(i);
+            EXPECT_TRUE(std::isfinite(value)) << "non-finite parameter element " << i;
+            parameters_updated = parameters_updated || value != initial_params[param_idx].item(i);
+        }
+    }
+    EXPECT_TRUE(parameters_updated);
 }
 
 }  // namespace test

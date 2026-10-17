@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <stdexcept>
 #include <vector>
 
 #include "../autograd/node.h"
@@ -34,6 +36,12 @@ class AutomaticMixedPrecision
     explicit AutomaticMixedPrecision(const Config &config = {})
         : current_scale_(config.init_scale), growth_interval_(config.growth_interval), steps_since_last_scale_(0)
     {
+        if (!std::isfinite(current_scale_) || current_scale_ < 1.0F) {
+            throw std::invalid_argument("AutomaticMixedPrecision: init_scale must be finite and at least 1.");
+        }
+        if (growth_interval_ <= 0) {
+            throw std::invalid_argument("AutomaticMixedPrecision: growth_interval must be positive.");
+        }
     }
 
     /**
@@ -105,7 +113,8 @@ class AutomaticMixedPrecision
 
         steps_since_last_scale_++;
         if (steps_since_last_scale_ >= growth_interval_) {
-            current_scale_ *= DEFAULT_GROWTH_FACTOR;
+            current_scale_ = std::min(current_scale_ * DEFAULT_GROWTH_FACTOR,
+                                      std::numeric_limits<float>::max());
             steps_since_last_scale_ = 0;
         }
 

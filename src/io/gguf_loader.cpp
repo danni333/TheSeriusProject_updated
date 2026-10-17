@@ -1,10 +1,12 @@
 #include "gguf_loader.h"
 
+#include <array>
 #include <fstream>
 #include <cstring>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <sstream>
 
 #include "../transformer/config.h"
@@ -100,109 +102,187 @@ void dequantize_q8_0(const uint8_t *data, size_t n, float *out)
     }
 }
 
-struct KVEntry
-{
-    std::string key;
-    uint32_t type;
-};
+}  // anonymous namespace
 
-std::vector<KVEntry> read_kv_entries(std::ifstream &f, uint64_t n_kv)
+namespace {
+
+uint64_t read_u64_le(std::ifstream &f)
 {
-    std::vector<KVEntry> entries;
-    entries.reserve(n_kv);
-    for (uint64_t i = 0; i < n_kv; ++i) {
-        uint64_t key_len = 0;
-        f.read(reinterpret_cast<char *>(&key_len), sizeof(key_len));
-        if (!f) break;
-        std::string key(static_cast<size_t>(key_len), '\0');
-        f.read(&key[0], static_cast<std::streamsize>(key_len));
-        if (!f) break;
-        uint32_t type = 0;
-        f.read(reinterpret_cast<char *>(&type), sizeof(type));
-        if (!f) break;
-        
-        entries.push_back({key, type});
-        
-        if (type == 8) {  // string
-            uint64_t len = 0;
-            f.read(reinterpret_cast<char *>(&len), sizeof(len));
-            f.seekg(f.tellg() + static_cast<std::streamoff>(len));
-        } else if (type == 9) {  // array
-            uint32_t n = 0;
-            f.read(reinterpret_cast<char *>(&n), sizeof(n));
-            for (uint32_t j = 0; j < n && f; ++j) {
-                uint64_t elem_len = 0;
-                f.read(reinterpret_cast<char *>(&elem_len), sizeof(elem_len));
-                f.seekg(f.tellg() + static_cast<std::streamoff>(elem_len));
+    uint64_t value = 0;
+    std::array<uint8_t, sizeof(value)> bytes{};
+    f.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        value |= (static_cast<uint64_t>(bytes[i]) << (8 * i));
+    }
+    return value;
+}
+
+uint32_t read_u32_le(std::ifstream &f)
+{
+    uint32_t value = 0;
+    std::array<uint8_t, sizeof(value)> bytes{};
+    f.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        value |= (static_cast<uint32_t>(bytes[i]) << (8 * i));
+    }
+    return value;
+}
+
+uint16_t read_u16_le(std::ifstream &f)
+{
+    uint16_t value = 0;
+    std::array<uint8_t, sizeof(value)> bytes{};
+    f.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        value |= (static_cast<uint16_t>(bytes[i]) << (8 * i));
+    }
+    return value;
+}
+
+int32_t read_i32_le(std::ifstream &f)
+{
+    uint32_t raw = read_u32_le(f);
+    return static_cast<int32_t>(raw);
+}
+
+int64_t read_i64_le(std::ifstream &f)
+{
+    uint64_t raw = read_u64_le(f);
+    return static_cast<int64_t>(raw);
+}
+
+bool read_string_kv_value(std::ifstream &f, std::string *out)
+{
+    uint64_t len = read_u64_le(f);
+    if (!f) return false;
+    std::string value(static_cast<size_t>(len), '\0');
+    f.read(&value[0], static_cast<std::streamsize>(len));
+    if (!f) return false;
+    if (out) *out = std::move(value);
+    return true;
+}
+
+bool skip_gguf_value(std::ifstream &f, uint32_t type)
+{
+    switch (type) {
+        case 0: return true;
+        case 1: /* uint8 */ { uint8_t v = 0; f.read(reinterpret_cast<char *>(&v), 1); return f.good(); }
+        case 2: /* int8 */ { int8_t v = 0; f.read(reinterpret_cast<char *>(&v), 1); return f.good(); }
+        case 3: /* uint16 */ { uint16_t v = 0; f.read(reinterpret_cast<char *>(&v), sizeof(v)); return f.good(); }
+        case 4: /* uint32 */ { uint32_t v = 0; f.read(reinterpret_cast<char *>(&v), sizeof(v)); return f.good(); }
+        case 5: /* int32 */ { int32_t v = 0; f.read(reinterpret_cast<char *>(&v), sizeof(v)); return f.good(); }
+        case 6: /* float32 */ { float v = 0.0f; f.read(reinterpret_cast<char *>(&v), sizeof(v)); return f.good(); }
+        case 7: /* bool */ { uint8_t v = 0; f.read(reinterpret_cast<char *>(&v), 1); return f.good(); }
+        case 8: return read_string_kv_value(f, nullptr);
+        case 9: {
+            uint32_t n = read_u32_le(f);
+            for (uint32_t i = 0; i < n; ++i) {
+                uint32_t elem_type = read_u32_le(f);
+                if (!skip_gguf_value(f, elem_type)) return false;
             }
-        } else {
-            static const size_t type_sizes[] = {0, 1, 1, 2, 2, 4, 4, 8, 0, 0, 4, 8};
+            return f.good();
+        }
+        default: {
+            static const size_t type_sizes[] = {0, 1, 1, 2, 4, 4, 4, 1, 0, 0, 4, 8};
             if (type < sizeof(type_sizes) / sizeof(type_sizes[0]) && type_sizes[type] > 0) {
-                f.seekg(f.tellg() + static_cast<std::streamoff>(type_sizes[type]));
+                f.seekg(static_cast<std::streamoff>(type_sizes[type]), std::ios::cur);
+                return f.good();
             }
+            return true;
         }
     }
-    return entries;
+}
+
+bool read_gguf_kv_entry(std::ifstream &f, std::string *key, uint32_t *type, uint64_t *value_length)
+{
+    uint64_t key_len = read_u64_le(f);
+    if (!f) return false;
+    std::string key_value(static_cast<size_t>(key_len), '\0');
+    f.read(&key_value[0], static_cast<std::streamsize>(key_len));
+    if (!f) return false;
+
+    *type = read_u32_le(f);
+    if (!f) return false;
+
+    if (key) *key = std::move(key_value);
+    if (value_length) *value_length = 0;
+    return true;
+}
+
+bool read_scalar_value(std::ifstream &f, uint32_t type, uint64_t *out)
+{
+    switch (type) {
+        case 1: {
+            uint8_t v = 0;
+            f.read(reinterpret_cast<char *>(&v), sizeof(v));
+            if (out) *out = v;
+            return f.good();
+        }
+        case 2: {
+            int8_t v = 0;
+            f.read(reinterpret_cast<char *>(&v), sizeof(v));
+            if (out) *out = static_cast<uint64_t>(v);
+            return f.good();
+        }
+        case 3: {
+            uint16_t v = 0;
+            f.read(reinterpret_cast<char *>(&v), sizeof(v));
+            if (out) *out = v;
+            return f.good();
+        }
+        case 4: {
+            uint32_t v = 0;
+            f.read(reinterpret_cast<char *>(&v), sizeof(v));
+            if (out) *out = v;
+            return f.good();
+        }
+        case 5: {
+            int32_t v = 0;
+            f.read(reinterpret_cast<char *>(&v), sizeof(v));
+            if (out) *out = static_cast<uint64_t>(v);
+            return f.good();
+        }
+        case 7: {
+            uint8_t v = 0;
+            f.read(reinterpret_cast<char *>(&v), sizeof(v));
+            if (out) *out = v;
+            return f.good();
+        }
+        case 6:
+        case 8:
+        case 9:
+        default:
+            return false;
+    }
 }
 
 GGUFTensorInfo read_tensor_info(std::ifstream &f)
 {
     GGUFTensorInfo info;
-    uint64_t name_len = 0;
-    f.read(reinterpret_cast<char *>(&name_len), sizeof(name_len));
+    uint64_t name_len = read_u64_le(f);
     if (!f) return info;
-    info.name.resize(static_cast<size_t>(name_len));
-    f.read(&info.name[0], static_cast<std::streamsize>(name_len));
+    std::string name(static_cast<size_t>(name_len), '\0');
+    f.read(&name[0], static_cast<std::streamsize>(name_len));
     if (!f) return info;
-    
-    uint32_t n_dims = 0;
-    f.read(reinterpret_cast<char *>(&n_dims), sizeof(n_dims));
+    info.name = std::move(name);
+
+    uint32_t n_dims = read_u32_le(f);
+    if (!f) return info;
     info.shape.resize(n_dims);
-    for (uint32_t d = 0; d < n_dims; ++d) {
-        f.read(reinterpret_cast<char *>(&info.shape[d]), sizeof(info.shape[d]));
+    for (uint32_t i = 0; i < n_dims; ++i) {
+        info.shape[i] = read_u64_le(f);
+        if (!f) return info;
     }
-    
-    uint32_t dtype = 0;
-    f.read(reinterpret_cast<char *>(&dtype), sizeof(dtype));
+
+    uint32_t dtype = read_u32_le(f);
+    if (!f) return info;
     info.dtype = static_cast<GGMLType>(dtype);
-    
-    f.read(reinterpret_cast<char *>(&info.offset), sizeof(info.offset));
+
+    info.offset = read_u64_le(f);
     return info;
 }
 
-bool read_string_kv(std::ifstream &f, const std::string &key, std::string &out_value)
-{
-    (void)key;
-    uint32_t type = 0;
-    f.read(reinterpret_cast<char *>(&type), sizeof(type));
-    if (!f || type != 8) return false;
-    uint64_t len = 0;
-    f.read(reinterpret_cast<char *>(&len), sizeof(len));
-    out_value.resize(static_cast<size_t>(len));
-    f.read(&out_value[0], static_cast<std::streamsize>(len));
-    return f.good();
-}
-
-bool read_uint_kv(std::ifstream &f, const std::string &key, uint64_t &out_value)
-{
-    (void)key;
-    uint32_t type = 0;
-    f.read(reinterpret_cast<char *>(&type), sizeof(type));
-    if (!f) return false;
-    if (type == 4) {  // uint32
-        uint32_t v = 0;
-        f.read(reinterpret_cast<char *>(&v), sizeof(v));
-        out_value = v;
-        return f.good();
-    }
-    if (type == 5) {  // uint64
-        f.read(reinterpret_cast<char *>(&out_value), sizeof(out_value));
-        return f.good();
-    }
-    return false;
-}
-
-}  // anonymous namespace
+}  // namespace
 
 GGUFMeta load_gguf_metadata(const std::string &path)
 {
@@ -211,20 +291,17 @@ GGUFMeta load_gguf_metadata(const std::string &path)
     if (!f) {
         return out;
     }
+
     GGUFHeader h{};
     f.read(reinterpret_cast<char *>(&h), sizeof(h));
     if (!f || h.magic != GGUF_MAGIC) {
         return out;
     }
+
     if (h.version < 1 || h.version > 10) {
         return out;
     }
-    if (h.n_tensors == 0 || h.n_tensors > 1000000) {
-        return out;
-    }
-    if (h.n_kv == 0 || h.n_kv > 1000000) {
-        return out;
-    }
+
     out.version = h.version;
     out.n_tensors = h.n_tensors;
     out.n_kv = h.n_kv;
@@ -239,49 +316,30 @@ std::vector<std::string> gguf_tensor_names(const std::string &path)
     if (!meta.valid) {
         return names;
     }
+
     std::ifstream f(path, std::ios::binary);
     if (!f) {
         return names;
     }
+
     f.seekg(sizeof(GGUFHeader));
     for (uint64_t i = 0; i < meta.n_kv; ++i) {
-        uint64_t key_len = 0;
-        f.read(reinterpret_cast<char *>(&key_len), sizeof(key_len));
-        if (!f) {
-            break;
-        }
-        std::string key(static_cast<size_t>(key_len), '\0');
-        f.read(&key[0], static_cast<std::streamsize>(key_len));
-        if (!f) {
-            break;
-        }
+        std::string key;
         uint32_t type = 0;
-        f.read(reinterpret_cast<char *>(&type), sizeof(type));
-        if (!f) {
+        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) {
             break;
         }
-        if (type == 8) {
-            uint64_t len = 0;
-            f.read(reinterpret_cast<char *>(&len), sizeof(len));
-            f.seekg(f.tellg() + static_cast<std::streamoff>(len));
-        } else if (type == 9) {
-            uint32_t n = 0;
-            f.read(reinterpret_cast<char *>(&n), sizeof(n));
-            for (uint32_t j = 0; j < n && f; ++j) {
-                uint64_t elem_len = 0;
-                f.read(reinterpret_cast<char *>(&elem_len), sizeof(elem_len));
-                f.seekg(f.tellg() + static_cast<std::streamoff>(elem_len));
-            }
-        } else {
-            static const size_t type_sizes[] = {0, 1, 1, 2, 2, 4, 4, 8, 0, 0, 4, 8};
-            if (type < sizeof(type_sizes) / sizeof(type_sizes[0]) && type_sizes[type] > 0) {
-                f.seekg(f.tellg() + static_cast<std::streamoff>(type_sizes[type]));
-            }
+        (void)key;
+        if (!skip_gguf_value(f, type)) {
+            break;
         }
     }
+
     for (uint64_t i = 0; i < meta.n_tensors && f; ++i) {
         GGUFTensorInfo info = read_tensor_info(f);
-        if (!f) break;
+        if (!f || info.name.empty()) {
+            break;
+        }
         names.push_back(info.name);
     }
     return names;
@@ -290,17 +348,33 @@ std::vector<std::string> gguf_tensor_names(const std::string &path)
 std::optional<GGUFTensorInfo> get_tensor_info(const std::string &path, const std::string &tensor_name)
 {
     GGUFMeta meta = load_gguf_metadata(path);
-    if (!meta.valid) return std::nullopt;
-    
+    if (!meta.valid) {
+        return std::nullopt;
+    }
+
     std::ifstream f(path, std::ios::binary);
-    if (!f) return std::nullopt;
-    
+    if (!f) {
+        return std::nullopt;
+    }
+
     f.seekg(sizeof(GGUFHeader));
-    read_kv_entries(f, meta.n_kv);
-    
+    for (uint64_t i = 0; i < meta.n_kv; ++i) {
+        std::string key;
+        uint32_t type = 0;
+        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) {
+            break;
+        }
+        (void)key;
+        if (!skip_gguf_value(f, type)) {
+            break;
+        }
+    }
+
     for (uint64_t i = 0; i < meta.n_tensors; ++i) {
         GGUFTensorInfo info = read_tensor_info(f);
-        if (!f) break;
+        if (!f) {
+            break;
+        }
         if (info.name == tensor_name) {
             return info;
         }
@@ -312,88 +386,92 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(const std::string
 {
     std::unordered_map<std::string, core::Tensor> result;
     GGUFMeta meta = load_gguf_metadata(path);
-    if (!meta.valid) return result;
-    
+    if (!meta.valid) {
+        return result;
+    }
+
     std::ifstream f(path, std::ios::binary);
-    if (!f) return result;
-    
+    if (!f) {
+        return result;
+    }
+
     f.seekg(sizeof(GGUFHeader));
-    read_kv_entries(f, meta.n_kv);
-    
+    for (uint64_t i = 0; i < meta.n_kv; ++i) {
+        std::string key;
+        uint32_t type = 0;
+        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) {
+            break;
+        }
+        (void)key;
+        if (!skip_gguf_value(f, type)) {
+            break;
+        }
+    }
+
     std::vector<GGUFTensorInfo> tensor_infos;
     for (uint64_t i = 0; i < meta.n_tensors; ++i) {
         GGUFTensorInfo info = read_tensor_info(f);
-        if (!f) break;
+        if (!f || info.name.empty()) {
+            break;
+        }
         tensor_infos.push_back(info);
     }
-    
-    size_t data_start = static_cast<size_t>(f.tellg());
-    constexpr size_t alignment = 32;
-    size_t aligned_data_start = ((data_start + alignment - 1) / alignment) * alignment;
-    
-    size_t total_elements = 0;
-    for (const auto &info : tensor_infos) {
-        size_t n = 1;
-        for (uint64_t d : info.shape) n *= d;
-        total_elements += n;
+    if (tensor_infos.empty()) {
+        return result;
     }
-    
-    std::vector<float> all_data;
-    all_data.reserve(total_elements);
-    
+
+    const std::streampos data_base = f.tellg();
     for (const auto &info : tensor_infos) {
-        size_t n = 1;
-        for (uint64_t d : info.shape) n *= d;
-        
-        std::vector<float> tensor_data(n);
-        f.seekg(static_cast<std::streamoff>(aligned_data_start + info.offset));
-        
+        std::vector<size_t> shape;
+        shape.reserve(info.shape.size());
+        for (uint64_t dim : info.shape) {
+            shape.push_back(static_cast<size_t>(dim));
+        }
+
+        const size_t numel = std::accumulate(shape.begin(), shape.end(), size_t{1}, std::multiplies<size_t>());
+        std::vector<float> values(numel, 0.0f);
+        f.seekg(data_base + static_cast<std::streamoff>(info.offset));
+
         if (info.dtype == GGMLType::F32) {
-            f.read(reinterpret_cast<char *>(tensor_data.data()), n * sizeof(float));
+            f.read(reinterpret_cast<char *>(values.data()), static_cast<std::streamsize>(numel * sizeof(float)));
         } else if (info.dtype == GGMLType::F16) {
-            std::vector<uint16_t> half_data(n);
-            f.read(reinterpret_cast<char *>(half_data.data()), n * sizeof(uint16_t));
-            for (size_t i = 0; i < n; ++i) {
-                tensor_data[i] = half_to_float(half_data[i]);
+            std::vector<uint16_t> half_values(numel);
+            f.read(reinterpret_cast<char *>(half_values.data()), static_cast<std::streamsize>(numel * sizeof(uint16_t)));
+            for (size_t i = 0; i < numel; ++i) {
+                values[i] = half_to_float(half_values[i]);
             }
         } else if (info.dtype == GGMLType::Q4_0) {
-            size_t blocks = (n + 31) / 32;
-            std::vector<uint8_t> qdata(blocks * 18);
-            f.read(reinterpret_cast<char *>(qdata.data()), qdata.size());
-            dequantize_q4_0(qdata.data(), n, tensor_data.data());
+            const size_t block_count = (numel + 31) / 32;
+            std::vector<uint8_t> packed(block_count * 18);
+            f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
+            dequantize_q4_0(packed.data(), numel, values.data());
         } else if (info.dtype == GGMLType::Q4_1) {
-            size_t blocks = (n + 31) / 32;
-            std::vector<uint8_t> qdata(blocks * 20);
-            f.read(reinterpret_cast<char *>(qdata.data()), qdata.size());
-            dequantize_q4_1(qdata.data(), n, tensor_data.data());
+            const size_t block_count = (numel + 31) / 32;
+            std::vector<uint8_t> packed(block_count * 20);
+            f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
+            dequantize_q4_1(packed.data(), numel, values.data());
         } else if (info.dtype == GGMLType::Q8_0) {
-            size_t blocks = (n + 31) / 32;
-            std::vector<uint8_t> qdata(blocks * 34);
-            f.read(reinterpret_cast<char *>(qdata.data()), qdata.size());
-            dequantize_q8_0(qdata.data(), n, tensor_data.data());
+            const size_t block_count = (numel + 31) / 32;
+            std::vector<uint8_t> packed(block_count * 34);
+            f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
+            dequantize_q8_0(packed.data(), numel, values.data());
         } else {
-            std::fill(tensor_data.begin(), tensor_data.end(), 0.0f);
+            std::fill(values.begin(), values.end(), 0.0f);
         }
-        
-        std::vector<size_t> shape;
-        for (uint64_t d : info.shape) {
-            shape.push_back(static_cast<size_t>(d));
-        }
+
         core::Tensor tensor(shape, hal::DType::Float32);
-        for (size_t i = 0; i < n; ++i) {
-            tensor[{i}] = tensor_data[i];
+        for (size_t i = 0; i < values.size(); ++i) {
+            tensor[{i}] = values[i];
         }
-        
         result.emplace(info.name, std::move(tensor));
     }
-    
+
     return result;
 }
 
 serius::model::ModelConfig gguf_to_model_config(const std::string &path)
 {
     serius::model::ModelConfig config;
-
     GGUFMeta meta = load_gguf_metadata(path);
     if (!meta.valid) {
         return config;
@@ -405,51 +483,34 @@ serius::model::ModelConfig gguf_to_model_config(const std::string &path)
     }
 
     f.seekg(sizeof(GGUFHeader));
-    std::vector<KVEntry> kv_entries = read_kv_entries(f, meta.n_kv);
+    for (uint64_t i = 0; i < meta.n_kv; ++i) {
+        std::string key;
+        uint32_t type = 0;
+        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) {
+            break;
+        }
 
-    for (const auto &entry : kv_entries) {
-        if (entry.key == "llama.vocab_size") {
-            uint64_t val = 0;
-            f.seekg(f.tellg() - static_cast<std::streamoff>(sizeof(uint32_t)));
-            if (read_uint_kv(f, entry.key, val)) {
-                config.vocab_size = static_cast<size_t>(val);
+        uint64_t value = 0;
+        if (read_scalar_value(f, type, &value)) {
+            if (key == "llama.vocab_size") {
+                config.vocab_size = static_cast<size_t>(value);
+            } else if (key == "llama.embedding_length") {
+                config.d_model = static_cast<size_t>(value);
+            } else if (key == "llama.block_count") {
+                config.n_layers = static_cast<size_t>(value);
+            } else if (key == "llama.attention.head_count") {
+                config.n_heads = static_cast<size_t>(value);
+                config.n_kv_heads = static_cast<size_t>(value);
+            } else if (key == "llama.attention.head_count_kv") {
+                config.n_kv_heads = static_cast<size_t>(value);
+            } else if (key == "llama.feed_forward_length") {
+                config.d_ff = static_cast<size_t>(value);
+            } else if (key == "llama.context_length") {
+                config.max_seq_len = static_cast<size_t>(value);
             }
-        } else if (entry.key == "llama.embedding_length") {
-            uint64_t val = 0;
-            f.seekg(f.tellg() - static_cast<std::streamoff>(sizeof(uint32_t)));
-            if (read_uint_kv(f, entry.key, val)) {
-                config.d_model = static_cast<size_t>(val);
-            }
-        } else if (entry.key == "llama.block_count") {
-            uint64_t val = 0;
-            f.seekg(f.tellg() - static_cast<std::streamoff>(sizeof(uint32_t)));
-            if (read_uint_kv(f, entry.key, val)) {
-                config.n_layers = static_cast<size_t>(val);
-            }
-        } else if (entry.key == "llama.attention.head_count") {
-            uint64_t val = 0;
-            f.seekg(f.tellg() - static_cast<std::streamoff>(sizeof(uint32_t)));
-            if (read_uint_kv(f, entry.key, val)) {
-                config.n_heads = static_cast<size_t>(val);
-                config.n_kv_heads = static_cast<size_t>(val);
-            }
-        } else if (entry.key == "llama.attention.head_count_kv") {
-            uint64_t val = 0;
-            f.seekg(f.tellg() - static_cast<std::streamoff>(sizeof(uint32_t)));
-            if (read_uint_kv(f, entry.key, val)) {
-                config.n_kv_heads = static_cast<size_t>(val);
-            }
-        } else if (entry.key == "llama.feed_forward_length") {
-            uint64_t val = 0;
-            f.seekg(f.tellg() - static_cast<std::streamoff>(sizeof(uint32_t)));
-            if (read_uint_kv(f, entry.key, val)) {
-                config.d_ff = static_cast<size_t>(val);
-            }
-        } else if (entry.key == "llama.context_length") {
-            uint64_t val = 0;
-            f.seekg(f.tellg() - static_cast<std::streamoff>(sizeof(uint32_t)));
-            if (read_uint_kv(f, entry.key, val)) {
-                config.max_seq_len = static_cast<size_t>(val);
+        } else {
+            if (!skip_gguf_value(f, type)) {
+                break;
             }
         }
     }

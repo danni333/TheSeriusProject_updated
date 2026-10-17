@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include <httplib.h>
+
 namespace serius {
 namespace server {
 
@@ -25,8 +27,14 @@ public:
 
 private:
     uint16_t port_;
-    bool running_ = false;
+    httplib::Server server_;
 };
+
+/// Build a small OpenAI-compatible completion payload from the last user prompt.
+std::string build_completion_text(const std::string &prompt);
+
+/// Extract the last user message from an OpenAI-like chat JSON payload.
+std::string extract_last_user_message(const std::string &json_body);
 
 }  // namespace server
 }  // namespace serius

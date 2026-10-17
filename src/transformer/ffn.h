@@ -12,7 +12,7 @@ using core::autograd::Node;
 class FFN
 {
    public:
-    FFN(size_t d_model, size_t d_ff);
+    FFN(size_t d_model, size_t d_ff, unsigned seed = 42);
     ~FFN();
 
     /// Forward pass: GELU(x·W1 + b1)·W2 + b2
@@ -22,6 +22,8 @@ class FFN
 
     /// Optimized forward pass utilizing fused_bias_gelu for the inner activation
     Node *forward_optimized(Node *input) const;
+
+    std::vector<Node *> parameters() const;
 
     // Parameters
     Node *w1;  // (d_model, d_ff)

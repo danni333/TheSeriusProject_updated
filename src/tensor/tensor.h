@@ -26,6 +26,9 @@ class Tensor
    public:
     // --- Constructors ---
 
+    /// Default-constructed tensor is valid as a placeholder for containers and maps.
+    Tensor() = default;
+
     /// Create a tensor with the given shape, zero-initialized
     explicit Tensor(const std::vector<size_t> &shape, hal::DType dtype = hal::DType::Float32);
 

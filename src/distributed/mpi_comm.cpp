@@ -33,6 +33,12 @@ MPICommunicator::MPICommunicator(int *argc, char ***argv)
 
     MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &rank_));
     MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &world_size_));
+
+    MPI_Comm local_comm = MPI_COMM_NULL;
+    MPI_CHECK(MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, rank_,
+                                  MPI_INFO_NULL, &local_comm));
+    MPI_CHECK(MPI_Comm_rank(local_comm, &local_rank_));
+    MPI_CHECK(MPI_Comm_free(&local_comm));
 }
 
 MPICommunicator::~MPICommunicator()

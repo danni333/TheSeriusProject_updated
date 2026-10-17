@@ -6,6 +6,7 @@
 
 #include "../autograd/engine.h"
 #include "../autograd/ops.h"
+#include "../stability/grad_clip.h"
 #include "checkpoint.h"
 
 namespace serius {
@@ -57,7 +58,7 @@ void Trainer::train(DataLoader &dataloader)
 
             if (should_step) {
                 // 6. Gradient clipping
-                clip_grad_norm(model_.parameters(), config_.grad_clip);
+                stability::clip_grad_norm(model_.parameters(), config_.grad_clip);
                 optimizer_.set_lr(current_lr);
 
                 // 8. Optimizer step

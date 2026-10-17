@@ -83,6 +83,7 @@ class LocalCommunicator : public Communicator
     LocalCommunicator(std::shared_ptr<ProcessGroup> group, int rank);
 
     int rank() const override { return rank_; }
+    int local_rank() const override { return rank_; }
     int world_size() const override { return world_size_; }
     CommBackend backend() const override { return CommBackend::Local; }
 

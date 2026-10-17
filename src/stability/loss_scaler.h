@@ -15,10 +15,10 @@ class DynamicLossScaler
    public:
     struct Config
     {
-        float initial_scale = 65536.0f;
-        float growth_factor = 2.0f;
-        float backoff_factor = 0.5f;
-        int growth_interval = 2000;  // steps without overflow before scaling up
+        float initial_scale = 65536.0f;  // finite and at least 1
+        float growth_factor = 2.0f;     // finite and greater than 1
+        float backoff_factor = 0.5f;    // finite and in (0, 1)
+        int growth_interval = 2000;     // positive steps without overflow before scaling up
     };
 
     DynamicLossScaler();

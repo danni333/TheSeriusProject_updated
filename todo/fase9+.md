@@ -8,10 +8,10 @@ Riferimento: `fase9_stabilita.md`
 
 | Elemento | Stato | Nota |
 |----------|--------|-----|
-| clip_grad_norm(params, max_norm) — norma L2 globale | Da verificare in trainer | |
-| scale gradienti se total_norm > max_norm | Da verificare | |
-| max_norm = 1.0 tipico | Da verificare | |
-| Ritorno total_norm per logging | Da verificare | |
+| clip_grad_norm(params, max_norm) — norma L2 globale | ✅ | Accumulazione in double, usata dal Trainer |
+| scale gradienti se total_norm > max_norm | ✅ | Implementato nel modulo stability |
+| max_norm = 1.0 tipico | ✅ | Valore predefinito del Trainer |
+| Ritorno total_norm per logging | ✅ | L'helper restituisce la norma originale |
 
 ---
 
@@ -19,10 +19,10 @@ Riferimento: `fase9_stabilita.md`
 
 | Elemento | Stato |
 |----------|--------|
-| Xavier (Glorot) per linear/tanh | Da verificare (in transformer/embedding o init) |
-| He (Kaiming) per ReLU/GELU | Da verificare |
+| Xavier (Glorot) per linear/tanh | ✅ Integrato nei layer attention e nelle proiezioni |
+| He (Kaiming) per ReLU/GELU | ✅ Integrato nel primo layer FFN |
 | µP (microparameter) init (citato fase9) | ❌ | Opzionale |
-| Inizializzazione in creazione layer (Linear, FFN, Attention) | Da verificare |
+| Inizializzazione in creazione layer (Linear, FFN, Attention) | ✅ Per il Transformer principale |
 
 ---
 
@@ -30,8 +30,8 @@ Riferimento: `fase9_stabilita.md`
 
 | Elemento | Stato |
 |----------|--------|
-| Loss scaling per evitare underflow FP16 | Da verificare in optim/amp.h |
-| Gradient scaling prima backward, unscale dopo | Da verificare |
+| Loss scaling per evitare underflow FP16 | ✅ Implementato nel Trainer AMP |
+| Gradient scaling prima backward, unscale dopo | ✅ Overflow salta lo step; scale e intervallo validati |
 | BF16/FP8 mixed precision (fase9) | Parziale (AMP presente) |
 
 ---
@@ -49,7 +49,7 @@ Riferimento: `fase9_stabilita.md`
 
 | Elemento | Stato |
 |----------|--------|
-| clip_grad_norm in trainer o modulo dedicato | Da verificare |
+| clip_grad_norm in trainer o modulo dedicato | ✅ Helper stability collegato al Trainer e al wrapper checkpoint |
 | test gradient clipping (norma non supera max_norm) | Da verificare |
 | test init (varianza output dopo init) | ❌ | Opzionale |
 

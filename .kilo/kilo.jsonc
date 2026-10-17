@@ -1,0 +1,16 @@
+{
+  "$schema": "https://app.kilo.ai/config.json",
+  "snapshot": false,
+  "indexing": {
+    "enabled": true,
+  "provider": "openai-compatible",
+  "model": "text-embedding-nomic-embed-text-v1.5",
+  "dimension": 768,
+  "vectorStore": "lancedb",
+  "openai-compatible": {
+    "apiKey": "not-needed",
+    "baseUrl": "http://localhost:1234/v1"
+  },
+    "lancedb": {}
+  }
+}

@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "../autograd/ops.h"
+#include "../init/weight_init.h"
 #include "paged_kv_cache.h"
 
 namespace serius {
@@ -11,7 +12,8 @@ namespace model {
 
 using core::autograd::Node;
 
-MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat)
+MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat,
+                                       unsigned seed)
     : d_model_(d_model), n_heads_(n_heads), d_head_(d_model / n_heads), cached_mask_({0})
 {
     // If d_lat is 0, default to d_model / 4 as a sensible heuristic
@@ -20,16 +22,9 @@ MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_
         throw std::runtime_error("d_model must be divisible by n_heads");
     }
 
-    // Xavier-like initialization helper
-    auto init_weights = [](size_t out_dim, size_t in_dim) -> Node * {
+    auto init_weights = [&seed](size_t out_dim, size_t in_dim) -> Node * {
         Tensor weights({out_dim, in_dim});
-        const float init_scale = 1.0F / std::sqrt(static_cast<float>(in_dim));
-        weights.rand();
-        for (size_t idx = 0; idx < weights.size(); ++idx) {
-            const float half_v = 0.5F;
-            const float two_v = 2.0F;
-            weights[idx] = (weights[idx] - half_v) * two_v * init_scale;
-        }
+        init::xavier_uniform(weights, in_dim, out_dim, seed++);
         return new Node(std::move(weights));
     };
 

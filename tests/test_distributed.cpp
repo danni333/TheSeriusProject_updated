@@ -31,6 +31,16 @@ TEST(DistributedComm, SingleRankCreation)
     EXPECT_EQ(comm->backend(), CommBackend::Local);
 }
 
+#ifdef SERIUS_USE_MPI
+TEST(DistributedComm, MpiFactoryUsesRuntimeRankAndWorldSize)
+{
+    auto comm = Communicator::create(CommBackend::MPI);
+    EXPECT_EQ(comm->backend(), CommBackend::MPI);
+    EXPECT_EQ(comm->rank(), 0);
+    EXPECT_EQ(comm->world_size(), 1);
+}
+#endif
+
 TEST(DistributedComm, SingleRankAllReduceNoop)
 {
     auto comm = Communicator::create(CommBackend::Local, 1, 0);

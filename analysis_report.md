@@ -21,7 +21,7 @@ The project has a README.md file at the root level. It appears to be well-docume
 - **No conanHunter or vcpkg integration**: Dependencies are fetched via CMake's FetchContent but no conan/vcpkg support
 
 ### Missing Build Features:
-1. Unit test for distributed comm (TODO at `src/distributed/local_comm.cpp:384-390`)
+1. Add multi-process integration tests for distributed communication.
 2. No install target in CMake (could add `install(TARGETS ...)` and `install(FILES ...)`)
 3. No packaging support (deb, rpm, dmg)
 
@@ -29,34 +29,27 @@ The project has a README.md file at the root level. It appears to be well-docume
 
 ## 3. TODO Comments Requiring Implementation
 
-### Total: 11 TODO items found
+### Total: 6 literal TODO comments remain; this count does not include incomplete functions without comments.
 
-#### `src/hal/vulkan_backend.cpp` (5 TODOs)
+#### `src/hal/vulkan_backend.cpp` (4 TODOs)
 | Line | Description |
 |------|------------|
 | 14 | Implement Vulkan memory allocation via VMA or native Vulkan APIs |
 | 21 | Implement Vulkan memory free |
 | 27 | Implement Vulkan buffer mapping/copying (h2d) |
 | 34 | Implement Vulkan buffer mapping/copying (d2h) |
-| 41 | Implement Vulkan buffer copy (d2d) |
 
-#### `src/hal/metal_backend.cpp` (4 TODOs)
+#### `src/hal/metal_backend.cpp` (2 TODOs)
 | Line | Description |
 |------|------------|
 | 14 | Implement Metal MTLBuffer allocation |
 | 21 | Implement Metal buffer release |
-| 41 | Metal BlitCommandEncoder implementation |
 
-#### `src/distributed/local_comm.cpp` (2 TODOs)
-| Line | Description |
-|------|------------|
-| 384 | Return std::make_unique<NCCLCommunicator>(...) - requires NCCL impl |
-| 390 | Return std::make_unique<MPICommunicator>(...) - requires MPI impl |
+MPI communicator operations were already implemented; the `Communicator::create()` factory now constructs `MPICommunicator`. NCCL operations were also implemented; `Communicator::create_nccl()` now constructs it when given the shared `ncclUniqueId`. NCCL ID creation and distribution remain the caller's responsibility.
 
-#### `src/server/server.cpp` (1 TODO)
-| Line | Description |
-|------|------------|
-| 208 | Signal server thread to stop (requires background thread) |
+The Metal and Vulkan classes still have broad implementation gaps that are not represented by TODO comments. Both omit `IBackend::malloc_pinned`, `malloc_managed`, and `free_pinned`, leaving the classes abstract; enabling either backend is expected to fail compilation. Their allocators, device-to-host/host-to-device copies, and stream lifecycle are also unimplemented, and `is_available()` always returns false. Vulkan device-to-device copying uses host `std::memcpy`, which is not a valid Vulkan device-memory transfer.
+
+Metal implementation requires a macOS/Metal toolchain. Vulkan work requires the Vulkan SDK and runtime/device to implement and validate native allocation, mapping, and transfer behavior.
 
 ---
 
@@ -66,14 +59,15 @@ The project has a README.md file at the root level. It appears to be well-docume
 
 | File | Line | Value | Issue |
 |------|------|-------|-------|
-| `src/hub/plugin_manager.cpp` | 121 | `512` MB | Hardcoded memory limit for plugin sandbox |
-| `src/hub/plugin_manager.cpp` | 122 | `50.0`% | Hardcoded CPU limit |
-| `src/hub/plugin_manager.cpp` | 123 | `100` | Hardcoded file descriptor limit |
-| `src/hub/plugin_manager.cpp` | 177 | `512 * 1024 * 1024` | Hardcoded 512MB memory check |
-| `src/hub/plugin_manager.cpp` | 182 | `50.0` | Hardcoded 50% CPU check |
-| `src/hub/model_hub_server.cpp` | 91 | `4096` | Buffer size for HTTP responses |
+| `src/hub/plugin_manager.cpp` | 135 | `512` MB | Hardcoded memory limit for plugin sandbox |
+| `src/hub/plugin_manager.cpp` | 136 | `50.0`% | Hardcoded CPU limit |
+| `src/hub/plugin_manager.cpp` | 137 | `100` | Hardcoded file descriptor limit |
+| `src/hub/plugin_manager.cpp` | 192 | `512 * 1024 * 1024` | Hardcoded 512MB memory check |
+| `src/hub/plugin_manager.cpp` | 196 | `50.0` | Hardcoded 50% CPU check |
 | `tests/test_memory.cpp` | 101 | `4096` | Memory pool size in test |
 | `tests/test_tensor.cpp` | 203 | `4096` | Memory pool size in test |
+
+The inference server's default port is 8080 and can be overridden through its constructor.
 
 ### No Absolute File Paths Found
 The codebase does NOT contain hardcoded absolute paths like `/home`, `/tmp`, `/usr/local`, or `/workspace`. File paths are properly parameterized.
@@ -111,17 +105,18 @@ The codebase does NOT contain hardcoded absolute paths like `/home`, `/tmp`, `/u
 | Category | Status | Count |
 |----------|--------|-------|
 | README.md | Present | 1 |
-| Build System Features | Partial (Metal/Vulkan stubs) | 3 incomplete backends |
-| TODO Comments | Needs implementation | 11 |
-| Hardcoded Values | Present in plugin manager | 7 instances |
+| Build System Features | Metal and Vulkan backends are incomplete | 2 incomplete backends |
+| Literal TODO comments | 6 remain | 6 |
+| Incomplete hardware backends | Metal and Vulkan APIs remain unimplemented | 2 |
+| Hardcoded Values | 5 plugin-manager limits/thresholds; 2 test fixtures | 7 instances |
 | Missing Dependencies | None critical | 2 optional (JWT, OpenSSL) |
 
 ---
 
 ## Recommendations
 
-1. **High Priority**: Implement Vulkan backend or remove `SERIUS_USE_VULKAN` option
-2. **High Priority**: Implement Metal backend or remove `SERIUS_USE_METAL` option  
-3. **Medium Priority**: Add unit tests for distributed communication stubs
-4. **Medium Priority**: Add configuration file for plugin resource limits
-5. **Low Priority**: Add install/packaging targets to CMakeLists.txt
+1. **High Priority**: Implement Vulkan backend and validate it with the Vulkan SDK/runtime.
+2. **High Priority**: Implement Metal backend and validate it on macOS.
+3. **Medium Priority**: Add MPI multi-process integration tests and NCCL unique-ID bootstrap.
+4. **Medium Priority**: Add configuration for plugin resource limits.
+5. **Low Priority**: Add install/packaging targets to CMakeLists.txt.

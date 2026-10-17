@@ -5,6 +5,7 @@
 
 #include "../autograd/ops.h"
 #include "../blas/blas.h"
+#include "../init/weight_init.h"
 
 namespace serius {
 namespace model {
@@ -12,17 +13,10 @@ namespace model {
 using core::Tensor;
 using core::autograd::Node;
 
-FFN::FFN(size_t d_model, size_t d_ff) : d_model_(d_model), d_ff_(d_ff)
+FFN::FFN(size_t d_model, size_t d_ff, unsigned seed) : d_model_(d_model), d_ff_(d_ff)
 {
-    // Xavier initialization
-    float scale1 = 1.0F / std::sqrt(static_cast<float>(d_model));
-    float scale2 = 1.0F / std::sqrt(static_cast<float>(d_ff));
-
     Tensor w1_t({d_model, d_ff});
-    w1_t.rand();
-    for (size_t idx = 0; idx < w1_t.size(); ++idx) {
-        w1_t[idx] = (w1_t[idx] - 0.5F) * 2.0F * scale1;
-    }
+    init::he_normal(w1_t, d_model, seed);
     w1 = new Node(std::move(w1_t));
     w1->name = "ffn_w1";
 
@@ -32,10 +26,7 @@ FFN::FFN(size_t d_model, size_t d_ff) : d_model_(d_model), d_ff_(d_ff)
     b1->name = "ffn_b1";
 
     Tensor w2_t({d_ff, d_model});
-    w2_t.rand();
-    for (size_t idx = 0; idx < w2_t.size(); ++idx) {
-        w2_t[idx] = (w2_t[idx] - 0.5F) * 2.0F * scale2;
-    }
+    init::xavier_uniform(w2_t, d_ff, d_model, seed + 1);
     w2 = new Node(std::move(w2_t));
     w2->name = "ffn_w2";
 
@@ -51,6 +42,11 @@ FFN::~FFN()
     delete b1;
     delete w2;
     delete b2;
+}
+
+std::vector<Node *> FFN::parameters() const
+{
+    return {w1, b1, w2, b2};
 }
 
 Node *FFN::forward(Node *input) const

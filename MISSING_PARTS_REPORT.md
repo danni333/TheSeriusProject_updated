@@ -21,7 +21,7 @@ No major deficiencies found.
 **Status: PRESENT**
 
 - Tests directory exists at `tests/`
-- Contains 32 test files:
+- Contains 33 test files:
   - `test_autograd.cpp`
   - `test_blas.cpp`
   - `test_tensor.cpp`
@@ -37,35 +37,41 @@ No major deficiencies found.
 
 No issues found.
 
-## 3. TODO Comments in Code
+## 3. TODO Comments and Incomplete Functionality
 
-**Status: FOUND 10 TODO items**
+**TODO comments remaining in source: 6**
 
 | File | Line | Description |
 |------|------|-------------|
-| `src/server/server.cpp` | 208 | Signal server thread to stop (requires background thread) |
-| `src/distributed/local_comm.cpp` | 384 | Return NCCLCommunicator (not implemented) |
-| `src/distributed/local_comm.cpp` | 390 | Return MPICommunicator (not implemented) |
+| `src/server/server.cpp` | n/a | Resolved: `Server::stop()` now stops the active HTTP server; covered by `ServerTest.StopsFromAnotherThread`. |
 | `src/hal/metal_backend.cpp` | 14 | Implement Metal MTLBuffer allocation |
 | `src/hal/metal_backend.cpp` | 21 | Implement Metal buffer release |
-| `src/hal/metal_backend.cpp` | 41 | Metal BlitCommandEncoder |
 | `src/hal/vulkan_backend.cpp` | 14 | Implement Vulkan memory allocation via VMA |
 | `src/hal/vulkan_backend.cpp` | 21 | Implement Vulkan memory free |
 | `src/hal/vulkan_backend.cpp` | 27 | Implement Vulkan buffer mapping/copying |
 | `src/hal/vulkan_backend.cpp` | 34 | Implement Vulkan buffer mapping/copying |
-| `src/hal/vulkan_backend.cpp` | 41 | Implement Vulkan buffer copy |
 
-**Summary**: Most TODOs relate to incomplete backend implementations (Metal, Vulkan) and distributed communication (NCCL, MPI).
+The literal comment count is not the same as the number of incomplete features. The current implementation gaps are:
+
+| Area | Incomplete functionality | Impact |
+|------|--------------------------|--------|
+| Vulkan backend | No Vulkan device/context or buffer allocation; H2D/D2H copies do nothing; D2D is a host `memcpy`; stream lifecycle is stubbed; availability is always false. It also lacks implementations of `IBackend::malloc_pinned`, `malloc_managed`, and `free_pinned`. | The backend cannot provide Vulkan memory operations; enabling it is expected to fail compilation because the class remains abstract. |
+| Metal backend | No Metal device/buffer allocation; H2D/D2H copies do nothing; D2D is a host `memcpy`; stream lifecycle is stubbed; availability is always false. It also lacks implementations of `IBackend::malloc_pinned`, `malloc_managed`, and `free_pinned`. | The backend cannot provide Metal memory operations; enabling it is expected to fail compilation because the class remains abstract. |
+| MPI | Collective and point-to-point implementation exists. The communicator factory previously did not use it; factory wiring is now implemented. | Uses `MPI_COMM_WORLD`; process rank and size come from the MPI runtime. |
+| NCCL | Collectives and communicator factories are implemented. `create_nccl(world_size, rank)` now creates the ID on rank 0 and distributes it through `MPI_COMM_WORLD`; the overload accepting an explicit ID remains available. | Automatic bootstrap requires both NCCL and MPI, an initialized MPI runtime, and all ranks to call the factory. Without MPI, callers must still distribute an ID themselves. |
+
+Treat the hardware-backend rows as implementation work, not as a count of literal TODO comments. Metal requires a macOS/Metal toolchain; Vulkan implementation and validation require the Vulkan SDK and a suitable runtime/device.
 
 ## 4. Hardcoded Values (Ports, Paths, Magic Numbers)
 
-**Status: NONE FOUND**
+**Status: Some operational limits are hardcoded**
 
-- No hardcoded port numbers found (e.g., 8080, 3000, 5000, 8888)
+- The inference server defaults to port 8080, but callers can configure the port through its constructor.
 - No explicit absolute path references (e.g., `/home/`, `/usr/local/`)
-- No obvious magic numbers in source code
+- `src/hub/plugin_manager.cpp` uses fixed sandbox defaults (512 MB memory, 50% CPU, 100 file descriptors) and repeats memory/CPU thresholds while monitoring.
+- The `4096` values in `tests/test_memory.cpp` and `tests/test_tensor.cpp` are test fixture sizes, not runtime configuration.
 
-The codebase appears to properly avoid hardcoding configuration values.
+These plugin limits may merit configuration, but their fixed defaults are not by themselves evidence of a bug.
 
 ## 5. Missing Dependencies (CMake Find Modules)
 
@@ -123,12 +129,14 @@ src/CMakeLists.txt (116 lines):
 |------|--------|
 | README.md | Complete |
 | Tests directory | Complete |
-| TODO comments | 11 found (mostly backend incomplete) |
-| Hardcoded values | None found |
+| Literal TODO comments | 6 remaining |
+| Incomplete hardware backends | Metal and Vulkan |
+| Distributed communication | MPI wired to factory; NCCL supports automatic ID bootstrap over MPI |
+| Hardcoded values | Sandbox limits in plugin manager; see section 4 |
 | CMake dependencies | Mostly complete |
 | CMakeLists.txt | Complete |
 
 **Recommendations**:
-1. Implement Metal and Vulkan backends to address TODO comments
-2. Implement NCCL/MPI communicators in distributed/local_comm.cpp
-3. Add actual Metal framework linking on macOS (currently just a comment)
+1. Implement Metal and Vulkan backends and validate them on their supported platforms
+2. Add MPI multi-process integration tests for distributed collectives
+3. Validate NCCL bootstrap and collectives on a multi-GPU system

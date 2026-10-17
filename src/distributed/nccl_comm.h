@@ -16,7 +16,8 @@ namespace distributed {
 /// backend for multi-GPU training on a single node.
 ///
 /// Initialization requires all participating GPUs to call ncclCommInitRank
-/// with the same ncclUniqueId (distributed via MPI or file system).
+/// with the same ncclUniqueId. Raw-buffer operations require device pointers
+/// on the selected CUDA device; tensor overloads handle synchronization.
 class NCCLCommunicator : public Communicator
 {
    public:
@@ -24,7 +25,9 @@ class NCCLCommunicator : public Communicator
     /// @param world_size  Total number of GPUs
     /// @param rank        This GPU's rank (0-based)
     /// @param id          Shared unique ID (obtained from ncclGetUniqueId on rank 0)
-    NCCLCommunicator(int world_size, int rank, ncclUniqueId id);
+    /// @param local_rank  CUDA device ordinal on this node; required when rank is
+    ///                    not the local device ordinal (e.g. multi-node runs)
+    NCCLCommunicator(int world_size, int rank, ncclUniqueId id, int local_rank = -1);
     ~NCCLCommunicator() override;
 
     // Non-copyable
@@ -32,6 +35,7 @@ class NCCLCommunicator : public Communicator
     NCCLCommunicator &operator=(const NCCLCommunicator &) = delete;
 
     int rank() const override { return rank_; }
+    int local_rank() const override { return local_rank_; }
     int world_size() const override { return world_size_; }
     CommBackend backend() const override { return CommBackend::NCCL; }
 
@@ -50,9 +54,10 @@ class NCCLCommunicator : public Communicator
 
    private:
     int rank_;
+    int local_rank_;
     int world_size_;
-    ncclComm_t comm_;
-    cudaStream_t stream_;
+    ncclComm_t comm_ = nullptr;
+    cudaStream_t stream_ = nullptr;
 
     static ncclRedOp_t to_nccl_op(ReduceOp op);
 };

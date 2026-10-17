@@ -1,33 +1,17 @@
 #include "checkpoint.h"
 
-#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <map>
+
+#include "../stability/grad_clip.h"
 
 namespace serius {
 namespace training {
 
 void clip_grad_norm(const std::vector<core::autograd::Node *> &params, float max_norm)
 {
-    float total_norm = 0.0f;
-    for (auto *p : params) {
-        const core::Tensor &g = p->grad;
-        for (size_t i = 0; i < g.size(); ++i) {
-            total_norm += g[i] * g[i];
-        }
-    }
-    total_norm = std::sqrt(total_norm);
-
-    if (total_norm > max_norm) {
-        float scale = max_norm / (total_norm + 1e-6f);
-        for (auto *p : params) {
-            core::Tensor &g = p->grad;
-            for (size_t i = 0; i < g.size(); ++i) {
-                g[i] *= scale;
-            }
-        }
-    }
+    stability::clip_grad_norm(params, max_norm);
 }
 
 void save_checkpoint(const std::string &path, const model::TransformerModel &model, const optim::AdamW &optimizer,

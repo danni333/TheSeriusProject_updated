@@ -205,6 +205,9 @@ class EMAWeights {
 | `test_clip_no_change` | Se `||grad|| < max_norm`, nessuna modifica |
 | `test_loss_scale_overflow` | Gradiente NaN → scale dimezzata, step skippato |
 | `test_loss_scale_growth` | N step senza overflow → scale raddoppiata |
-| `test_ema_convergence` | EMA converge verso i pesi correnti |
-| `test_ema_vs_original` | Modello EMA ha loss simile o migliore su validation |
-| `test_training_stability` | 100 step di training: nessun NaN, loss decresce |
+| `test_ema_convergence` | EMA converge verso i pesi correnti (`EMA.Convergence`) |
+| `test_ema_vs_original` | Loss di validazione del parametro EMA è finita e inferiore a quella iniziale (`StabilityIntegration.TrainingAndEmaValidationRemainFinite`) |
+| `test_training_stability` | 100 aggiornamenti con loss scaling, clipping e AdamW: loss, gradienti e parametri finiti; loss finale inferiore a quella iniziale (`StabilityIntegration.TrainingAndEmaValidationRemainFinite`) |
+| `test_trainer_amp` | Il Trainer esegue un breve ciclo AMP su Transformer CPU, mantiene finiti i parametri e li aggiorna (`TrainingTest.MixedPrecisionTrainingKeepsParametersFinite`) |
+
+> I test coprono il ciclo deterministico di 100 step e un breve ciclo AMP del `Trainer` con un Transformer CPU. Resta da eseguire uno stress test lungo e una verifica mixed precision su hardware dedicato.

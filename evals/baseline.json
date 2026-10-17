@@ -1,0 +1,6 @@
+{
+  "MMLU": 0.65,
+  "GSM8K": 0.45,
+  "HellaSwag": 0.70,
+  "TruthfulQA": 0.55
+}

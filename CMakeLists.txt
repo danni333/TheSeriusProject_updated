@@ -12,8 +12,12 @@ endif()
 
 # Warning rigorosi handled in src/CMakeLists.txt
 
-# Release con simboli di debug
-set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG -march=native")
+# Release con simboli di debug, usando flag compatibili con il compilatore.
+if(MSVC)
+    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "/O2 /Zi /DNDEBUG")
+else()
+    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG -march=native")
+endif()
 
 include(FetchContent)
 

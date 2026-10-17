@@ -12,6 +12,12 @@
 
 Addestrare il modello su coppie **"Istruzione - Risposta"** così che impari a seguire comandi anziché completare testo arbitrario.
 
+### Stato implementato
+
+- `SFTDataLoader::prepare` formatta instruction/input/output, crea input e target shiftati, e marca solo risposta ed EOS nella loss mask.
+- `autograd::ops::masked_cross_entropy` calcola loss e gradienti solo sulle righe selezionate dalla maschera.
+- Il trainer SFT su dataset/batch resta da implementare; i componenti presenti consentono di aggiungerlo senza includere prompt o padding nella loss.
+
 ### Formato dei dati
 
 ```json
@@ -217,7 +223,7 @@ void apply_repetition_penalty(Tensor& logits,
 
 | File | Contenuto |
 |---|---|
-| `src/finetune/sft_loader.h/.cpp` | SFT DataLoader con loss masking |
+| `src/finetune/sft_loader.h/.cpp` | Preparazione SFT di un esempio e loss mask |
 | `src/finetune/sft_trainer.h/.cpp` | Training loop SFT |
 | `src/inference/sampler.h/.cpp` | Top-K, Top-P, Temperature, Repetition Penalty |
 | `src/inference/beam_search.h/.cpp` | Beam Search con length penalty |
@@ -239,3 +245,5 @@ void apply_repetition_penalty(Tensor& logits,
 | `test_sft_mask` | Loss calcolata solo su token di risposta |
 | `test_sft_convergence` | 50 step SFT su 10 coppie: loss decresce |
 | `test_generate_eos` | Generazione si ferma a [EOS] |
+
+I test di shift e loss mask sono in `tests/test_sft.cpp`; la convergenza con un trainer SFT dedicato è ancora pianificata.

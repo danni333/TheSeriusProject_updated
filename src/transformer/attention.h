@@ -15,7 +15,8 @@ class PagedKVCache;
 class MultiHeadAttention
 {
    public:
-    MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat = 0);
+    MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat = 0,
+                       unsigned seed = 42);
     ~MultiHeadAttention();
 
     /// Returns: (seq_len, d_model)

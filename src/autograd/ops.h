@@ -14,6 +14,7 @@ Node *gelu(Node *input_node);
 Node *silu(Node *input_node);  // SiLU(x) = x * sigmoid(x), used by LLaMA MLP
 Node *softmax(Node *input_node, int dimension = -1);
 Node *cross_entropy(Node *input_logits, Node *input_targets);
+Node *masked_cross_entropy(Node *input_logits, Node *input_targets, const core::Tensor &loss_mask);
 
 // New Ops for Modular Attention
 Node *reshape(Node *input_node, const std::vector<size_t> &new_shape);
@@ -37,7 +38,7 @@ struct RoPEResult
 
 constexpr float DEFAULT_ROPE_BASE = 10000.0F;
 RoPEResult rope(Node *query_node, Node *key_node, size_t d_head, float rope_base = DEFAULT_ROPE_BASE,
-                size_t pos_offset = 0);
+                size_t pos_offset = 0, size_t training_ctx = 0, size_t target_ctx = 0);
 
 }  // namespace ops
 }  // namespace autograd

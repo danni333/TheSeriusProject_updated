@@ -7,6 +7,10 @@
 #include <string>
 #include <vector>
 
+#ifdef SERIUS_USE_NCCL
+#include <nccl.h>
+#endif
+
 #include "../tensor/tensor.h"
 
 namespace serius {
@@ -36,7 +40,7 @@ enum class CommBackend : uint8_t
 /// and synchronize before returning.
 ///
 /// Typical usage:
-///   auto comm = Communicator::create(CommBackend::NCCL, world_size, rank);
+///   auto comm = Communicator::create(CommBackend::MPI);
 ///   comm->all_reduce(grad_buffer, count, ReduceOp::Avg);
 class Communicator
 {
@@ -47,6 +51,9 @@ class Communicator
 
     /// Global rank of this process (0-based)
     virtual int rank() const = 0;
+
+    /// Rank of this process among processes on the same node (0-based)
+    virtual int local_rank() const = 0;
 
     /// Total number of processes in the communicator
     virtual int world_size() const = 0;
@@ -107,10 +114,21 @@ class Communicator
 
     /// Create a communicator with the specified backend.
     /// For Local backend: world_size and rank are user-specified (for simulation).
-    /// For NCCL/MPI: these are typically set by the runtime environment.
+    /// For MPI, rank and world size are determined by MPI_COMM_WORLD.
     static std::unique_ptr<Communicator> create(CommBackend backend,
                                                 int world_size = 1,
                                                 int rank = 0);
+
+#ifdef SERIUS_USE_NCCL
+    /// Create an NCCL communicator using a unique ID shared by all ranks.
+    static std::unique_ptr<Communicator> create_nccl(int world_size, int rank,
+                                                     ncclUniqueId id,
+                                                     int local_rank = -1);
+
+    /// Create an NCCL communicator by generating and distributing its unique ID.
+    /// Requires SERIUS_USE_MPI, initialized MPI, and all ranks to participate.
+    static std::unique_ptr<Communicator> create_nccl(int world_size, int rank);
+#endif
 };
 
 }  // namespace distributed
