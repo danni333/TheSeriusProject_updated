@@ -229,7 +229,10 @@ target_link_libraries(test_bench PRIVATE serius_core gtest_main)
 add_executable(test_stress test_stress.cpp)
 target_link_libraries(test_stress PRIVATE serius_core gtest_main)
 
- # Benchmarks
+add_executable(test_placeholder test_placeholder.cpp)
+target_link_libraries(test_placeholder PRIVATE serius_core gtest_main)
+
+# Benchmarks
 add_executable(bench_full bench_full.cpp)
 target_link_libraries(bench_full PRIVATE serius_core)
 
@@ -316,3 +319,4 @@ gtest_discover_tests(test_autoopt)
 gtest_discover_tests(test_knowledge)
 gtest_discover_tests(test_bench)
 gtest_discover_tests(test_stress)
+gtest_discover_tests(test_placeholder)
