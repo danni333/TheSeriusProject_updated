@@ -1,8 +1,9 @@
 # Fase 64 — Riservata per Aggiunte Future
 
-> Questo file è un placeholder per funzionalità future.
-> Verrà definito quando emergeranno nuove esigenze durante lo sviluppo.
+> Area riservata per funzionalità emergenti da valutare in fase di pianificazione.
 
 ---
 
-**Stato:** 🔒 Riservato — non ancora pianificato.
+**Stato:** 📋 Pianificazione aperta — da definire con requisiti futuri.
+**Priorità:** Bassa  
+**Obiettivo:** Raccolta di proposte per nuove direzioni di sviluppo una volta stabilizzate le fasi precedenti.

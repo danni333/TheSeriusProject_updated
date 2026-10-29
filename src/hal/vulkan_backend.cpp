@@ -2,6 +2,7 @@
 
 #ifdef SERIUS_USE_VULKAN
 
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 
@@ -15,10 +16,27 @@ void *VulkanBackend::malloc(size_t size)
     return nullptr;
 }
 
+void *VulkanBackend::malloc_pinned(size_t size)
+{
+    if (size == 0) return nullptr;
+    return nullptr;
+}
+
+void *VulkanBackend::malloc_managed(size_t size)
+{
+    if (size == 0) return nullptr;
+    return nullptr;
+}
+
 void VulkanBackend::free(void *ptr)
 {
     if (!ptr) return;
     // TODO: Implement Vulkan memory free
+}
+
+void VulkanBackend::free_pinned(void *ptr)
+{
+    if (!ptr) return;
 }
 
 void VulkanBackend::memcpy_h2d(void *dst, const void *src, size_t size)
@@ -38,6 +56,7 @@ void VulkanBackend::memcpy_d2h(void *dst, const void *src, size_t size)
 void VulkanBackend::memcpy_d2d(void *dst, const void *src, size_t size)
 {
     if (dst != nullptr && src != nullptr && size > 0) {
+        // TODO: Implement Vulkan device-to-device copy via compute/blit
         std::memcpy(dst, src, size);
     }
 }
