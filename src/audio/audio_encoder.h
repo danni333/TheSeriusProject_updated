@@ -30,7 +30,8 @@ struct AudioEncoderConfig
 class AudioEncoder
 {
    public:
-    explicit AudioEncoder(const AudioEncoderConfig &config = {});
+    explicit AudioEncoder(const AudioEncoderConfig &config);
+    AudioEncoder();
     ~AudioEncoder();
 
     AudioEncoder(const AudioEncoder &) = delete;

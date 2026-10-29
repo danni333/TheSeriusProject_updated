@@ -72,6 +72,11 @@ Tensor create_mel_filterbank(const MelConfig &config)
     return filters;
 }
 
+Tensor create_mel_filterbank()
+{
+    return create_mel_filterbank(MelConfig{});
+}
+
 Tensor compute_mel(const std::vector<float> &audio, const MelConfig &config)
 {
     const size_t n_fft = static_cast<size_t>(config.n_fft);
@@ -121,6 +126,11 @@ Tensor compute_mel(const std::vector<float> &audio, const MelConfig &config)
         }
     }
     return mel;
+}
+
+Tensor compute_mel(const std::vector<float> &audio)
+{
+    return compute_mel(audio, MelConfig{});
 }
 
 }  // namespace audio

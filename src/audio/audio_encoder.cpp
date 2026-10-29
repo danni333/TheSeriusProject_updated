@@ -63,6 +63,8 @@ AudioEncoder::AudioEncoder(const AudioEncoderConfig &config)
     }
 }
 
+AudioEncoder::AudioEncoder() : AudioEncoder(AudioEncoderConfig{}) {}
+
 AudioEncoder::~AudioEncoder()
 {
     delete conv_weight_;

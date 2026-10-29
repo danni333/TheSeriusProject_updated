@@ -14,7 +14,8 @@ class KeywordVerifier : public Verifier
 {
    public:
     KeywordVerifier(std::string expected_keyword,
-                    std::vector<std::string> failure_keywords = {});
+                    std::vector<std::string> failure_keywords);
+    KeywordVerifier(std::string expected_keyword);
 
     float score(const std::string &reasoning) override;
 

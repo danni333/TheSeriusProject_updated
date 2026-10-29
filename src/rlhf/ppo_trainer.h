@@ -27,7 +27,8 @@ class PPOTrainer
         float advantage_eps = 1e-8f;
     };
 
-    PPOTrainer(const model::LLamaConfig &model_config, const Config &ppo_config = {});
+    PPOTrainer(const model::LLamaConfig &model_config, const Config &ppo_config);
+    PPOTrainer(const model::LLamaConfig &model_config);
     ~PPOTrainer();
 
     /// Single training step on a batch of prompts

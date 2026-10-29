@@ -29,7 +29,8 @@ struct VisionConfig
 class VisionEncoder
 {
    public:
-    explicit VisionEncoder(const VisionConfig &config = {});
+    explicit VisionEncoder(const VisionConfig &config);
+    VisionEncoder();
     ~VisionEncoder();
 
     VisionEncoder(const VisionEncoder &) = delete;

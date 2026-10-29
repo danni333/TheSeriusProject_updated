@@ -72,6 +72,8 @@ struct RewardModel::Impl
 
 RewardModel::RewardModel(const model::LLamaConfig &config) : impl_(new Impl(config)) {}
 
+RewardModel::RewardModel() : RewardModel(model::LLamaConfig{}) {}
+
 RewardModel::~RewardModel() = default;
 
 float RewardModel::score(const Tensor &tokens) const

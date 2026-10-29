@@ -18,7 +18,8 @@ using core::autograd::Node;
 class RewardModel
 {
    public:
-    explicit RewardModel(const model::LLamaConfig &config = {});
+    explicit RewardModel(const model::LLamaConfig &config);
+    RewardModel();
     ~RewardModel();
 
     RewardModel(const RewardModel &) = delete;

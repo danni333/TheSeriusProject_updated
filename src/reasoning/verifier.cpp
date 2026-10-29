@@ -12,6 +12,11 @@ KeywordVerifier::KeywordVerifier(std::string expected_keyword,
 {
 }
 
+KeywordVerifier::KeywordVerifier(std::string expected_keyword)
+    : KeywordVerifier(std::move(expected_keyword), std::vector<std::string>{})
+{
+}
+
 float KeywordVerifier::score(const std::string &reasoning)
 {
     float score = 0.0f;

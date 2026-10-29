@@ -58,6 +58,8 @@ VisionEncoder::VisionEncoder(const VisionConfig &config) : config_(config), pos_
     }
 }
 
+VisionEncoder::VisionEncoder() : VisionEncoder(VisionConfig{}) {}
+
 VisionEncoder::~VisionEncoder()
 {
     delete pos_embed_;

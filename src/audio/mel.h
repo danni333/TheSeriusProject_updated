@@ -22,10 +22,12 @@ struct MelConfig
 size_t n_stft_frames(size_t n_samples, int n_fft, int hop_length);
 
 /// Mel filterbank of shape (n_mels, n_fft/2 + 1).
-Tensor create_mel_filterbank(const MelConfig &config = {});
+Tensor create_mel_filterbank(const MelConfig &config);
+Tensor create_mel_filterbank();
 
 /// Mel spectrogram (n_mels, n_frames) from mono PCM in [-1, 1].
-Tensor compute_mel(const std::vector<float> &audio, const MelConfig &config = {});
+Tensor compute_mel(const std::vector<float> &audio, const MelConfig &config);
+Tensor compute_mel(const std::vector<float> &audio);
 
 }  // namespace audio
 }  // namespace serius

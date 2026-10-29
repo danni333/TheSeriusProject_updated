@@ -25,6 +25,11 @@ PPOTrainer::PPOTrainer(const model::LLamaConfig &model_config, const Config &ppo
 {
 }
 
+PPOTrainer::PPOTrainer(const model::LLamaConfig &model_config)
+    : PPOTrainer(model_config, Config{})
+{
+}
+
 PPOTrainer::~PPOTrainer() = default;
 
 std::vector<float> PPOTrainer::compute_logprobs(const Tensor &tokens) const
