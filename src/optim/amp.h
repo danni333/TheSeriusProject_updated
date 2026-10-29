@@ -33,7 +33,7 @@ class AutomaticMixedPrecision
         int growth_interval = 2000;
     };
 
-    explicit AutomaticMixedPrecision(const Config &config = {})
+    explicit AutomaticMixedPrecision(const Config &config)
         : current_scale_(config.init_scale), growth_interval_(config.growth_interval), steps_since_last_scale_(0)
     {
         if (!std::isfinite(current_scale_) || current_scale_ < 1.0F) {
@@ -42,6 +42,11 @@ class AutomaticMixedPrecision
         if (growth_interval_ <= 0) {
             throw std::invalid_argument("AutomaticMixedPrecision: growth_interval must be positive.");
         }
+    }
+
+    AutomaticMixedPrecision()
+        : AutomaticMixedPrecision(Config{})
+    {
     }
 
     /**

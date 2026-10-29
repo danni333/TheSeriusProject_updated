@@ -35,6 +35,11 @@ GraphCompiler::GraphCompiler(const Config& config)
 {
 }
 
+GraphCompiler::GraphCompiler()
+    : GraphCompiler(Config{})
+{
+}
+
 GraphCompiler::~GraphCompiler()
 {
 }

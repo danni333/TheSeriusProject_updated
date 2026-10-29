@@ -54,7 +54,8 @@ public:
         bool preallocate_buffers = true;
     };
 
-    explicit GraphCompiler(const Config& config = Config{});
+    explicit GraphCompiler(const Config& config);
+    GraphCompiler();
     ~GraphCompiler();
 
     /// Trace the graph by running a dummy forward pass.
