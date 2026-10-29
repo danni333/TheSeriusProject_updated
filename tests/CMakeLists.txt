@@ -191,9 +191,45 @@ add_executable(test_reasoning test_reasoning.cpp)
 target_link_libraries(test_reasoning PRIVATE serius_core gtest_main)
 
 add_executable(test_federated test_federated.cpp)
-target_link_libraries(test_federated PRIVATE serius_core gtest_main)
+ target_link_libraries(test_federated PRIVATE serius_core gtest_main)
+ 
+ add_executable(test_automl test_automl.cpp)
+ target_link_libraries(test_automl PRIVATE serius_core gtest_main)
+ 
+ add_executable(test_multi_agent test_multi_agent.cpp)
+ target_link_libraries(test_multi_agent PRIVATE serius_core gtest_main)
 
-# Benchmarks
+add_executable(test_dnc test_dnc.cpp)
+target_link_libraries(test_dnc PRIVATE serius_core gtest_main)
+
+add_executable(test_compression test_compression.cpp)
+target_link_libraries(test_compression PRIVATE serius_core gtest_main)
+
+add_executable(test_snn test_snn.cpp)
+target_link_libraries(test_snn PRIVATE serius_core gtest_main)
+
+add_executable(test_liquid test_liquid.cpp)
+target_link_libraries(test_liquid PRIVATE serius_core gtest_main)
+
+add_executable(test_world test_world.cpp)
+target_link_libraries(test_world PRIVATE serius_core gtest_main)
+
+add_executable(test_quantum test_quantum.cpp)
+target_link_libraries(test_quantum PRIVATE serius_core gtest_main)
+
+add_executable(test_autoopt test_autoopt.cpp)
+target_link_libraries(test_autoopt PRIVATE serius_core gtest_main)
+
+add_executable(test_knowledge test_knowledge.cpp)
+target_link_libraries(test_knowledge PRIVATE serius_core gtest_main)
+
+add_executable(test_bench test_bench.cpp)
+target_link_libraries(test_bench PRIVATE serius_core gtest_main)
+
+add_executable(test_stress test_stress.cpp)
+target_link_libraries(test_stress PRIVATE serius_core gtest_main)
+
+ # Benchmarks
 add_executable(bench_full bench_full.cpp)
 target_link_libraries(bench_full PRIVATE serius_core)
 
@@ -267,4 +303,16 @@ gtest_discover_tests(test_mcp_client)
 gtest_discover_tests(test_react)
 gtest_discover_tests(test_guard)
 gtest_discover_tests(test_reasoning)
-gtest_discover_tests(test_federated)
+ gtest_discover_tests(test_federated)
+ gtest_discover_tests(test_automl)
+ gtest_discover_tests(test_multi_agent)
+gtest_discover_tests(test_dnc)
+gtest_discover_tests(test_compression)
+gtest_discover_tests(test_snn)
+gtest_discover_tests(test_liquid)
+gtest_discover_tests(test_world)
+gtest_discover_tests(test_quantum)
+gtest_discover_tests(test_autoopt)
+gtest_discover_tests(test_knowledge)
+gtest_discover_tests(test_bench)
+gtest_discover_tests(test_stress)

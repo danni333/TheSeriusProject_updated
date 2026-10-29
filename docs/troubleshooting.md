@@ -1,71 +1,158 @@
-# Troubleshooting — TheSeriusProject
+# Troubleshooting
 
-Problemi comuni e soluzioni.
+Common issues and solutions.
 
----
+## Build Issues
 
-## Build
+### CMake version too old
 
-### "Could NOT find GTest"
+**Error:** `CMake 3.25 or higher is required`
 
-Il progetto usa **FetchContent** per Googletest, non `find_package(GTest)`. Assicurati che in `tests/CMakeLists.txt` non ci sia `find_package(GTest REQUIRED)`. Se compare l’errore, rimuovi quella riga e riconfigura.
+**Solution:**
+```bash
+# Ubuntu/Debian
+sudo apt-get install cmake
 
-### "Cannot find source file: test_ops.cpp"
+# macOS
+brew install cmake
 
-Alcuni target di test potrebbero riferirsi a file rimossi o rinominati. Controlla l’elenco in `tests/CMakeLists.txt` e rimuovi o aggiorna i riferimenti ai file inesistenti.
+# Windows
+# Download from https://cmake.org/download/
+```
 
-### Errori CUDA / nvcc
+### CUDA not found
 
-- Verifica che **CUDA Toolkit 12.x** sia installato e che `nvcc` sia in PATH.
-- Su Windows, usa **Developer Command Prompt for VS** con la versione corretta di MSVC.
-- Se non usi la GPU, configura senza CUDA: `cmake .. -DSERIUS_USE_CUDA=OFF`.
+**Error:** `CUDA Toolkit not found`
 
-### Warning / errori di tipo in operazioni tra size_t e int
+**Solution:**
+```bash
+# Install CUDA from https://developer.nvidia.com/cuda-downloads
+# Set environment variable
+export CUDA_HOME=/usr/local/cuda-12.0
 
-Nei test o nel codice, conversioni tra `size_t` e `int` possono generare warning. Usa `static_cast` dove il compilatore segnala il problema.
+# Or specify path in CMake
+cmake .. -DCUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda-12.0
+```
 
----
+### Compilation errors with AVX
 
-## Runtime
+**Error:** AVX/AVX512 compilation fails
 
-### "Tensor::data() used on non-float32 tensor"
+**Solution:**
+```bash
+# Disable AVX-specific flags
+cmake .. -DSERIUS_DISABLE_AVX=ON
+```
 
-Alcuni layer o dati potrebbero essere in FP16/BF16. Il sampler e parte del codice si aspettano Float32. Verifica il `dtype` dei tensori in ingresso (es. logits) o converti a Float32 prima dell’uso.
+## Runtime Issues
 
-### Server non si avvia: "Failed to listen on port 8080"
+### Model not found
 
-- La porta potrebbe essere già in uso. Usa un’altra porta: `serius serve --port 8081`.
-- Su Linux/macOS, le porte &lt; 1024 richiedono spesso permessi di amministratore; usa una porta &gt; 1024.
+**Error:** `Failed to load model: file not found`
 
-### Chat: output strano o token sconosciuti
+**Solution:**
+- Check model path is correct
+- Ensure model is in the expected format (GGUF, Safetensors)
+- Use `serius import` to download models
 
-- Il **tokenizer** predefinito ha un vocabolario molto piccolo (PAD, BOS, EOS, UNK + 256 byte). Per risultati sensati carica un tokenizer addestrato con `tokenizer.load(path)` (quando supportato dalla CLI).
-- Il **modello** è inizializzato casualmente se non carichi pesi da checkpoint/GGUF. La chat in locale è una demo; per risposte coerenti servono pesi addestrati.
+### Out of memory
 
-### Loss NaN durante il training
+**Error:** `CUDA out of memory` or `Out of memory`
 
-- Riduci il learning rate.
-- Verifica **gradient clipping** (es. `grad_clip = 1.0` in `TrainerConfig`).
-- Usa **AMP** con loss scaling (es. `use_amp = true` in `TrainerConfig`).
-- Controlla i tensori con `debug::find_first_nan()` o il **TensorLogger** per individuare il primo tensore con NaN/Inf.
+**Solution:**
+- Use a smaller model or quantization (INT4 instead of FP16)
+- Reduce `max_tokens` parameter
+- Use a model with smaller context window
+- On CPU, ensure sufficient RAM (model size should be < available RAM)
 
----
+### Slow inference
 
-## API / Server
+**Issue:** Generation is very slow
 
-### 404 su /v1/chat/completions
+**Solution:**
+- Enable GPU support (CUDA/Metal)
+- Use quantized model (INT4, FP8)
+- Increase `--threads` for CPU inference
+- Enable Flash Attention (CUDA)
+- Use smaller model
 
-Assicurati di usare **POST** e non GET. Inoltre l’URL deve essere esattamente `/v1/chat/completions` (con la ‘s’ finale).
+### Segmentation fault
 
-### Risposta "Serius API is running. Load a model..."
+**Error:** Program crashes with segfault
 
-È il messaggio **stub** quando il server non ha un modello caricato in memoria. L’integrazione con un modello reale e il sampler lato server è in sviluppo; la CLI `serius chat` usa già il modello in processo.
+**Solution:**
+- Ensure model format is compatible
+- Check tensor dimensions match model config
+- Try with a different model
+- Enable debug build: `cmake .. -DCMAKE_BUILD_TYPE=Debug`
 
----
+## API Issues
 
-## Dove trovare altro aiuto
+### Connection refused
 
-- **Architettura:** `docs/architecture.md`
-- **API REST:** `docs/api-reference.md`
-- **Quick start:** `docs/getting-started.md`
-- **Roadmap e lacune:** file `todo/faseN+.md`
+**Error:** `curl: (7) Failed to connect to localhost port 8080`
+
+**Solution:**
+- Ensure server is running: `serius serve --model ...`
+- Check port is not in use: `netstat -an | grep 8080`
+- Try different port: `serius serve --port 8081`
+
+### 404 Not Found
+
+**Error:** HTTP 404 when accessing endpoint
+
+**Solution:**
+- Check endpoint URL is correct (`/v1/chat/completions`, not `/chat/completions`)
+- Ensure server is running with a model loaded
+
+### Streaming doesn't work
+
+**Issue:** No response when `stream: true`
+
+**Solution:**
+- Ensure client supports SSE (Server-Sent Events)
+- Check network doesn't buffer chunks
+- Try non-streaming mode first to verify model works
+
+## GPU Issues
+
+### CUDA not detected
+
+**Error:** GPU not found in diagnostics
+
+**Solution:**
+```bash
+# Check NVIDIA driver
+nvidia-smi
+
+# Check CUDA installation
+nvcc --version
+
+# Rebuild with CUDA enabled
+cmake .. -DSERIUS_USE_CUDA=ON
+cmake --build .
+```
+
+### Metal not working on macOS
+
+**Issue:** Metal acceleration not working on Apple Silicon
+
+**Solution:**
+```bash
+# Rebuild with Metal enabled
+cmake .. -DSERIUS_USE_METAL=ON
+cmake --build .
+```
+
+## Getting Help
+
+If you encounter an issue not listed here:
+
+1. Check the [GitHub Issues](https://github.com/your-org/serius/issues)
+2. Search existing issues for similar problems
+3. Create a new issue with:
+   - Serius version (`serius --version`)
+   - OS and compiler version
+   - Full error message
+   - Steps to reproduce
+   - System diagnostics (`serius doctor`)

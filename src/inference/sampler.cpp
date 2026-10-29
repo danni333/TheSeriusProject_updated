@@ -18,7 +18,7 @@ void Sampler::set_seed(unsigned seed)
     rng_.seed(seed);
 }
 
-int Sampler::sample(const core::Tensor &logits, const std::vector<int> &past_tokens)
+int Sampler::sample(const core::Tensor &logits, const std::vector<int> &past_tokens) const
 {
     if (logits.ndim() != 1) {
         throw std::invalid_argument("Sampler::sample: logits must be 1D (vocab_size,)");
@@ -195,7 +195,7 @@ core::Tensor Sampler::softmax(const core::Tensor &logits)
     return result;
 }
 
-int Sampler::categorical_sample(const core::Tensor &probs)
+int Sampler::categorical_sample(const core::Tensor &probs) const
 {
     const float *data = probs.data();
     size_t n = probs.size();

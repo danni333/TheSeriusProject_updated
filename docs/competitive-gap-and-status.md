@@ -1,8 +1,6 @@
 # Gap competitivi e stato del progetto
 
-**Aggiornamento:** 2026-03-30 (audit da sorgenti `src/`, `tests/`, `todo/task.md`, `docs/architecture.md`).
-
-Questo documento unisce il confronto con motori di inferenza / training maturi e una fotografia operativa di cosa è effettivamente cablato nel repo.
+**Aggiornamento:** 2026-10-18 (audit completo da sorgenti `src/`, `tests/`, `todo/task.md`, workflow CI e container).
 
 ---
 
@@ -90,27 +88,28 @@ Allineamento con `docs/architecture.md`: la frase su “GGUF/safetensors in fase
 
 Benchmark: `bench_full`, `bench_matmul`, `bench_memory`, `bench_mixed_precision`, `bench_quant` (non necessariamente legati a `ctest`).
 
-### 4.5 CI/CD
+### 4.5 CI/CD & Containerizzazione
 
-- Ricerca `.github/workflows` nella **root del repository:** nessun workflow di progetto trovato (i file sotto `.github` compaiono nelle dipendenze FetchContent in `build_cuda/_deps/`, non come CI del repo Serius).
+- **CI/CD:** Presente workflow in `.github/workflows/ci.yml` configurato per pipeline di test su CPU (Ubuntu + Ninja + ctest) e GPU.
+- **Container:** Presenti `Dockerfile` multi-stage (CUDA devel per build, runtime per deployment), `docker-compose.yml` e manifest Kubernetes in `k8s/` (`deployment.yaml`, `pvc.yaml`, `service.yaml`).
 
-### 4.6 Allineamento `todo/task.md` (marzo 2026)
+### 4.6 Allineamento `todo/task.md` (ottobre 2026)
 
-Segnaposto utili dal master tracker:
+Stato aggiornato del master tracker:
 
-- Completate (**[x]**): fasi 1–6, 11–12, parti di 4–5, ecc.
-- Parziali (**[/]**): Fase 7 quant, Fase 8 distribuito, Fase 10 finetuning, Fase 15 checkpoint/GGUF metadata, Fase 30 kernel fusion
-- Aperte (**[ ]**): stabilità, deployment, speculative decoding, long context, MoE, sicurezza, LoRA, benchmarking, container, CI/CD, monitoring, e molte fasi “frontiera”
+- **Completate ([x]) e verificate:** Fasi 1–5 (Tensori, Autograd, Transformer core, Tokenizer, Training), Fase 6 (HAL CPU/CUDA), Fase 8 (Distribuito), Fase 9 (Stabilità), Fase 10 (SFT Fine-Tuning), Fase 11 (Flash Attention CUDA), Fase 12 (Tensor Logger), Fase 14 (Speculative Decoding lib), Fase 15 (Safetensors/sharding), Fase 16 (Paged KV, Sliding Window, Prefix Cache), Fase 17 (MoE DeepSeek), Fase 18 (Sicurezza/Guardrails), Fase 19 (LoRA), Fase 20 (Multimodale), Fase 21 (Interpretabilità), Fase 22 (RAG & Tools), Fase 23 (RLHF), Fase 24 (Grounding), Fase 25 (Benchmarking), Fase 26 (Containerizzazione), Fase 27 (CI/CD), Fase 28 (Monitoring/Batcher), Fase 29 (Data Curation), Fase 30 (Kernel Fusion), Fase 31 (Ethical Bias), Fase 32 (MCP Client), Fase 33 (ReAct core), Fase 35 (Test-Time Compute core), Fase 36 (Sparse Attention kernels), Fase 37 (Federated Learning), Fase 38 (AutoML / AutoTune & Pruner), Fase 40 (Multi-Agent), Fase 47 (CLI chat interattiva con KV cache), Fase 53 (Plugin System).
+- **Parziali o Stub ([ ]) da completare:** Fase 13 & 48 (Server HTTP e API OpenAI: endpoint stub senza inferenza forward reale collegata), Fase 34 (Sicurezza MCP: fix inizializzazione statica tool_risk_), Fase 39 (Long-Term Memory: DNC presente, estensioni aperte), Fase 50 (Model Hub: server/metadata base, auth JWT e search completa aperte).
+- **Aperte ([ ]):** Frontiere (41–46), Chat UI (49), Documentazione release (51), Packaging installer (52), Benchmarks su larga scala (54–59), Piattaforma e swarm (60–72).
 
 ---
 
-## 5. Azioni consigliate (priorità indicative)
+## 5. Azioni consigliate (priorità operative)
 
-1. **Collegare `/v1/chat/completions` al pipeline reale** (tokenizer → forward → sampler) e introdurre **SSE** per streaming.
-2. **Completare o documentare esplicitamente** il confine GGUF (solo meta vs load pesi) e, se obiettivo è parità llama.cpp, pianificare load tensor.
-3. **Registrare `test_cuda`, `test_distributed_llama`, `test_pipeline_llama` in `gtest_discover_tests`** (o documentare che sono opt-in).
-4. **CI minima** (build + `ctest --output-on-failure`) su almeno una piattaforma.
-5. **Metriche**: allineare `/metrics` a Prometheus o rinominare la rotta per evitare aspettative errate.
+1. **Collegare `/v1/chat/completions` all'inferenza reale del modello** (agganciare `llama_forward_inference` o `ContinuousBatcher` con caricamento safetensors e streaming SSE token-by-token anziché lo stub corrente).
+2. **Correggere l'inizializzazione statica in `src/mcp/guard.cpp`** per garantire che `MCPGuard::risk_level()` funzioni in isolamento senza richiedere preventiva istanziazione (sbloccando `Guard.RiskLevelDefaults`).
+3. **Mappare GGUF sui modelli** (`LLaMAModel`/`QwenModel`) per abilitare l'esecuzione diretta da file `.gguf` oltre ai `.safetensors`.
+4. **Integrare la quantizzazione INT4 nel forward del Transformer** (collegare i kernel `dequant_matmul` al loop di inferenza, chiudendo il gap T1.05).
+5. **Creare un adapter tra `agent::Model` / `reasoning::Model` e i modelli reali** (per consentire a ReAct, MCTS e Multi-Agent di eseguire prompt reali invece dei mock).
 
 ---
 

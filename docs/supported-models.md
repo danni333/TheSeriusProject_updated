@@ -1,51 +1,61 @@
-# Supported Models (Design)
+# Supported Models
 
-Questa pagina descrive i tipi di modelli target per **TheSeriusProject**.
+List of compatible model architectures and quantization formats.
 
-> Nota: l'elenco è una **dichiarazione di intenti** più che un inventario definitivo dei modelli già supportati.
+## Supported Architectures
 
----
+| Architecture | Status | Notes |
+|--------------|--------|-------|
+| LLaMA 2/3 | ✅ Fully Supported | Including GQA, RoPE, SwiGLU |
+| Qwen 2/2.5 | ✅ Fully Supported | Including attention variants |
+| Generic Transformer | ✅ Supported | Configurable via JSON |
+| MoE (Mixture of Experts) | ✅ Supported | DeepSeekMoE, Mixtral |
 
-## 1. Classi di modelli target
+## Quantization Formats
 
-- **LLM decoder‑only** (GPT‑style, Qwen‑style, LLaMA‑style).
-- **Modelli istruiti** (Instruct/Chat) per uso conversazionale.
-- **Varianti quantizzate** (es. GGUF quantizzato a 4/5/8 bit) per esecuzione su hardware consumer.
+| Format | VRAM Savings | Quality | Status |
+|--------|-------------|---------|--------|
+| FP16 | 0% | Baseline | ✅ Supported |
+| FP8 | 50% | Excellent | ✅ Supported |
+| INT8 | 50% | Good | ✅ Supported |
+| INT4 (AWQ/GPTQ) | 75% | Acceptable | ✅ Supported |
 
----
+## Model Size Guide
 
-## 2. Formati previsi
+| Parameters | FP16 VRAM | INT4 VRAM | Use Case |
+|------------|-----------|-----------|----------|
+| 0.5B | 1 GB | 0.5 GB | Testing, embedded |
+| 1B | 2 GB | 1 GB | Lightweight apps |
+| 3B | 6 GB | 2 GB | General purpose |
+| 7B | 14 GB | 4 GB | Desktop, small server |
+| 14B | 28 GB | 8 GB | Server, GPU 24GB+ |
+| 70B | 140 GB | 40 GB | Enterprise, multi-GPU |
 
-- **Formati nativi del progetto** (checkpoint interno).
-- **Formati interoperabili**:
-  - GGUF / GPTQ (via strumenti di conversione).
-  - Checkpoint Hugging Face (PyTorch/`safetensors`) → conversione a formato interno.
+## Recommended Models
 
----
+### Small Models (0.5B - 3B)
 
-## 3. Requisiti hardware indicativi
+- **Qwen2.5-0.5B-Instruct**: Fast, good quality
+- **Qwen2.5-3B-Instruct**: Balanced speed/quality
+- **Phi-3-mini**: 3.8B, excellent reasoning
 
-Esempi di target (puramente indicativi):
+### Medium Models (7B - 14B)
 
-- Modelli ~3B parametri, quantizzati a 4 bit:
-  - 8–12 GB di RAM / VRAM raccomandati.
-- Modelli ~7B parametri, quantizzati a 4 bit:
-  - 12–16 GB di RAM / VRAM raccomandati.
+- **Qwen2.5-7B-Instruct**: Strong general purpose
+- **Llama-3-8B-Instruct**: Industry standard
+- **Mistral-7B-Instruct**: Good performance
 
-L'obiettivo è permettere:
+### Large Models (30B+)
 
-- Esecuzione su CPU con buone ottimizzazioni SIMD.
-- Sfruttamento di GPU consumer con 8–12 GB di VRAM.
+- **Qwen2.5-32B-Instruct**: High quality
+- **Llama-3-70B-Instruct**: Best quality (requires multi-GPU)
 
----
+## Conversion
 
-## 4. Roadmap
+Convert models from HuggingFace to Serius format:
 
-Future estensioni previste:
+```bash
+serius import --source hf://Qwen/Qwen2.5-0.5B-Instruct --output ./models/
+```
 
-- Supporto per modelli con **context window molto lunga**.
-- Supporto per modelli **MoE** (Mixture of Experts).
-- Supporto per modelli **multimodali** (testo + immagine/audio).
-
-I dettagli concreti verranno aggiunti quando i primi percorsi di import/export modello saranno implementati.
-
+See [CLI Reference](cli-reference.md) for details.

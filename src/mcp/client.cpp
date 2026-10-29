@@ -27,7 +27,11 @@ std::vector<MCPTool> MCPClient::list_tools()
         MCPTool tool;
         tool.name = t.value("name", std::string{});
         tool.description = t.value("description", std::string{});
-        tool.input_schema = t.value("input_schema", json::object());
+        if (t.contains("inputSchema")) {
+            tool.input_schema = t["inputSchema"];
+        } else {
+            tool.input_schema = t.value("input_schema", json::object());
+        }
         tools.push_back(std::move(tool));
     }
     return tools;

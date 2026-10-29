@@ -19,6 +19,15 @@ else()
     set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "-O2 -g -DNDEBUG -march=native")
 endif()
 
+# Sanitizers for debug builds
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_CONFIGURATION_TYPES MATCHES Debug)
+  add_compile_definitions(SERIUS_DEBUG)
+  if(NOT MSVC)
+    add_compile_options(-fsanitize=address -fsanitize=undefined -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=address -fsanitize=undefined)
+  endif()
+endif()
+
 include(FetchContent)
 
 FetchContent_Declare(json

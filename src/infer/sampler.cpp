@@ -12,7 +12,7 @@ Sampler::Sampler(float temperature, int top_k, float top_p, uint64_t seed)
 {
 }
 
-int Sampler::sample(const core::Tensor &logits)
+int Sampler::sample(const core::Tensor &logits) const
 {
     size_t vocab_size = logits.shape().back();
     const float *ptr = logits.data();
@@ -68,7 +68,7 @@ int Sampler::sample(const core::Tensor &logits)
     return static_cast<int>(indexed[chosen].second);
 }
 
-int Sampler::sample_greedy(const core::Tensor &logits)
+int Sampler::sample_greedy(const core::Tensor &logits) const
 {
     size_t vocab_size = logits.shape().back();
     const float *ptr = logits.data();

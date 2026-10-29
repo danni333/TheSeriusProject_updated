@@ -4,7 +4,11 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 build/
+build-*/
 out/
+.clangd/
+.clangd
+
 
 # IDEs
 .vscode/
@@ -47,8 +51,11 @@ data/
 !LICENSE
 !**/CMakeLists.txt
 
-# Python scripts (one-off fixes)
+# Python
 fix_elementwise.py
+__pycache__/
+*.pyc
+
 
 # Documentation (generated/internal)
 docs/

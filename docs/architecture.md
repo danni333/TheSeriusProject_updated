@@ -1,65 +1,130 @@
-# Architettura — TheSeriusProject
+# Architecture
 
-Panoramica dell’architettura interna per sviluppatori.
+Internal architecture documentation for developers.
 
----
+## Overview
 
-## 1. Struttura sorgenti
+Serius is a C++20 LLM engine with:
+- Core tensor operations and BLAS
+- Automatic differentiation (autograd)
+- Transformer model implementations
+- Distributed training support
+- Quantization and optimization
+- HTTP API server with OpenAI compatibility
+
+## Directory Structure
 
 ```
 src/
-├── tensor/          Tensori, shape, strides, view/copy
-├── blas/            Matmul, matvec, element-wise, dispatch CPU/CUDA
-├── memory/          Memory pool, pool allocator
-├── autograd/        Grafo computazionale, Node, engine, ops (matmul, relu, softmax, …)
-├── transformer/     Attention, FFN, LayerNorm, RoPE, block, model, KV cache
-├── attention/       Flash attention (CPU + CUDA)
-├── optim/           AdamW, WSD scheduler, AMP
-├── train/           Trainer, checkpoint, freeze_parameters
-├── infer/           Sampler (temperature, top_k, top_p)
-├── io/              Config loader (JSON → ModelConfig)
-├── tokenizer/       BPE, vocab
-├── data/            DataLoader, Batch
-├── quant/           INT4, conversioni FP16/BF16, dequant matmul
-├── hal/             Backend CPU, CUDA, Metal/Vulkan (astrazione device)
-├── debug/           TensorLogger (statistiche tensori)
-├── server/          Server HTTP (health, /v1/chat/completions, /v1/models)
-└── app/             CLI (serius serve, serius chat)
+├── tensor/          # Core tensor operations, memory management
+├── blas/            # BLAS implementations (scalar, AVX2, AVX512, CUDA)
+├── autograd/        # Computational graph, backpropagation
+├── transformer/     # Transformer models (LLaMA, Qwen, generic)
+├── attention/       # Attention mechanisms (Flash Attention, Sparse)
+├── tokenizer/       # BPE tokenizer
+├── infer/           # Inference engine, KV cache, sampling
+├── train/           # Training infrastructure
+├── optim/           # Optimizers (AdamW, schedulers)
+├── quant/           # Quantization (INT4, FP8, AWQ, GPTQ)
+├── distributed/     # Distributed training (DataParallel, TensorParallel)
+├── server/          # HTTP API server
+├── cli/             # Command-line interface
+├── hub/             # Model hub and downloader
+├── knowledge/       # Semantic hashing and knowledge function
+├── autoopt/         # Auto-refactoring and hot-swapping
+└── hal/             # Hardware abstraction layer
 ```
 
----
+## Core Components
 
-## 2. Flusso training
+### Tensor
 
-1. **DataLoader** → Batch (input_ids, target_ids, padding_mask)
-2. **Trainer** → zero_grad, forward (modello), cross_entropy, backward, (AMP unscale), clip_grad_norm, optimizer.step
-3. **Optimizer** (AdamW) aggiorna solo i parametri con `requires_grad == true`
-4. **freeze_parameters(count)** imposta `requires_grad = false` sui primi `count` parametri (finetuning)
+- N-dimensional contiguous tensors
+- Memory pool for efficient allocation
+- Shape-aware operations
 
----
+### BLAS
 
-## 3. Flusso inferenza (target)
+- Scalar fallback
+- AVX2 SIMD optimization
+- AVX512 SIMD optimization
+- CUDA kernel implementation
 
-1. Caricamento modello (config da JSON via `io::load_model_config`, pesi da GGUF/safetensors in fase di implementazione)
-2. Forward con KV cache (opzionale)
-3. **Sampler** sui logits (temperature, top_k, top_p) → token successivo
-4. Server espone `/v1/chat/completions`; il sampler sarà usato quando il modello è caricato in memoria
+### Autograd
 
----
+- Computational graph with Node
+- Topological sort for backprop
+- Standard operations (matmul, relu, softmax, etc.)
 
-## 4. Configurazione modello
+### Transformer
 
-- **ModelConfig** (transformer/model.h): vocab_size, d_model, n_heads, n_layers, d_ff, max_seq_len
-- **io::load_model_config(path)** legge un JSON in stile configs/model_7b.json e mappa i campi su ModelConfig (hidden_size → d_model, num_attention_heads → n_heads, ecc.)
+- LLaMA architecture
+- Qwen architecture
+- Generic configurable transformer
+- MoE (Mixture of Experts) support
 
----
+### Attention
 
-## 5. Namespace
+- Multi-head attention
+- Flash Attention (CUDA)
+- Sliding window attention
+- Sparse attention patterns
 
-- `serius::core` — tensor, blas, memory, autograd
-- `serius::model` — transformer, block, attention, ffn, layernorm
-- `serius::optim` — AdamW, scheduler, AMP
-- `serius::training` — Trainer, checkpoint
-- `serius::infer` — Sampler
-- `serius::io` — config loader
-- `serius::server` — HTTP server
+### Inference
+
+- KV cache management
+- Sampling strategies (temperature, top-k, top-p)
+- Speculative decoding support
+
+### Training
+
+- AdamW optimizer
+- Learning rate schedulers (warmup, cosine decay)
+- Automatic mixed precision (AMP)
+- Checkpointing
+
+### Quantization
+
+- INT4, INT8, FP8, FP16
+- AWQ (Activation-aware Weight Quantization)
+- GPTQ
+- Dequantization kernels
+
+### Distributed
+
+- Data parallelism
+- Tensor parallelism
+- Pipeline parallelism
+- Communication backends (NCCL, MPI, local)
+
+## Namespaces
+
+- `serius::core` - Tensor, BLAS, memory, autograd
+- `serius::model` - Transformer models
+- `serius::optim` - Optimizers and schedulers
+- `serius::training` - Training infrastructure
+- `serius::infer` - Inference engine
+- `serius::server` - HTTP API server
+- `serius::hub` - Model hub
+- `serius::knowledge` - Semantic hashing
+- `serius::autoopt` - Auto-refactoring
+
+## Design Principles
+
+1. **Zero-copy** where possible
+2. **SIMD optimization** for CPU operations
+3. **CUDA kernels** for GPU acceleration
+4. **Header-only** for core tensor operations (flexibility)
+5. **OpenAI compatibility** for API server
+6. **Extensible** architecture for new models and ops
+
+## Performance Optimization
+
+- **Memory**: Memory pool, paged KV cache
+- **Compute**: SIMD, kernel fusion, Flash Attention
+- **I/O**: Streaming generation, batching
+- **Quantization**: INT4/FP8 for reduced memory
+
+## Contributing
+
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for contribution guidelines.

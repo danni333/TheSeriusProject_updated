@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Serius Chat</title>
+    <link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Serius Chat</h1>
+            <div class="controls">
+                <select id="model-select">
+                    <option value="default">Default Model</option>
+                </select>
+                <button id="settings-btn" class="icon-btn">⚙️</button>
+            </div>
+        </header>
+
+        <div id="chat-container" class="chat-container">
+            <div id="messages" class="messages"></div>
+        </div>
+
+        <div class="input-area">
+            <textarea id="message-input" placeholder="Type your message..." rows="1"></textarea>
+            <button id="send-btn">Send</button>
+        </div>
+
+        <div id="settings-panel" class="settings-panel hidden">
+            <h3>Generation Parameters</h3>
+            <div class="setting">
+                <label>Temperature: <span id="temp-value">0.7</span></label>
+                <input type="range" id="temperature" min="0" max="2" step="0.1" value="0.7">
+            </div>
+            <div class="setting">
+                <label>Top P: <span id="topp-value">0.9</span></label>
+                <input type="range" id="top_p" min="0" max="1" step="0.05" value="0.9">
+            </div>
+            <div class="setting">
+                <label>Max Tokens: <span id="maxtok-value">256</span></label>
+                <input type="range" id="max_tokens" min="1" max="2048" step="1" value="256">
+            </div>
+            <div class="setting">
+                <label>System Prompt:</label>
+                <textarea id="system-prompt" rows="3" placeholder="You are a helpful assistant."></textarea>
+            </div>
+            <button id="close-settings">Close</button>
+        </div>
+    </div>
+
+    <script src="/assets/app.js"></script>
+</body>
+</html>

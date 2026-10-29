@@ -1,86 +1,61 @@
-# Getting Started — TheSeriusProject
+# Quick Start Guide
 
-Guida rapida per passare da zero a server API e chat in pochi minuti.
+Get up and running with Serius LLM Engine in 5 minutes.
 
----
+## Prerequisites
 
-## 1. Requisiti
+- C++20 compatible compiler (GCC 10+, Clang 12+, MSVC 2022)
+- CMake 3.25+
+- (Optional) CUDA 12+ for GPU support
 
-- **Compilatore C++20** (MSVC 2022, GCC 12+, Clang 16+)
-- **CMake 3.25+**
-- **CUDA Toolkit 12.x** (opzionale, per GPU NVIDIA)
-
----
-
-## 2. Compilazione
+## 1. Build from Source
 
 ```bash
-# Clone (se non l'hai già)
-git clone https://github.com/<user>/TheSeriusProject.git
-cd TheSeriusProject
-
-# Configura e build
-mkdir build
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-# Con CUDA:
-# cmake .. -DCMAKE_BUILD_TYPE=Release -DSERIUS_USE_CUDA=ON
-
-cmake --build . --config Release
+git clone https://github.com/your-org/serius.git
+cd serius
+mkdir build && cd build
+cmake ..
+cmake --build . -j$(nproc)
 ```
 
-L'eseguibile CLI si trova in `build/serius` (o `build/Release/serius.exe` su Windows).
-
----
-
-## 3. Avviare il server API
+## 2. Download a Model
 
 ```bash
-# Dalla cartella build
-./serius serve --port 8080
-# oppure: ./serius serve
+# Import a small model from HuggingFace
+./serius import --source hf://Qwen/Qwen2.5-0.5B-Instruct --output ./models/
 ```
 
-Il server è in ascolto su `http://0.0.0.0:8080`.
-
-- **Health:** `curl http://localhost:8080/health`
-- **Modelli:** `curl http://localhost:8080/v1/models`
-- **Chat (stub):**  
-  `curl -X POST http://localhost:8080/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"default\",\"messages\":[{\"role\":\"user\",\"content\":\"Ciao!\"}]}"`
-
----
-
-## 4. Comando Chat (in sviluppo)
+## 3. Chat with the Model
 
 ```bash
-./serius chat --model path/to/model.gguf
+# Interactive chat
+./serius chat --model ./models/Qwen2.5-0.5B-Instruct --temperature 0.7
 ```
 
-Il caricamento modelli (GGUF/safetensors) e l’inferenza reale sono in fase di implementazione. Per ora il comando stampa un messaggio informativo.
-
----
-
-## 5. Eseguire i test
+## 4. Start the Web UI
 
 ```bash
-cd build
-ctest --output-on-failure
+# Start HTTP server with web UI
+./serius serve --model ./models/Qwen2.5-0.5B-Instruct --port 8080
+
+# Open http://localhost:8080 in your browser
 ```
 
----
+## 5. Use the API
 
-## 6. Configurazione modelli
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": false
+  }'
+```
 
-I file di configurazione JSON per i modelli sono in `configs/`:
+## Next Steps
 
-- `configs/model_7b.json` — esempio 7B
-- `configs/model_1b.json` — esempio 1B
-- `configs/training_config.json` — parametri di training
-
----
-
-## Prossimi passi
-
-- **Installazione dettagliata:** `docs/installation.md`
-- **Riferimento API:** `docs/api-reference.md`
-- **Architettura:** `docs/architecture.md`
+- See [CLI Reference](cli-reference.md) for all commands
+- See [API Reference](api-reference.md) for HTTP endpoints
+- See [Supported Models](supported-models.md) for model compatibility
+- See [GPU Setup](gpu-setup.md) for GPU acceleration

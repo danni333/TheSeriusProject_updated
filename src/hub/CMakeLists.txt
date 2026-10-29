@@ -6,6 +6,8 @@ add_library(hub STATIC
     # auth_manager.cpp  # Requires OpenSSL/JWT - disabled for now
     plugin_manager.cpp
     search_engine.cpp
+    downloader.cpp
+    converter.cpp
 )
 
 target_include_directories(hub PUBLIC

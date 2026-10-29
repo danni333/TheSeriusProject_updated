@@ -1,6 +1,22 @@
-add_library(serius_core 
+add_library(serius_core
     core/dummy.cpp
     memory/memory_pool.cpp
+    memory/dnc.cpp
+    memory/compressor.cpp
+    memory/persistent.cpp
+    neuro/lif_neuron.cpp
+    neuro/spiking_layer.cpp
+    neuro/event_engine.cpp
+    neuro/encoder.cpp
+    liquid/neural_ode.cpp
+    liquid/ltc.cpp
+    liquid/adaptive.cpp
+    world/world_model.cpp
+    world/imagination.cpp
+    world/jepa.cpp
+    quantum/state.cpp
+    quantum/circuit.cpp
+    quantum/vqe.cpp
     tensor/tensor.cpp
     blas/elementwise.cpp
     blas/matmul_scalar.cpp
@@ -57,8 +73,12 @@ add_library(serius_core
     inference/speculative.cpp
     lora/lora_linear.cpp
     lora/lora_adapter.cpp
-    transformer/llama_model.cpp
-    transformer/qwen_model.cpp
+transformer/llama_model.cpp
+     ssm/ssm_block.cpp
+     automl/auto_tune.cpp
+     automl/pruner.cpp
+     automl/tune_cache.cpp
+     transformer/qwen_model.cpp
     moe/router.cpp
     moe/expert.cpp
     moe/moe_layer.cpp
@@ -111,9 +131,13 @@ multimodal/cross_attention.cpp
     mcp/client.cpp
     mcp/transport_stdio.cpp
     mcp/transport_http.cpp
-    agent/action_parser.cpp
-    agent/context_manager.cpp
-    agent/react.cpp
+agent/action_parser.cpp
+     agent/context_manager.cpp
+     agent/react.cpp
+     agent/specialist.cpp
+     agent/supervisor.cpp
+     agent/consensus.cpp
+     agent/planner.cpp
     mcp/guard.cpp
     mcp/scrubber.cpp
     mcp/audit.cpp
@@ -124,6 +148,24 @@ multimodal/cross_attention.cpp
     federated/dp_noise.cpp
     federated/aggregator.cpp
     federated/user_adapter.cpp
+    autoopt/refactorer.cpp
+    autoopt/sandbox.cpp
+    autoopt/hot_swap.cpp
+    autoopt/git_manager.cpp
+    autoopt/llm_client.cpp
+    knowledge/semantic_hash.cpp
+    knowledge/knowledge_fn.cpp
+    knowledge/fact_extractor.cpp
+    cli/args_parser.cpp
+    cli/cli.cpp
+    bench/latency.cpp
+    bench/throughput.cpp
+    bench/memory.cpp
+    bench/report.cpp
+    stress/stress_runner.cpp
+    stress/worker.cpp
+    stress/report.cpp
+    stress/leak_detector.cpp
 )
 
 if(SERIUS_USE_CUDA)
@@ -193,17 +235,23 @@ else()
     set_source_files_properties(blas/matmul_avx512.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mfma")
 endif()
 target_include_directories(serius_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json)
+target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib)
 
 # --- Server library ---
-add_library(serius_server STATIC server/server.cpp)
+add_library(serius_server STATIC server/server.cpp server/static_files.cpp)
 target_link_libraries(serius_server PUBLIC serius_core httplib::httplib)
 target_include_directories(serius_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # --- Hub components (Phase 65) ---
 add_subdirectory(hub)
 
-# --- CLI executable (serve, chat) ---
-add_executable(serius app/main.cpp)
-target_link_libraries(serius PRIVATE serius_core serius_server)
+# --- CLI executable (serve, chat, doctor, import, bench, stress) ---
+add_executable(serius cli/serius_cli.cpp
+    cli/cmd_chat.cpp
+    cli/cmd_serve.cpp
+    cli/cmd_doctor.cpp
+    cli/cmd_import.cpp
+    cli/cmd_bench.cpp
+    cli/cmd_stress.cpp)
+target_link_libraries(serius PRIVATE serius_core serius_server hub)
 target_include_directories(serius PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

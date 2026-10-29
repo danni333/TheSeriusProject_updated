@@ -1,11 +1,6 @@
 {
-    "python.testing.unittestArgs": [
-        "-v",
-        "-s",
-        "./tests",
-        "-p",
-        "test_*.py"
-    ],
-    "python.testing.pytestEnabled": false,
-    "python.testing.unittestEnabled": true
+  "clangd.path": "C:\\Program Files\\LLVM\\bin\\clangd.exe",
+  "clangd.arguments": ["--background-index", "--header-insertion=iwyu"],
+  "cmake.configureOnOpen": false,
+  "C_Cpp.intelliSenseEngine": "disabled"
 }

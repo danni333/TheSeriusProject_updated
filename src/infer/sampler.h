@@ -18,10 +18,10 @@ public:
 
     /// Sample one token from logits (shape: (vocab_size,) or last row of (seq, vocab_size)).
     /// Uses temperature scaling, then optional top_k and top_p.
-    int sample(const core::Tensor &logits);
+    int sample(const core::Tensor &logits) const;
 
     /// Greedy decode: argmax.
-    int sample_greedy(const core::Tensor &logits);
+    int sample_greedy(const core::Tensor &logits) const;
 
     void set_temperature(float t) { temperature_ = t; }
     void set_top_k(int k) { top_k_ = k; }
@@ -32,7 +32,7 @@ private:
     float temperature_;
     int top_k_;
     float top_p_;
-    std::mt19937 rng_;
+    mutable std::mt19937 rng_;
 };
 
 }  // namespace infer

@@ -35,10 +35,11 @@ class BPETokenizer
     void save(const std::string &path) const;
     void load(const std::string &path);
 
+    void init_basic_vocab();
+
    private:
     Vocab vocab_;
 
-    void init_basic_vocab();
     std::vector<TokenId> merge_tokens(std::vector<TokenId> ids) const;
 };
 

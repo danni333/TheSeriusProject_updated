@@ -1,59 +1,114 @@
-# CLI Reference (WIP)
+# CLI Reference
 
-Questa pagina raccoglierà i comandi CLI esposti da **TheSeriusProject**.
+Complete reference for all Serius CLI commands.
 
-> Stato: la CLI completa non è ancora definita; i comandi sotto sono un esempio del design previsto.
+## Commands
 
----
+### `serius chat`
 
-## 1. Struttura generale
-
-Si prevede un binario principale (es. `serius`) con sottocomandi:
-
-- `serius chat` — avvia una sessione di chat da terminale.
-- `serius serve` — espone un server HTTP (API OpenAI‑compat).
-- `serius bench` — esegue benchmark preconfigurati.
-- `serius import` — importa/convert e modelli da formati esterni (es. Hugging Face, GGUF, ecc.).
-
----
-
-## 2. Esempi di utilizzo (design target)
-
-### 2.1 Chat locale
+Interactive chat with the model.
 
 ```bash
-serius chat --model path/to/model.gguf
+serius chat [OPTIONS]
 ```
 
-Opzioni tipiche:
+**Options:**
 
-- `--max-tokens <N>`
-- `--temperature <float>`
-- `--top-p <float>`
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--model` | `-m` | Path to model file | `./models/model.gguf` |
+| `--threads` | `-t` | Number of threads | `4` |
+| `--temperature` | | Sampling temperature | `0.7` |
+| `--max-tokens` | | Maximum tokens to generate | `256` |
 
-### 2.2 Server HTTP
+**Example:**
 
 ```bash
-serius serve --model path/to/model.gguf --host 0.0.0.0 --port 8080
+serius chat --model ./models/Qwen2.5-0.5B-Instruct --temperature 0.8
 ```
 
-Questo comando dovrebbe rendere disponibili endpoint compatibili con le API OpenAI (vedi `docs/api-reference.md`).
+### `serius serve`
 
-### 2.3 Benchmark
+Start HTTP API server with OpenAI-compatible endpoints.
 
 ```bash
-serius bench --suite matmul
-serius bench --suite memory
+serius serve [OPTIONS]
 ```
 
-I risultati verrebbero salvati in file `*_bench.txt` nella root del progetto.
+**Options:**
 
----
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--model` | `-m` | Path to model file | `./models/model.gguf` |
+| `--port` | `-p` | Server port | `8080` |
+| `--host` | | Server host | `0.0.0.0` |
+| `--gpu` | | Use GPU (auto/cpu/cuda) | `auto` |
 
-## 3. Stato attuale
+**Example:**
 
-- Non tutte le funzionalità CLI descritte sono ancora implementate.
-- Per ora, l'interazione avviene principalmente tramite test/benchmark C++ in `tests/` e binari di esempio.
+```bash
+serius serve --model ./models/Qwen2.5-0.5B-Instruct --port 8080
+```
 
-Questa pagina verrà aggiornata man mano che la CLI prende forma e viene consolidata.
+### `serius import`
 
+Import model from HuggingFace Hub or direct URL.
+
+```bash
+serius import [OPTIONS]
+```
+
+**Options:**
+
+| Flag | Short | Description | Default |
+|------|-------|-------------|---------|
+| `--source` | `-s` | Source (hf://repo_id or URL) | *required* |
+| `--output` | `-o` | Output directory | `./models` |
+| `--token` | `-t` | HuggingFace token (optional) | `` |
+| `--format` | `-f` | Output format (gguf, safetensors) | `gguf` |
+
+**Examples:**
+
+```bash
+# Import from HuggingFace
+serius import --source hf://Qwen/Qwen2.5-0.5B-Instruct --output ./models/
+
+# Import from URL
+serius import --source https://example.com/model.gguf --output ./models/
+```
+
+### `serius doctor`
+
+System diagnostics.
+
+```bash
+serius doctor
+```
+
+**Output:**
+
+```
+Serius System Diagnostics
+========================
+
+✅ CPU: Detected
+✅ RAM: Available
+⚠️  GPU: Detection pending (CUDA/Metal support)
+✅ Build: C++20 compatible
+```
+
+### `serius --help`
+
+Show help message.
+
+```bash
+serius --help
+```
+
+### `serius --version`
+
+Show version information.
+
+```bash
+serius --version
+```

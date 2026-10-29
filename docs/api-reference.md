@@ -1,100 +1,240 @@
-# API Reference — TheSeriusProject
+# API Reference
 
-Riferimento endpoint REST (compatibili con stile OpenAI) e uso da client.
-
----
+OpenAI-compatible HTTP API reference.
 
 ## Base URL
 
-Di default il server è in ascolto su `http://0.0.0.0:8080`. Sostituisci con `http://localhost:8080` se usi la stessa macchina.
-
----
-
-## Endpoint
-
-### GET /health
-
-Verifica che il server sia attivo (es. load balancer, Kubernetes).
-
-**Risposta:** `200 OK`
-
-```json
-{"status":"ok"}
+```
+http://localhost:8080
 ```
 
----
+## Endpoints
 
-### GET /metrics
+### `GET /health`
 
-Metriche per monitoring (uptime, numero di richieste).
+Health check endpoint.
 
-**Risposta:** `200 OK`
+**Response:**
 
 ```json
-{"uptime_seconds": 123.45, "request_count": 42}
+{
+  "status": "ok",
+  "model_loaded": true,
+  "model_name": "Qwen2.5-0.5B-Instruct"
+}
 ```
 
----
+### `GET /metrics`
 
-### GET /v1/models
+Prometheus-format metrics.
 
-Elenco modelli disponibili (stub: restituisce un modello `default`).
+**Response:**
 
-**Risposta:** `200 OK`
+```
+# TYPE serius_requests_total counter
+serius_requests_total 42
+# TYPE serius_tokens_generated counter
+serius_tokens_generated 1337
+```
+
+### `GET /v1/models`
+
+List available models.
+
+**Response:**
 
 ```json
 {
   "object": "list",
   "data": [
-    {"id": "default", "object": "model"}
+    {
+      "id": "Qwen2.5-0.5B-Instruct",
+      "object": "model",
+      "created": 1709654400,
+      "owned_by": "serius"
+    }
   ]
 }
 ```
 
----
+### `GET /v1/models/{id}`
 
-### POST /v1/chat/completions
+Get model details.
 
-Genera una risposta a partire da una conversazione. In questa versione restituisce un messaggio stub fino al caricamento del modello reale.
-
-**Body (JSON):**
-
-| Campo       | Tipo   | Default  | Descrizione        |
-|------------|--------|----------|--------------------|
-| model     | string | required | ID modello         |
-| messages  | array  | required | `[{role, content}]`|
-| temperature | float | 0.7    | Sampling (non usato nello stub) |
-| max_tokens | int   | 512     | Max token (non usato nello stub) |
-| stream    | bool   | false    | Streaming (non implementato)    |
-
-**Esempio:**
-
-```bash
-curl -X POST http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"default","messages":[{"role":"user","content":"Ciao!"}]}'
-```
-
-**Risposta:** `200 OK`
+**Response:**
 
 ```json
 {
-  "id": "serius-stub",
-  "object": "chat.completion",
-  "model": "default",
-  "choices": [
-    {
-      "index": 0,
-      "message": {"role": "assistant", "content": "Serius API is running. Load a model to get real completions."},
-      "finish_reason": "stop"
-    }
-  ],
-  "usage": {"prompt_tokens": 0, "completion_tokens": 1, "total_tokens": 1}
+  "id": "Qwen2.5-0.5B-Instruct",
+  "object": "model",
+  "created": 1709654400,
+  "owned_by": "serius"
 }
 ```
 
----
+### `POST /v1/chat/completions`
 
-## Uso da SDK OpenAI
+Generate chat completion.
 
-Con `OPENAI_BASE_URL=http://localhost:8080` puoi puntare i client OpenAI (Python, Node, ecc.) al server Serius; l’endpoint `/v1/chat/completions` è compatibile con il formato richiesto dal SDK.
+**Request:**
+
+```json
+{
+  "model": "Qwen2.5-0.5B-Instruct",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"}
+  ],
+  "temperature": 0.7,
+  "max_tokens": 256,
+  "top_p": 0.9,
+  "stream": false
+}
+```
+
+**Parameters:**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| model | string | required | Model ID |
+| messages | array | required | Array of {role, content} messages |
+| temperature | float | 0.7 | Sampling temperature (0.0-2.0) |
+| max_tokens | int | 256 | Maximum tokens to generate |
+| top_p | float | 0.9 | Nucleus sampling (0.0-1.0) |
+| stream | bool | false | Enable SSE streaming |
+
+**Response (non-streaming):**
+
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1709654400,
+  "model": "Qwen2.5-0.5B-Instruct",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Hello! How can I help you today?"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 15,
+    "completion_tokens": 10,
+    "total_tokens": 25
+  }
+}
+```
+
+**Response (streaming):**
+
+```
+data: {"id":"chatcmpl-abc123","choices":[{"delta":{"role":"assistant"},"index":0}]}
+
+data: {"id":"chatcmpl-abc123","choices":[{"delta":{"content":"Hello"},"index":0}]}
+
+data: {"id":"chatcmpl-abc123","choices":[{"delta":{"content":"!"},"index":0}]}
+
+data: [DONE]
+```
+
+### `POST /v1/completions`
+
+Text completion (legacy format).
+
+**Request:**
+
+```json
+{
+  "model": "Qwen2.5-0.5B-Instruct",
+  "prompt": "The capital of France is",
+  "temperature": 0.7,
+  "max_tokens": 256,
+  "stream": false
+}
+```
+
+**Response:**
+
+```json
+{
+  "id": "cmpl-abc123",
+  "object": "text_completion",
+  "created": 1709654400,
+  "model": "Qwen2.5-0.5B-Instruct",
+  "choices": [
+    {
+      "text": " Paris.",
+      "index": 0,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 8,
+    "completion_tokens": 2,
+    "total_tokens": 10
+  }
+}
+```
+
+### `POST /v1/embeddings`
+
+Generate embeddings for text.
+
+**Request:**
+
+```json
+{
+  "model": "Qwen2.5-0.5B-Instruct",
+  "input": ["Hello world", "Test sentence"]
+}
+```
+
+**Response:**
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "embedding": [0.1, 0.2, 0.3, ...],
+      "index": 0
+    },
+    {
+      "object": "embedding",
+      "embedding": [0.4, 0.5, 0.6, ...],
+      "index": 1
+    }
+  ],
+  "model": "Qwen2.5-0.5B-Instruct",
+  "usage": {
+    "prompt_tokens": 5,
+    "total_tokens": 5
+  }
+}
+```
+
+## Example: Using curl
+
+```bash
+# Chat completion
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+
+# Streaming chat completion
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "default",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+```

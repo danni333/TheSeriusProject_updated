@@ -9,21 +9,25 @@ namespace mcp {
 
 using json = nlohmann::json;
 
-std::map<std::string, RiskLevel> MCPGuard::tool_risk_;
+namespace {
+const std::map<std::string, RiskLevel> kDefaultRisks = {
+    {"read_file", RiskLevel::SAFE},
+    {"search", RiskLevel::SAFE},
+    {"list_files", RiskLevel::SAFE},
+    {"write_file", RiskLevel::MODERATE},
+    {"edit_file", RiskLevel::MODERATE},
+    {"run_command", RiskLevel::DANGEROUS},
+    {"send_email", RiskLevel::DANGEROUS},
+    {"delete_file", RiskLevel::DANGEROUS},
+    {"format_disk", RiskLevel::DANGEROUS},
+};
+}  // namespace
+
+std::map<std::string, RiskLevel> MCPGuard::tool_risk_ = kDefaultRisks;
 
 MCPGuard::MCPGuard()
 {
-    tool_risk_ = {
-        {"read_file", RiskLevel::SAFE},
-        {"search", RiskLevel::SAFE},
-        {"list_files", RiskLevel::SAFE},
-        {"write_file", RiskLevel::MODERATE},
-        {"edit_file", RiskLevel::MODERATE},
-        {"run_command", RiskLevel::DANGEROUS},
-        {"send_email", RiskLevel::DANGEROUS},
-        {"delete_file", RiskLevel::DANGEROUS},
-        {"format_disk", RiskLevel::DANGEROUS},
-    };
+    tool_risk_ = kDefaultRisks;
 }
 
 RiskLevel MCPGuard::risk_level(const std::string &tool)

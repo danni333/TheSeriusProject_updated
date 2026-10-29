@@ -25,24 +25,40 @@ namespace {
 void print_usage(const char *prog)
 {
     std::cerr << "Usage: " << prog << " <command> [options]\n"
-              << "  serve [--port PORT]       Start API server (default 8080)\n"
-              << "  chat [--config PATH]       Interactive chat with local model\n"
-              << "  chat [--model PATH]        Alias for --config (config JSON)\n"
-              << "       [--type TYPE]         Model type: 'transformer', 'llama', or 'qwen'\n"
-              << "       [--max-new-tokens N]  Limit Transformer/LLaMA output (default 128)\n"
+              << "  serve [--port PORT]        Start API server (default 8080)\n"
+              << "        [--model PATH]       Model directory or config JSON\n"
+              << "        [--config PATH]      Alias for --model\n"
+              << "        [--type TYPE]        Model type: 'llama', 'qwen', or 'transformer'\n"
+              << "  chat  [--config PATH]      Interactive chat with local model\n"
+              << "        [--model PATH]       Alias for --config (config JSON)\n"
+              << "        [--type TYPE]        Model type: 'transformer', 'llama', or 'qwen'\n"
+              << "        [--max-new-tokens N] Limit Transformer/LLaMA output (default 128)\n"
               << "  --help                     Show this help\n";
 }
 
 int cmd_serve(int argc, char **argv)
 {
     uint16_t port = 8080;
+    std::string model_path;
+    std::string model_type = "llama";
+
     for (int i = 2; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--port" && i + 1 < argc) {
             port = static_cast<uint16_t>(std::atoi(argv[++i]));
+        } else if ((arg == "--model" || arg == "--config") && i + 1 < argc) {
+            model_path = argv[++i];
+        } else if (arg == "--type" && i + 1 < argc) {
+            model_type = argv[++i];
         }
     }
-    serius::server::Server server(port);
+
+    serius::server::ServerConfig config;
+    config.port = port;
+    config.model_path = model_path;
+    config.model_type = model_type;
+
+    serius::server::Server server(config);
     return server.run();
 }
 

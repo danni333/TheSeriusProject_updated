@@ -26,7 +26,7 @@ class Sampler
 
     /// Sample a single token index from logits of shape (vocab_size,).
     /// Applies temperature, repetition penalty, top-k, top-p in sequence.
-    int sample(const core::Tensor &logits, const std::vector<int> &past_tokens = {});
+    int sample(const core::Tensor &logits, const std::vector<int> &past_tokens = {}) const;
 
     /// Greedy decoding: return the argmax token.
     static int greedy(const core::Tensor &logits);
@@ -49,7 +49,7 @@ class Sampler
 
     /// Categorical sampling from a probability distribution.
     /// Returns the sampled index.
-    int categorical_sample(const core::Tensor &probs);
+    int categorical_sample(const core::Tensor &probs) const;
 
     // Accessors
     const SamplerConfig &config() const { return config_; }
@@ -58,7 +58,7 @@ class Sampler
 
    private:
     SamplerConfig config_;
-    std::mt19937 rng_;
+    mutable std::mt19937 rng_;
 };
 
 }  // namespace inference
