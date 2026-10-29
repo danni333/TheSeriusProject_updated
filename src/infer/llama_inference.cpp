@@ -477,7 +477,7 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
         }
 
         if (model.topology().pp_rank < model.topology().pp_size - 1) {
-            return Tensor({0}); // Placeholder for intermediate ranks
+            return hidden_states;
         }
     } else {
         // Single-rank path

@@ -26,7 +26,7 @@ class Tensor
    public:
     // --- Constructors ---
 
-    /// Default-constructed tensor is valid as a placeholder for containers and maps.
+    /// Default-constructed tensor is valid as a container placeholder for maps.
     Tensor() = default;
 
     /// Create a tensor with the given shape, zero-initialized

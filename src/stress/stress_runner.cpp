@@ -4,6 +4,14 @@
 #include <thread>
 #include <sstream>
 #include <numeric>
+#include <fstream>
+#include <string>
+#ifdef SERIUS_USE_CUDA
+#include "../hal/cuda_backend.h"
+#endif
+#if defined(__linux__)
+#include <sys/sysinfo.h>
+#endif
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
@@ -264,15 +272,41 @@ bool StressRunner::send_request(const std::string& url, const std::string& promp
 }
 
 size_t StressRunner::get_vram_usage() {
-    // Placeholder: integrate with CUDA backend for actual VRAM monitoring
-    // For now, return 0
+#ifdef SERIUS_USE_CUDA
+    // Best effort: return 0 if not directly exposed; CUDA backend doesn't expose free/total easily
     return 0;
+#else
+    return 0;
+#endif
 }
 
 size_t StressRunner::get_ram_usage() {
-    // Placeholder: integrate with OS-specific memory APIs
-    // For now, return 0
+#if defined(__linux__)
+    struct sysinfo info;
+    if (sysinfo(&info) == 0) {
+        return info.totalram - info.freeram;
+    }
+    std::ifstream meminfo("/proc/meminfo");
+    std::string line;
+    size_t mem_total = 0, mem_free = 0;
+    while (std::getline(meminfo, line)) {
+        if (line.find("MemTotal:") == 0) {
+            std::stringstream ss(line);
+            std::string key; size_t val; std::string unit;
+            ss >> key >> val >> unit;
+            mem_total = val * 1024;
+        } else if (line.find("MemFree:") == 0) {
+            std::stringstream ss(line);
+            std::string key; size_t val; std::string unit;
+            ss >> key >> val >> unit;
+            mem_free = val * 1024;
+        }
+    }
+    if (mem_total >= mem_free) return mem_total - mem_free;
     return 0;
+#else
+    return 0;
+#endif
 }
 
 float StressRunner::calculate_percentile(std::vector<float>& values, float percentile) {

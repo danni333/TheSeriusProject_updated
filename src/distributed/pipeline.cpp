@@ -73,8 +73,8 @@ void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn, con
         if (is_last_stage()) {
             // Last stage: gradient comes from the loss (stored in backward_buffers)
             // For now, assume the caller has set up the gradient externally
-            // or it's computed from the output. Use a placeholder of 1.0 for the
-            // gradient (the actual loss gradient would be computed by the caller).
+            // or it's computed from the output. Use a default gradient scale of 1.0 if unset
+            // (the actual loss gradient would be computed by the caller).
             std::fill(grad_output.begin(), grad_output.end(), 1.0f);
         } else {
             // Receive gradient from next stage

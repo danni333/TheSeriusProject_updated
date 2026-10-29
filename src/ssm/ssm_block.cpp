@@ -17,7 +17,7 @@ MambaBlock::MambaBlock(size_t d_model, size_t d_state, size_t d_conv)
     for (size_t i = 0; i < d_state; i++) A_log_[i] = std::log(1.0f + (float)i);
     D_ = core::Tensor({d_model});
     for (size_t i = 0; i < d_model; i++) D_[i] = 1.0f;
-    in_proj_ = core::Tensor({1});  // placeholder
+    in_proj_ = core::Tensor({hidden_size * 2});  // input projection placeholder allocation
 }
 
 core::Tensor MambaBlock::forward(const core::Tensor &x) const
