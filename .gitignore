@@ -38,7 +38,7 @@ lib/
 
 # Models and Data
 models/
-data/
+/data/
 *.gguf
 *.safetensors
 *.bin
