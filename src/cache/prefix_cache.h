@@ -35,7 +35,8 @@ public:
         size_t max_memory_bytes = 1ULL << 30;  // 1GB default
     };
 
-    explicit PrefixCache(const Config& config = Config{});
+    explicit PrefixCache(const Config& config);
+    PrefixCache();
 
     /// Finds the longest matching prefix in the cache.
     /// @param tokens Token sequence to search for

@@ -10,6 +10,11 @@ PrefixCache::PrefixCache(const Config& config)
 {
 }
 
+PrefixCache::PrefixCache()
+    : PrefixCache(Config{})
+{
+}
+
 std::pair<size_t, KVCacheSnapshot*> PrefixCache::find_longest_prefix(
     const std::vector<int>& tokens)
 {
