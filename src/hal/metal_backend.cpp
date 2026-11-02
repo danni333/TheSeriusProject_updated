@@ -15,10 +15,25 @@ void *MetalBackend::malloc(size_t size)
     return nullptr;
 }
 
+void *MetalBackend::malloc_pinned(size_t size)
+{
+    return malloc(size);
+}
+
+void *MetalBackend::malloc_managed(size_t size)
+{
+    return malloc(size);
+}
+
 void MetalBackend::free(void *ptr)
 {
     if (!ptr) return;
     // TODO: Implement Metal buffer release
+}
+
+void MetalBackend::free_pinned(void *ptr)
+{
+    free(ptr);
 }
 
 void MetalBackend::memcpy_h2d(void *dst, const void *src, size_t size)

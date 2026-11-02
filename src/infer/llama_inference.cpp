@@ -698,7 +698,6 @@ Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token
     const size_t inter = cfg.intermediate_size;
     const float eps = cfg.rms_norm_eps, rope_base = cfg.rope_theta;
     hal::DType dtype = model.embed_tokens()->data.dtype();
-    printf("[DEBUG] Starting forward for token %d at pos %zu\n", token_id, pos); fflush(stdout);
 
     Tensor hidden_states_gpu({1, hidden}, dtype); hidden_states_gpu.set_device(hal::DeviceType::CUDA);
     int tid = token_id; 
@@ -711,7 +710,6 @@ Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token
     // Crucial: synchronize before freeing tid_gpu as gather is asynchronous
     cudaDeviceSynchronize();
     CHECK_CUDA(cudaFree(tid_gpu));
-    printf("[DEBUG] Embeddings gathered\n"); fflush(stdout);
 
     Tensor normed_buf({1, hidden}, dtype); normed_buf.set_device(hal::DeviceType::CUDA);
     Tensor query_buf({1, hidden}, dtype); query_buf.set_device(hal::DeviceType::CUDA);
@@ -724,7 +722,6 @@ Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token
 
     const auto &layers = model.layers();
     if (cache && (cache->empty() || cache->layers.size() != layers.size())) {
-        printf("[DEBUG] Initializing cache for %zu layers\n", layers.size()); fflush(stdout);
         size_t max_seq_len = 4096;
         cache->layers.resize(n_layers);
         for (size_t i = 0; i < n_layers; ++i) {
@@ -735,7 +732,6 @@ Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token
             cache->layers[i].current_len = 0;
         }
     }
-    printf("[DEBUG] Starting layer loop\n"); fflush(stdout);
 
     for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
         const auto *blk = layers[layer_idx].get();
@@ -821,14 +817,11 @@ Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token
         hal::add_inplace(hidden_states_gpu.raw_data_gpu(), mlp_down.raw_data_gpu(), hidden, dtype);
         hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
     }
-    printf("[DEBUG] Final norm\n"); fflush(stdout);
     hal::rmsnorm(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), model.norm_weight()->data.raw_data_gpu(), hidden, 1, eps, dtype);
     normed_buf.mark_dirty(Tensor::DataLocation::GPU);
     Tensor logits({1, cfg.vocab_size}, dtype); logits.set_device(hal::DeviceType::CUDA);
     core::blas::matmul(normed_buf, model.lm_head()->data, logits);
-    printf("[DEBUG] Syncing logits to host\n"); fflush(stdout);
     logits.syncToHost();
-    printf("[DEBUG] Done\n"); fflush(stdout);
     return logits;
 }
 #endif

@@ -46,8 +46,6 @@ static inline void microkernel_8x8(const float *A, const float *B, float *C, siz
 void matmul_avx2(const float *A, const float *B, float *C, size_t M, size_t N, size_t K, size_t lda, size_t ldb,
                  size_t ldc)
 {
-    printf("DEBUG: Entering matmul_avx2 (M=%zu, N=%zu, K=%zu)\n", M, N, K);
-
     if (M == 1) {
         // High-performance AVX2 vector-matrix multiplication
         // Process 32 columns at once to reuse broadcasted A[k]

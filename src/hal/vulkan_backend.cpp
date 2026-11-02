@@ -15,10 +15,25 @@ void *VulkanBackend::malloc(size_t size)
     return nullptr;
 }
 
+void *VulkanBackend::malloc_pinned(size_t size)
+{
+    return malloc(size);
+}
+
+void *VulkanBackend::malloc_managed(size_t size)
+{
+    return malloc(size);
+}
+
 void VulkanBackend::free(void *ptr)
 {
     if (!ptr) return;
     // TODO: Implement Vulkan memory free
+}
+
+void VulkanBackend::free_pinned(void *ptr)
+{
+    free(ptr);
 }
 
 void VulkanBackend::memcpy_h2d(void *dst, const void *src, size_t size)
