@@ -23,7 +23,7 @@ Gli `fgets` usano buffer bounded.
 ### S5 — Possibili divisioni per zero
 Nessun pattern `/ 0` evidente; verificare runtime con input shape 0.
 
-## Next static steps
+- Consensus divisions already guarded.
 - Analizzare ogni modulo per unchecked vector access, null deref, integer overflow.
 - Aggiungere macro SERIUS_CHECK in punti critici.
 - Rimuovere debug prints.
