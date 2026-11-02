@@ -1,7 +1,7 @@
 #include "memory_pool.h"
 
 #include <algorithm>
-#include <cstdlib>
+#include <limits>
 #include <iostream>
 
 #ifdef _MSC_VER
@@ -49,7 +49,11 @@ MemoryPool::~MemoryPool() = default;
 
 size_t MemoryPool::align_up(size_t val, size_t alignment)
 {
-    return (val + alignment - 1) & ~(alignment - 1);
+    if (alignment == 0) return val;
+    size_t remainder = val % alignment;
+    if (remainder == 0) return val;
+    if (val > std::numeric_limits<size_t>::max() - (alignment - remainder)) return val; // avoid overflow
+    return val + (alignment - remainder);
 }
 
 void *MemoryPool::allocate(size_t size)
