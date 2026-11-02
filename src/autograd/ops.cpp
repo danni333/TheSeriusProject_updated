@@ -373,6 +373,9 @@ Node *cross_entropy(Node *input_logits, Node *input_targets)
     if (batch_size == 0) {
         throw std::invalid_argument("cross_entropy: batch dimension cannot be empty.");
     }
+    if (seq_len == 0) {
+        throw std::invalid_argument("cross_entropy: sequence dimension cannot be empty.");
+    }
     size_t total_elements = batch_size * seq_len;
     Tensor prob_tensor(input_logits->data.shape());
     float total_loss = 0.0F;
