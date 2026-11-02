@@ -367,6 +367,12 @@ Node *cross_entropy(Node *input_logits, Node *input_targets)
         vocab_size = input_logits->data.shape()[1];
     }
 
+    if (vocab_size == 0) {
+        throw std::invalid_argument("cross_entropy: vocabulary dimension cannot be empty.");
+    }
+    if (batch_size == 0) {
+        throw std::invalid_argument("cross_entropy: batch dimension cannot be empty.");
+    }
     size_t total_elements = batch_size * seq_len;
     Tensor prob_tensor(input_logits->data.shape());
     float total_loss = 0.0F;
@@ -396,7 +402,7 @@ Node *cross_entropy(Node *input_logits, Node *input_targets)
         }
 
         for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
-            probs_slice[v_idx] /= sum_e;
+            probs_slice[v_idx] /= std::max(sum_e, 1e-12F);
         }
 
         size_t target_idx = static_cast<size_t>(targets_raw[i]);
