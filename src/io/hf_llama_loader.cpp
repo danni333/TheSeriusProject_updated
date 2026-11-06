@@ -235,20 +235,34 @@ bool load_llama_weights_from_dir(const std::string &dir_path, model::LLaMAModel 
 {
     if (model == nullptr) { return false; }
     bool any_file_loaded = false;
+    size_t files_attempted = 0;
+    size_t files_loaded = 0;
+
     try {
         for (const auto &entry : fs::directory_iterator(dir_path)) {
             if (!entry.is_regular_file()) { continue; }
             std::string path_str = entry.path().string();
             if (path_str.size() < 12 || path_str.compare(path_str.size() - 12, 12, ".safetensors") != 0) { continue; }
+
+            files_attempted++;
+            std::cout << "[Loader] Attempting to load: " << path_str << "\n";
+
             SafetensorsFile safetensors_file;
             if (load_safetensors(path_str, &safetensors_file)) {
                 any_file_loaded = true;
+                files_loaded++;
                 load_one_file_into_model(safetensors_file, model);
+                std::cout << "[Loader] Successfully loaded: " << path_str << "\n";
+            } else {
+                std::cerr << "[Loader] Failed to load safetensors file: " << path_str << "\n";
             }
         }
-    } catch (const std::exception &) {
-        // Silently ignore DIR errors as some parts might be missing
+    } catch (const std::exception &e) {
+        std::cerr << "[Loader] Error loading weights from directory: " << e.what() << "\n";
+        return false;
     }
+
+    std::cout << "[Loader] Weight loading summary: " << files_loaded << "/" << files_attempted << " files loaded\n";
     return any_file_loaded;
 }
 

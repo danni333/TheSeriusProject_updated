@@ -31,6 +31,9 @@ class BPETokenizer
 
     size_t vocab_size() const { return vocab_.size(); }
 
+    bool is_gpt2_byte_level() const { return is_gpt2_byte_level_; }
+    const std::vector<std::string> &special_tokens() const { return special_tokens_; }
+
     // Logic to save/load (optional but recommended for later)
     void save(const std::string &path) const;
     void load(const std::string &path);
@@ -39,6 +42,9 @@ class BPETokenizer
 
    private:
     Vocab vocab_;
+    std::vector<std::string> special_tokens_;
+    bool is_gpt2_byte_level_ = false;
+    bool is_sentencepiece_ = false;
 
     std::vector<TokenId> merge_tokens(std::vector<TokenId> ids) const;
 };

@@ -55,7 +55,13 @@ std::string generate_report(const StressResult& result,
         // Get current timestamp
         auto now = std::time(nullptr);
         char time_str[100];
+#if defined(_MSC_VER)
+        struct tm tm_buf;
+        localtime_s(&tm_buf, &now);
+        std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tm_buf);
+#else
         std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+#endif
 
         ss << "═══════════════════════════════════════════════════════\n";
         ss << "  STRESS TEST REPORT — " << time_str << "\n";

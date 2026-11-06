@@ -1,10 +1,10 @@
 #include "bpe.h"
+#include "gpt2_table.h"
 
 #include <algorithm>
 #include <fstream>
 #include <map>
 #include <nlohmann/json.hpp>
-
 
 namespace serius {
 
@@ -18,14 +18,16 @@ void BPETokenizer::init_basic_vocab()
     vocab_.token_to_id.clear();
     vocab_.id_to_token.clear();
     vocab_.merges.clear();
+    special_tokens_.clear();
+    is_gpt2_byte_level_ = false;
+    is_sentencepiece_ = false;
+
     // Special tokens occupy IDs 0-3
     vocab_.add_token("<PAD>", PAD_ID);
     vocab_.add_token("<BOS>", BOS_ID);
     vocab_.add_token("<EOS>", EOS_ID);
     vocab_.add_token("<UNK>", UNK_ID);
     // Byte-level base vocabulary: IDs 4..259 (byte value 0..255)
-    // train() encodes each character as (4 + byte_value), so these
-    // entries must exist in id_to_token for encode/decode to work.
     for (int byte_val = 0; byte_val < 256; ++byte_val) {
         std::string single_char(1, static_cast<char>(byte_val));
         vocab_.add_token(single_char, static_cast<TokenId>(4 + byte_val));
@@ -58,13 +60,12 @@ void BPETokenizer::train(const std::string &text, size_t target_vocab_size)
             break;
         }
 
-        std::pair<TokenId, TokenId> best_pair = best_pair_it->first;
-        TokenId new_token_id = static_cast<TokenId>(current_vocab_size);
+        TokenId new_token_id = static_cast<TokenId>(vocab_.size());
+        auto best_pair = best_pair_it->first;
 
+        std::string token_str = vocab_.id_to_token[best_pair.first] + vocab_.id_to_token[best_pair.second];
+        vocab_.add_token(token_str, new_token_id);
         vocab_.merges[best_pair] = new_token_id;
-
-        std::string new_token_str = vocab_.id_to_token[best_pair.first] + vocab_.id_to_token[best_pair.second];
-        vocab_.add_token(new_token_str, new_token_id);
 
         std::vector<TokenId> new_corpus;
         for (size_t i = 0; i < corpus.size(); ++i) {
@@ -85,33 +86,90 @@ std::vector<TokenId> BPETokenizer::encode(const std::string &text) const
     std::vector<TokenId> ids;
     if (text.empty()) return ids;
 
-    // Byte-level tokenization: find the longest matching token at each position.
-    // The base vocab contains every single byte as a token (IDs 4..259),
-    // so every character is guaranteed to be encodable without <UNK>.
-    for (size_t i = 0; i < text.length();) {
-        bool found = false;
-        // Try longest match first (up to 16 chars for merged tokens)
-        size_t max_len = std::min(text.length() - i, static_cast<size_t>(16));
-        for (size_t len = max_len; len > 0; --len) {
-            std::string sub = text.substr(i, len);
-            auto vocab_it = vocab_.token_to_id.find(sub);
-            if (vocab_it != vocab_.token_to_id.end()) {
-                ids.push_back(vocab_it->second);
-                i += len;
-                found = true;
+    auto encode_chunk = [&](const std::string &chunk) {
+        if (chunk.empty()) return;
+
+        std::string processed_chunk;
+        if (is_gpt2_byte_level_) {
+            processed_chunk.reserve(chunk.length() * 2);
+            for (unsigned char c : chunk) {
+                processed_chunk += detail::BYTE_TO_GPT2_UTF8[c];
+            }
+        } else if (is_sentencepiece_) {
+            processed_chunk.reserve(chunk.length() + 8);
+            for (char ch : chunk) {
+                if (ch == ' ') processed_chunk += "\xe2\x96\x81";
+                else processed_chunk += ch;
+            }
+        } else {
+            processed_chunk = chunk;
+        }
+
+        for (size_t i = 0; i < processed_chunk.length();) {
+            bool found = false;
+            size_t max_len = std::min(processed_chunk.length() - i, static_cast<size_t>(32));
+            for (size_t len = max_len; len > 0; --len) {
+                std::string sub = processed_chunk.substr(i, len);
+                auto vocab_it = vocab_.token_to_id.find(sub);
+                if (vocab_it != vocab_.token_to_id.end()) {
+                    ids.push_back(vocab_it->second);
+                    i += len;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                ids.push_back(UNK_ID);
+                i++;
+            }
+        }
+    };
+
+    if (special_tokens_.empty()) {
+        encode_chunk(text);
+        if (!is_gpt2_byte_level_ && !is_sentencepiece_) {
+            ids = merge_tokens(ids);
+        }
+        return ids;
+    }
+
+    size_t i = 0;
+    while (i < text.length()) {
+        std::string matched_sp;
+        for (const auto &sp : special_tokens_) {
+            if (text.compare(i, sp.length(), sp) == 0) {
+                matched_sp = sp;
                 break;
             }
         }
-        if (!found) {
-            // Should not happen with byte-level vocab, but fall back to UNK
-            ids.push_back(UNK_ID);
-            i++;
+
+        if (!matched_sp.empty()) {
+            auto it = vocab_.token_to_id.find(matched_sp);
+            if (it != vocab_.token_to_id.end()) {
+                ids.push_back(it->second);
+            }
+            i += matched_sp.length();
+            continue;
         }
+
+        size_t next_sp_pos = text.length();
+        for (const auto &sp : special_tokens_) {
+            size_t pos = text.find(sp, i);
+            if (pos != std::string::npos && pos < next_sp_pos) {
+                next_sp_pos = pos;
+            }
+        }
+
+        std::string chunk = text.substr(i, next_sp_pos - i);
+        encode_chunk(chunk);
+        i = next_sp_pos;
     }
 
-    return merge_tokens(ids);
+    if (!is_gpt2_byte_level_ && !is_sentencepiece_) {
+        ids = merge_tokens(ids);
+    }
+    return ids;
 }
-
 
 std::vector<TokenId> BPETokenizer::merge_tokens(std::vector<TokenId> ids) const
 {
@@ -153,18 +211,47 @@ std::vector<TokenId> BPETokenizer::merge_tokens(std::vector<TokenId> ids) const
 
 std::string BPETokenizer::decode(const std::vector<TokenId> &ids) const
 {
+    if (is_gpt2_byte_level_) {
+        const auto &inv_map = detail::get_gpt2_utf8_to_byte();
+        std::string raw_bytes;
+        for (TokenId token_id : ids) {
+            auto it_token = vocab_.id_to_token.find(token_id);
+            if (it_token != vocab_.id_to_token.end()) {
+                const std::string &t = it_token->second;
+                for (size_t i = 0; i < t.length();) {
+                    unsigned char c = static_cast<unsigned char>(t[i]);
+                    size_t char_len = 1;
+                    if ((c & 0x80) == 0) char_len = 1;
+                    else if ((c & 0xE0) == 0xC0) char_len = 2;
+                    else if ((c & 0xF0) == 0xE0) char_len = 3;
+                    else if ((c & 0xF8) == 0xF0) char_len = 4;
+                    if (i + char_len > t.length()) char_len = 1;
+
+                    std::string ch = t.substr(i, char_len);
+                    auto it_inv = inv_map.find(ch);
+                    if (it_inv != inv_map.end()) {
+                        raw_bytes.push_back(static_cast<char>(it_inv->second));
+                    } else {
+                        raw_bytes.append(ch);
+                    }
+                    i += char_len;
+                }
+            }
+        }
+        return raw_bytes;
+    }
+
     std::string result;
     for (TokenId token_id : ids) {
         auto it_token = vocab_.id_to_token.find(token_id);
         if (it_token != vocab_.id_to_token.end()) {
             std::string t = it_token->second;
-            // Handle LLaMA space character (Lower One Quarter Block:   or similar)
-            // It is often used to represent a space at the beginning of words.
-            // In UTF-8 it's 0xE2 0x96 0x81.
-            size_t pos = 0;
-            while ((pos = t.find("\xe2\x96\x81", pos)) != std::string::npos) {
-                t.replace(pos, 3, " ");
-                pos += 1;
+            if (is_sentencepiece_) {
+                size_t pos = 0;
+                while ((pos = t.find("\xe2\x96\x81", pos)) != std::string::npos) {
+                    t.replace(pos, 3, " ");
+                    pos += 1;
+                }
             }
             result += t;
         }
@@ -194,7 +281,6 @@ void BPETokenizer::save(const std::string &path_str) const
 {
     nlohmann::json json_out;
 
-    // Use an array of objects to avoid UTF-8 string keys issues
     nlohmann::json vocab_array = nlohmann::json::array();
     for (const auto &vocab_entry : vocab_.token_to_id) {
         std::vector<uint8_t> token_bytes(vocab_entry.first.begin(), vocab_entry.first.end());
@@ -229,8 +315,9 @@ void BPETokenizer::load(const std::string &path_str)
     vocab_.token_to_id.clear();
     vocab_.id_to_token.clear();
     vocab_.merges.clear();
+    special_tokens_.clear();
 
-    // 1. Check for our internal format (array of objects with {t: bytes, i: id})
+    // 1. Check for our internal format
     if (json_in.contains("vocab") && json_in["vocab"].is_array()) {
         for (const auto &vocab_item : json_in["vocab"]) {
             if (vocab_item.contains("t") && vocab_item.contains("i")) {
@@ -248,9 +335,8 @@ void BPETokenizer::load(const std::string &path_str)
             }
         }
     } 
-    // 2. Check for standard LLaMA vocab.json (dictionary of string -> id)
+    // 2. Check for standard LLaMA vocab.json
     else if (json_in.is_object() && !json_in.contains("model")) {
-        // Many LLaMA vocab.json files are just { "token": id }
         for (auto it = json_in.begin(); it != json_in.end(); ++it) {
             vocab_.add_token(it.key(), it.value().get<TokenId>());
         }
@@ -262,7 +348,6 @@ void BPETokenizer::load(const std::string &path_str)
             vocab_.add_token(it.key(), it.value().get<TokenId>());
         }
         
-        // Load merges from HF format
         if (json_in["model"].contains("merges")) {
             for (const auto& merge_item : json_in["model"]["merges"]) {
                 std::string s = merge_item.get<std::string>();
@@ -285,6 +370,38 @@ void BPETokenizer::load(const std::string &path_str)
             }
         }
     }
+
+    is_gpt2_byte_level_ = (vocab_.token_to_id.find("\xc4\xa0") != vocab_.token_to_id.end() &&
+                           vocab_.token_to_id.find(" ") == vocab_.token_to_id.end());
+    is_sentencepiece_ = (vocab_.token_to_id.find("\xe2\x96\x81") != vocab_.token_to_id.end());
+
+    auto try_add_special = [&](const std::string &token) {
+        if (vocab_.token_to_id.find(token) != vocab_.token_to_id.end()) {
+            if (std::find(special_tokens_.begin(), special_tokens_.end(), token) == special_tokens_.end()) {
+                special_tokens_.push_back(token);
+            }
+        }
+    };
+
+    if (json_in.contains("added_tokens") && json_in["added_tokens"].is_array()) {
+        for (const auto &item : json_in["added_tokens"]) {
+            if (item.contains("content")) {
+                try_add_special(item["content"].get<std::string>());
+            }
+        }
+    }
+
+    try_add_special("<|im_start|>");
+    try_add_special("<|im_end|>");
+    try_add_special("<|endoftext|>");
+    try_add_special("<s>");
+    try_add_special("</s>");
+    try_add_special("<unk>");
+    try_add_special("<pad>");
+
+    std::sort(special_tokens_.begin(), special_tokens_.end(), [](const std::string &a, const std::string &b) {
+        return a.length() > b.length();
+    });
 }
 
 }  // namespace serius

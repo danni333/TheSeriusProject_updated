@@ -17,8 +17,9 @@ public:
     Sampler(float temperature = 0.7f, int top_k = 40, float top_p = 0.9f, uint64_t seed = 0);
 
     /// Sample one token from logits (shape: (vocab_size,) or last row of (seq, vocab_size)).
-    /// Uses temperature scaling, then optional top_k and top_p.
+    /// Uses temperature scaling, then optional top_k, top_p, and repetition penalty.
     int sample(const core::Tensor &logits) const;
+    int sample(const core::Tensor &logits, const std::vector<int> &recent_tokens, float repetition_penalty = 1.0f) const;
 
     /// Greedy decode: argmax.
     int sample_greedy(const core::Tensor &logits) const;

@@ -6,6 +6,13 @@
 #include "cli/cmd_bench.h"
 #include "cli/cmd_stress.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#include <vector>
+#include <string>
+#endif
+
 namespace serius {
 namespace cli {
 
@@ -28,5 +35,27 @@ int main_cli(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+#ifdef _WIN32
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+
+    int w_argc = 0;
+    LPWSTR *w_argv = CommandLineToArgvW(GetCommandLineW(), &w_argc);
+    if (w_argv) {
+        std::vector<std::string> utf8_args(w_argc);
+        std::vector<char*> utf8_argv(w_argc);
+        for (int i = 0; i < w_argc; ++i) {
+            int len = WideCharToMultiByte(CP_UTF8, 0, w_argv[i], -1, nullptr, 0, nullptr, nullptr);
+            if (len > 0) {
+                utf8_args[i].resize(len - 1);
+                WideCharToMultiByte(CP_UTF8, 0, w_argv[i], -1, &utf8_args[i][0], len, nullptr, nullptr);
+            }
+            utf8_argv[i] = &utf8_args[i][0];
+        }
+        LocalFree(w_argv);
+        return serius::cli::main_cli(w_argc, utf8_argv.data());
+    }
+#endif
     return serius::cli::main_cli(argc, argv);
 }
+

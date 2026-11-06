@@ -151,19 +151,21 @@ struct RoPEArgs {
 };
 
 static void apply_rope_inplace(const RoPEArgs &args) {
+    const size_t half_dim = args.head_dim / 2;
     for (size_t pos = 0; pos < args.seq_len; ++pos) {
         const float absolute_pos = static_cast<float>(pos + args.pos_offset);
         float *row_ptr = args.data + (pos * args.model_dim);
         for (size_t head_offset = 0; head_offset < args.model_dim; head_offset += args.head_dim) {
-            for (size_t feature_idx = 0; feature_idx < args.head_dim; feature_idx += 2) {
-                const float frequency = 1.0F / std::pow(args.rope_base, static_cast<float>(feature_idx) / static_cast<float>(args.head_dim));
+            float *head_ptr = row_ptr + head_offset;
+            for (size_t i = 0; i < half_dim; ++i) {
+                const float frequency = 1.0F / std::pow(args.rope_base, static_cast<float>(2 * i) / static_cast<float>(args.head_dim));
                 const float theta = absolute_pos * frequency;
                 const float cos_value = std::cos(theta);
                 const float sin_value = std::sin(theta);
-                const float val_x0 = row_ptr[head_offset + feature_idx];
-                const float val_x1 = row_ptr[head_offset + feature_idx + 1];
-                row_ptr[head_offset + feature_idx]     = (val_x0 * cos_value) - (val_x1 * sin_value);
-                row_ptr[head_offset + feature_idx + 1] = (val_x0 * sin_value) + (val_x1 * cos_value);
+                const float val_x0 = head_ptr[i];
+                const float val_x1 = head_ptr[i + half_dim];
+                head_ptr[i]            = (val_x0 * cos_value) - (val_x1 * sin_value);
+                head_ptr[i + half_dim] = (val_x0 * sin_value) + (val_x1 * cos_value);
             }
         }
     }
