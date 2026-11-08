@@ -1,6 +1,7 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 #include <cuda_bf16.h>
+#include <math_constants.h>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -276,6 +277,71 @@ void rmsnorm(void *out, const void *input, const void *weight, size_t n, size_t 
     }
 }
 
+// --- Logits GEMV (x @ W^T with W stored row-major [vocab, hidden]) ---
+// One block per vocab row: coalesced reads of W, fp32 accumulation.
+// x: [seq, hidden] fp32, w_t: [vocab, hidden] fp32, out: [seq, vocab] fp32.
+
+__global__ void logits_gemv_kernel(const float *x, const float *w_t, float *out, int seq, int hidden)
+{
+    const int v = blockIdx.x;
+    const int tid = threadIdx.x;
+    __shared__ float w_sh[4096];
+    if (hidden > 4096) return;
+
+    for (int i = tid; i < hidden; i += blockDim.x) {
+        w_sh[i] = w_t[(size_t)v * hidden + i];
+    }
+    __syncthreads();
+
+    const int vocab = gridDim.x;
+    for (int s = 0; s < seq; ++s) {
+        const float *xr = x + (size_t)s * hidden;
+        float acc = 0.0f;
+        for (int i = tid; i < hidden; i += blockDim.x) {
+            acc += xr[i] * w_sh[i];
+        }
+        acc = reduce_block<float, false>(acc);
+        if (tid == 0) {
+            out[(size_t)s * vocab + v] = acc;
+        }
+        __syncthreads();
+    }
+}
+
+void logits_gemv_f32(const void *x, const void *w_t, void *out, size_t seq, size_t vocab, size_t hidden,
+                     cudaStream_t stream)
+{
+    if (!x || !w_t || !out || seq == 0 || vocab == 0 || hidden == 0 || hidden > 4096) return;
+    logits_gemv_kernel<<<(int)vocab, 256, 0, stream>>>(
+        (const float *)x, (const float *)w_t, (float *)out, (int)seq, (int)hidden);
+}
+
+// --- In-place scalar multiply ---
+
+template <typename T>
+__global__ void scale_inplace_kernel(T *data, int n, float s)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        data[i] = (T)(to_float(data[i]) * s);
+    }
+}
+
+void scale_inplace(void *data, size_t n, float s, DType dtype, cudaStream_t stream)
+{
+    if (!data || n == 0) return;
+    int threads = 256;
+    int blocks = (int)((n + threads - 1) / threads);
+
+    if (dtype == DType::Float32) {
+        scale_inplace_kernel<<<blocks, threads, 0, stream>>>((float *)data, (int)n, s);
+    } else if (dtype == DType::Float16) {
+        scale_inplace_kernel<<<blocks, threads, 0, stream>>>((__half *)data, (int)n, s);
+    } else if (dtype == DType::BFloat16) {
+        scale_inplace_kernel<<<blocks, threads, 0, stream>>>((__nv_bfloat16 *)data, (int)n, s);
+    }
+}
+
 // --- SwiGLU ---
 
 template <typename T>
@@ -306,28 +372,793 @@ void swiglu(void *out, const void *x, const void *y, size_t n, DType dtype, cuda
     }
 }
 
+// --- Mixed-precision helpers (FP32 residual stream + reduced-precision weights) ---
+
+template <typename TIn, typename TOut, typename TW>
+__global__ void rmsnorm_mixed_kernel(TOut *out, const TIn *input, const TW *weight, int n, float eps)
+{
+    int tid = threadIdx.x;
+    int row = blockIdx.y;
+    const TIn *in_row = input + (size_t)row * n;
+    TOut *out_row = out + (size_t)row * n;
+
+    float sum_sq = 0.0f;
+    for (int i = tid; i < n; i += blockDim.x) {
+        float v = to_float(in_row[i]);
+        sum_sq += v * v;
+    }
+    float block_sum_sq = reduce_block<float, false>(sum_sq);
+    float inv_rms = rsqrtf(block_sum_sq / (float)n + eps);
+
+    for (int i = tid; i < n; i += blockDim.x) {
+        float v = to_float(in_row[i]) * inv_rms;
+        float w = to_float(weight[i]);
+        out_row[i] = (TOut)(v * w);
+    }
+}
+
+void rmsnorm_mixed(void *out, const void *input, const void *weight, size_t n, size_t batch_seq, float eps,
+                   DType out_dtype, cudaStream_t stream)
+{
+    // input is always FP32; weight and output share out_dtype.
+    if (!out || !input || !weight || n == 0 || batch_seq == 0) return;
+    dim3 grid(1, (unsigned int)batch_seq);
+    int threads = 256;
+
+    if (out_dtype == DType::Float16) {
+        rmsnorm_mixed_kernel<float, __half, __half><<<grid, threads, 0, stream>>>(
+            (__half *)out, (const float *)input, (const __half *)weight, (int)n, eps);
+    } else if (out_dtype == DType::BFloat16) {
+        rmsnorm_mixed_kernel<float, __nv_bfloat16, __nv_bfloat16><<<grid, threads, 0, stream>>>(
+            (__nv_bfloat16 *)out, (const float *)input, (const __nv_bfloat16 *)weight, (int)n, eps);
+    } else if (out_dtype == DType::Float32) {
+        rmsnorm_mixed_kernel<float, float, float><<<grid, threads, 0, stream>>>(
+            (float *)out, (const float *)input, (const float *)weight, (int)n, eps);
+    }
+}
+
+template <typename TTable, typename TOut>
+__global__ void gather_mixed_kernel(TOut *out, const TTable *table, const int *indices, int n, int dim)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n * dim) {
+        int row = i / dim;
+        int col = i % dim;
+        int idx = indices[row];
+        out[i] = (TOut)to_float(table[idx * dim + col]);
+    }
+}
+
+void gather_mixed(void *out, const void *table, const int *indices, size_t n, size_t dim, DType table_dtype,
+                  DType out_dtype, cudaStream_t stream)
+{
+    if (!out || !table || !indices || n == 0 || dim == 0) return;
+    int threads = 256;
+    int blocks = (int)((n * dim + threads - 1) / threads);
+
+    if (out_dtype == DType::Float32) {
+        if (table_dtype == DType::Float16) {
+            gather_mixed_kernel<__half, float><<<blocks, threads, 0, stream>>>((float *)out, (const __half *)table, indices, (int)n, (int)dim);
+        } else if (table_dtype == DType::BFloat16) {
+            gather_mixed_kernel<__nv_bfloat16, float><<<blocks, threads, 0, stream>>>((float *)out, (const __nv_bfloat16 *)table, indices, (int)n, (int)dim);
+        } else {
+            gather_mixed_kernel<float, float><<<blocks, threads, 0, stream>>>((float *)out, (const float *)table, indices, (int)n, (int)dim);
+        }
+    }
+}
+
+template <typename TAcc, typename TIn>
+__global__ void add_inplace_mixed_kernel(TAcc *out, const TIn *other, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        out[i] = (TAcc)(to_float(out[i]) + to_float(other[i]));
+    }
+}
+
+void add_inplace_mixed(void *out, const void *other, size_t n, DType acc_dtype, DType in_dtype, cudaStream_t stream)
+{
+    if (!out || !other || n == 0) return;
+    int threads = 256;
+    int blocks = (int)((n + threads - 1) / threads);
+
+    if (acc_dtype == DType::Float32 && in_dtype == DType::Float16) {
+        add_inplace_mixed_kernel<float, __half><<<blocks, threads, 0, stream>>>((float *)out, (const __half *)other, (int)n);
+    } else if (acc_dtype == DType::Float32 && in_dtype == DType::BFloat16) {
+        add_inplace_mixed_kernel<float, __nv_bfloat16><<<blocks, threads, 0, stream>>>((float *)out, (const __nv_bfloat16 *)other, (int)n);
+    } else if (acc_dtype == DType::Float32 && in_dtype == DType::Float32) {
+        add_inplace_mixed_kernel<float, float><<<blocks, threads, 0, stream>>>((float *)out, (const float *)other, (int)n);
+    }
+}
+
+// --- Device-side dtype conversion (avoids host round-trips) ---
+
+template <typename TOut>
+__device__ __forceinline__ TOut from_float(float v);
+template <>
+__device__ __forceinline__ float from_float<float>(float v) { return v; }
+template <>
+__device__ __forceinline__ __half from_float<__half>(float v) { return __float2half(v); }
+template <>
+__device__ __forceinline__ __nv_bfloat16 from_float<__nv_bfloat16>(float v) { return __float2bfloat16(v); }
+
+template <typename TIn, typename TOut>
+__global__ void convert_dtype_kernel(TOut *out, const TIn *in, int n)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = from_float<TOut>(to_float(in[i]));
+}
+
+template <typename TIn>
+static void launch_convert_out(void *out, const void *in, size_t n, DType out_dtype, cudaStream_t stream)
+{
+    int threads = 256;
+    int blocks = (int)((n + threads - 1) / threads);
+    if (out_dtype == DType::Float32) {
+        convert_dtype_kernel<TIn, float><<<blocks, threads, 0, stream>>>((float *)out, (const TIn *)in, (int)n);
+    } else if (out_dtype == DType::Float16) {
+        convert_dtype_kernel<TIn, __half><<<blocks, threads, 0, stream>>>((__half *)out, (const TIn *)in, (int)n);
+    } else if (out_dtype == DType::BFloat16) {
+        convert_dtype_kernel<TIn, __nv_bfloat16><<<blocks, threads, 0, stream>>>((__nv_bfloat16 *)out, (const TIn *)in, (int)n);
+    }
+}
+
+void convert_dtype(void *out, const void *in, size_t n, DType in_dtype, DType out_dtype, cudaStream_t stream)
+{
+    if (!out || !in || n == 0 || in_dtype == out_dtype) return;
+    if (in_dtype == DType::Float32) {
+        launch_convert_out<float>(out, in, n, out_dtype, stream);
+    } else if (in_dtype == DType::Float16) {
+        launch_convert_out<__half>(out, in, n, out_dtype, stream);
+    } else if (in_dtype == DType::BFloat16) {
+        launch_convert_out<__nv_bfloat16>(out, in, n, out_dtype, stream);
+    }
+}
+
+// --- GEMV: y[1,N] = x[1,K] @ W[K,N] (row-major W = {in, out} layout) ---
+// One thread per output column; the warp reads a contiguous 64B row segment
+// per k-step, so the whole weight matrix streams through memory exactly once.
+
+template <typename T>
+__global__ void gemv_kn_kernel(const T *x, const T *w, T *y, int K, int N)
+{
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= N) return;
+
+    extern __shared__ float xs[];
+    for (int i = threadIdx.x; i < K; i += blockDim.x) {
+        xs[i] = to_float(x[i]);
+    }
+    __syncthreads();
+
+    float acc = 0.0f;
+    const T *wrow = w + col;
+    for (int k = 0; k < K; ++k) {
+        acc = fmaf(xs[k], to_float(wrow[(size_t)k * N]), acc);
+    }
+    y[col] = (T)acc;
+}
+
+template <typename T>
+__global__ void gemv_kn_vec4_kernel(const T *x, const T *w, T *y, int K, int N4)
+{
+    // Each thread produces 4 consecutive outputs via float4-style vectorized
+    // loads (requires N % 4 == 0 and 16B-aligned w rows).
+    const int col4 = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col4 >= N4) return;
+    const int col = col4 * 4;
+
+    extern __shared__ float xs[];
+    for (int i = threadIdx.x; i < K; i += blockDim.x) {
+        xs[i] = to_float(x[i]);
+    }
+    __syncthreads();
+
+    float acc0 = 0.0f, acc1 = 0.0f, acc2 = 0.0f, acc3 = 0.0f;
+    const T *wrow = w + col;
+    for (int k = 0; k < K; ++k) {
+        const T *p = wrow + (size_t)k * (N4 * 4);
+        float xk = xs[k];
+        acc0 = fmaf(xk, to_float(p[0]), acc0);
+        acc1 = fmaf(xk, to_float(p[1]), acc1);
+        acc2 = fmaf(xk, to_float(p[2]), acc2);
+        acc3 = fmaf(xk, to_float(p[3]), acc3);
+    }
+    y[col] = (T)acc0;
+    y[col + 1] = (T)acc1;
+    y[col + 2] = (T)acc2;
+    y[col + 3] = (T)acc3;
+}
+
+// Split-K variant: grid.y partitions the K loop so small-N GEMVs still fill
+// the GPU. Partial sums are combined with atomicAdd into an FP32 buffer.
+template <typename T>
+__global__ void gemv_kn_sk_kernel(const T *x, const T *w, float *y, int K, int N, int ksplit)
+{
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= N) return;
+    const int chunk = (K + ksplit - 1) / ksplit;
+    const int k0 = blockIdx.y * chunk;
+    const int k1 = min(K, k0 + chunk);
+    if (k0 >= K) return;
+
+    float acc = 0.0f;
+    const T *wrow = w + col;
+    for (int k = k0; k < k1; ++k) {
+        acc = fmaf(to_float(x[k]), to_float(wrow[(size_t)k * N]), acc);
+    }
+    atomicAdd(y + col, acc);
+}
+
+/// y[1,N] (FP16) = x[1,K] @ W[K,N] (FP16, row-major {in,out}) with FP32
+/// accumulation via a zeroed scratch buffer + convert_dtype on the caller side.
+void gemv_kn_sk_f16(const void *x, const void *w, void *y_f32_acc, size_t K, size_t N,
+                    cudaStream_t stream)
+{
+    if (!x || !w || !y_f32_acc || K == 0 || N == 0) return;
+    const int threads = 256;
+    // Aim for a few hundred blocks: split K more aggressively for small N.
+    const int ksplit = (N <= 2048) ? 16 : 8;
+    dim3 grid((unsigned)((N + threads - 1) / threads), (unsigned)ksplit);
+    gemv_kn_sk_kernel<__half><<<grid, threads, 0, stream>>>(
+        (const __half *)x, (const __half *)w, (float *)y_f32_acc, (int)K, (int)N, ksplit);
+}
+
+void gemv_kn(void *x, const void *w, void *y, size_t K, size_t N, DType dtype, cudaStream_t stream)
+{
+    if (!x || !w || !y || K == 0 || N == 0) return;
+    const int threads = 256;
+    const size_t shmem = K * sizeof(float);
+
+    if (dtype == DType::Float16) {
+        if ((N & 3) == 0) {
+            gemv_kn_vec4_kernel<__half><<<(unsigned)((N / 4 + threads - 1) / threads), threads, shmem, stream>>>(
+                (const __half *)x, (const __half *)w, (__half *)y, (int)K, (int)(N / 4));
+        } else {
+            gemv_kn_kernel<__half><<<(unsigned)((N + threads - 1) / threads), threads, shmem, stream>>>(
+                (const __half *)x, (const __half *)w, (__half *)y, (int)K, (int)N);
+        }
+    } else if (dtype == DType::BFloat16) {
+        gemv_kn_kernel<__nv_bfloat16><<<(unsigned)((N + threads - 1) / threads), threads, shmem, stream>>>(
+            (const __nv_bfloat16 *)x, (const __nv_bfloat16 *)w, (__nv_bfloat16 *)y, (int)K, (int)N);
+    } else if (dtype == DType::Float32) {
+        gemv_kn_kernel<float><<<(unsigned)((N + threads - 1) / threads), threads, shmem, stream>>>(
+            (const float *)x, (const float *)w, (float *)y, (int)K, (int)N);
+    }
+}
+
+// --- Quantized GEMV (GGUF Q4_0 / Q4_1 / Q8_0) with on-the-fly dequant ---
+// y[row] = sum_k x[k] * dequant(W_row). Split-K over 32-weight blocks with
+// FP32 atomic accumulation into a zeroed scratch buffer.
+// QuantType values mirror quant::QuantType (3=Q4_0, 4=Q4_1, 5=Q8_0).
+
+template <int QT>
+__global__ void gemv_quant_kernel(const __half *x, const uint8_t *w, float *y, int in, int out, int bpr,
+                                  int ksplit)
+{
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= out) return;
+    const int chunk = (bpr + ksplit - 1) / ksplit;
+    const int b0 = blockIdx.y * chunk;
+    const int b1 = min(bpr, b0 + chunk);
+    if (b0 >= bpr) return;
+
+    constexpr int BB = (QT == 3) ? 18 : (QT == 4) ? 20 : 34;
+    const uint8_t *wr = w + (size_t)row * bpr * BB;
+    float acc = 0.0f;
+
+    for (int b = b0; b < b1; ++b) {
+        const uint8_t *blk = wr + (size_t)b * BB;
+        const float d = __half2float(*reinterpret_cast<const __half *>(blk));
+        const int base = b * 32;
+        if (QT == 3) {  // Q4_0: w = (q - 8) * d; lo nibbles -> k..k+15, hi -> k+16..k+31
+            const uint8_t *q = blk + 2;
+            #pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                acc = fmaf((float)((q[j] & 0xF) - 8) * d, __half2float(x[base + j]), acc);
+                acc = fmaf((float)((q[j] >> 4) - 8) * d, __half2float(x[base + j + 16]), acc);
+            }
+        } else if (QT == 4) {  // Q4_1: w = q * d + m (same nibble layout)
+            const float m = __half2float(*reinterpret_cast<const __half *>(blk + 2));
+            const uint8_t *q = blk + 4;
+            #pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                acc = fmaf((float)(q[j] & 0xF) * d + m, __half2float(x[base + j]), acc);
+                acc = fmaf((float)(q[j] >> 4) * d + m, __half2float(x[base + j + 16]), acc);
+            }
+        } else {  // Q8_0: w = q * d
+            const int8_t *q = reinterpret_cast<const int8_t *>(blk + 2);
+            #pragma unroll 4
+            for (int j = 0; j < 32; ++j) {
+                acc = fmaf((float)q[j] * d, __half2float(x[base + j]), acc);
+            }
+        }
+    }
+    atomicAdd(y + row, acc);
+}
+
+// Warp-per-row variant: each warp owns one output row, lanes stride over
+// 32-weight blocks so packed bytes are read coalesced. x is FP32 (pre-converted
+// once per projection input). Writes y[row] directly — no atomics/zeroing.
+template <int QT>
+__global__ void gemv_quant_warp_kernel(const float *x, const uint8_t *w, float *y, int in, int out,
+                                       int bpr)
+{
+    const int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    if (warp >= out) return;
+
+    constexpr int BB = (QT == 3) ? 18 : (QT == 4) ? 20 : 34;
+    const uint8_t *wr = w + (size_t)warp * bpr * BB;
+    float acc = 0.0f;
+
+    for (int b = lane; b < bpr; b += 32) {
+        const uint8_t *blk = wr + (size_t)b * BB;
+        const float d = __half2float(*reinterpret_cast<const __half *>(blk));
+        const int base = b * 32;
+        if (QT == 3) {  // Q4_0: w = (q - 8) * d; lo nibbles -> k..k+15, hi -> k+16..k+31
+            const uint8_t *q = blk + 2;
+            float a0 = 0.0f, a1 = 0.0f;
+            #pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                a0 = fmaf((float)((q[j] & 0xF) - 8) * d, x[base + j], a0);
+                a1 = fmaf((float)((q[j] >> 4) - 8) * d, x[base + j + 16], a1);
+            }
+            acc += a0 + a1;
+        } else if (QT == 4) {  // Q4_1: w = q * d + m (same nibble layout)
+            const float m = __half2float(*reinterpret_cast<const __half *>(blk + 2));
+            const uint8_t *q = blk + 4;
+            float a0 = 0.0f, a1 = 0.0f;
+            #pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                a0 = fmaf((float)(q[j] & 0xF) * d + m, x[base + j], a0);
+                a1 = fmaf((float)(q[j] >> 4) * d + m, x[base + j + 16], a1);
+            }
+            acc += a0 + a1;
+        } else {  // Q8_0: w = q * d
+            const int8_t *q = reinterpret_cast<const int8_t *>(blk + 2);
+            float a0 = 0.0f, a1 = 0.0f;
+            #pragma unroll 4
+            for (int j = 0; j < 32; ++j) {
+                if (j < 16) a0 = fmaf((float)q[j] * d, x[base + j], a0);
+                else        a1 = fmaf((float)q[j] * d, x[base + j], a1);
+            }
+            acc += a0 + a1;
+        }
+    }
+
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        acc += __shfl_down_sync(0xffffffffu, acc, o);
+    }
+    if (lane == 0) { y[warp] = acc; }
+}
+
+void gemv_quant_f32(const void *x_f32, const void *w, int qtype, size_t in, size_t out, void *y_f32,
+                    cudaStream_t stream)
+{
+    if (!x_f32 || !w || !y_f32 || in == 0 || out == 0 || (in % 32) != 0) return;
+    const int bpr = (int)(in / 32);
+    const int threads = 256;                    // 8 warps -> 8 rows per block
+    const unsigned rows_per_block = threads / 32;
+    const unsigned bx = (unsigned)((out + rows_per_block - 1) / rows_per_block);
+    dim3 grid(bx);
+
+    if (qtype == 3) {
+        gemv_quant_warp_kernel<3><<<grid, threads, 0, stream>>>((const float *)x_f32, (const uint8_t *)w,
+                                                             (float *)y_f32, (int)in, (int)out, bpr);
+    } else if (qtype == 4) {
+        gemv_quant_warp_kernel<4><<<grid, threads, 0, stream>>>((const float *)x_f32, (const uint8_t *)w,
+                                                             (float *)y_f32, (int)in, (int)out, bpr);
+    } else if (qtype == 5) {
+        gemv_quant_warp_kernel<5><<<grid, threads, 0, stream>>>((const float *)x_f32, (const uint8_t *)w,
+                                                             (float *)y_f32, (int)in, (int)out, bpr);
+    }
+}
+
+// Vectorized warp-per-row GEMV over the repacked device layout
+// (QuantWeight::dev_bytes): each row is [bpr*qs quant bytes, block-major]
+// [bpr fp16 d][bpr fp16 m (Q4_1)], padded to 16B. `stride` is the row stride,
+// `d_off`/`m_off` are row-relative offsets of the scale arrays, `qs` is the
+// per-block quant payload size (16 or 32). x is FP32, y FP32 written directly.
+// kind: 3=Q4_0, 4=Q4_1, 5=Q8_0.
+__device__ __forceinline__ uint32_t sel_u32(uint4 v, int j)
+{
+    switch (j & 3) {
+        case 0: return v.x;
+        case 1: return v.y;
+        case 2: return v.z;
+        default: return v.w;
+    }
+}
+
+__global__ void gemv_quant_vec_kernel(const float *x, const float *sx16, const uint8_t *w, float *y,
+                                      int in, int out, int stride, int qs, int d_off, int m_off, int kind,
+                                      int rows_per_warp)
+{
+    const int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    const int r0 = warp * rows_per_warp;
+    if (r0 >= out) return;
+
+    const int bpr = in >> 5;  // in % 32 == 0 guaranteed by repack guard
+    const bool has_m = (kind == 4);
+
+    if (kind == 3 || kind == 4) {
+        // Q4_0/Q4_1 fast path: float4 x loads, two accumulators per row.
+        // rows_per_warp=4 gives each warp four independent weight streams,
+        // maximizing memory-level parallelism (bench: +20% GB/s vs 2).
+        constexpr int RPW = 4;
+        float accA[RPW], accB[RPW];
+        const uint8_t *wr[RPW], *darr[RPW], *marr[RPW];
+        #pragma unroll
+        for (int r = 0; r < RPW; ++r) {
+            accA[r] = 0.0f; accB[r] = 0.0f;
+            if (r0 + r < out) {
+                wr[r] = w + (size_t)(r0 + r) * stride;
+                darr[r] = wr[r] + d_off;
+                marr[r] = (m_off != 0) ? wr[r] + m_off : nullptr;
+            }
+        }
+        for (int b = lane; b < bpr; b += 32) {
+            // __ldcs: weights are read exactly once per token — evict-first
+            // keeps L2 for the reused x vector and scale arrays.
+            const int base = b * 32;
+            const float sx0 = __ldg(sx16 + 2 * b);
+            const float sx1 = __ldg(sx16 + 2 * b + 1);
+            #pragma unroll
+            for (int r = 0; r < RPW; ++r) {
+                if (r0 + r >= out) break;
+                const uint4 v = __ldcs(reinterpret_cast<const uint4 *>(wr[r] + (size_t)b * qs));
+                const float d = __half2float(*reinterpret_cast<const __half *>(darr[r] + b * 2));
+                const float m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr[r] + b * 2)) : 0.0f;
+                // inline fold with shared sx (same b for all rows)
+                const float4 *x4lo = reinterpret_cast<const float4 *>(x + base);
+                const float4 *x4hi = reinterpret_cast<const float4 *>(x + base + 16);
+                float ta = 0.0f, tb = 0.0f;
+                #pragma unroll
+                for (int j = 0; j < 16; j += 4) {
+                    const uint32_t w0 = sel_u32(v, (j + 0) >> 2);
+                    const uint32_t w1 = sel_u32(v, (j + 1) >> 2);
+                    const uint32_t w2 = sel_u32(v, (j + 2) >> 2);
+                    const uint32_t w3 = sel_u32(v, (j + 3) >> 2);
+                    const uint32_t b0 = (w0 >> (((j + 0) & 3) * 8)) & 0xFFu;
+                    const uint32_t b1 = (w1 >> (((j + 1) & 3) * 8)) & 0xFFu;
+                    const uint32_t b2 = (w2 >> (((j + 2) & 3) * 8)) & 0xFFu;
+                    const uint32_t b3 = (w3 >> (((j + 3) & 3) * 8)) & 0xFFu;
+                    const float4 xl = __ldg(x4lo + (j >> 2));
+                    const float4 xh = __ldg(x4hi + (j >> 2));
+                    ta = fmaf((float)(int)(b0 & 0xFu), xl.x, ta);
+                    tb = fmaf((float)(int)(b0 >> 4), xh.x, tb);
+                    ta = fmaf((float)(int)(b1 & 0xFu), xl.y, ta);
+                    tb = fmaf((float)(int)(b1 >> 4), xh.y, tb);
+                    ta = fmaf((float)(int)(b2 & 0xFu), xl.z, ta);
+                    tb = fmaf((float)(int)(b2 >> 4), xh.z, tb);
+                    ta = fmaf((float)(int)(b3 & 0xFu), xl.w, ta);
+                    tb = fmaf((float)(int)(b3 >> 4), xh.w, tb);
+                }
+                accA[r] = fmaf(d, ta, accA[r]);
+                accB[r] = fmaf(d, tb, accB[r]);
+                if (has_m) {
+                    accA[r] = fmaf(m, sx0, accA[r]);
+                    accB[r] = fmaf(m, sx1, accB[r]);
+                } else {
+                    accA[r] = fmaf(-8.0f * d, sx0, accA[r]);
+                    accB[r] = fmaf(-8.0f * d, sx1, accB[r]);
+                }
+            }
+        }
+        #pragma unroll
+        for (int r = 0; r < RPW; ++r) {
+            if (r0 + r >= out) break;
+            float acc = accA[r] + accB[r];
+            #pragma unroll
+            for (int o = 16; o > 0; o >>= 1) {
+                acc += __shfl_down_sync(0xffffffffu, acc, o);
+            }
+            if (lane == 0) { y[r0 + r] = acc; }
+        }
+        return;
+    }
+
+    // Generic path (Q8_0): one row per warp.
+    const uint8_t *wr = w + (size_t)r0 * stride;
+    const uint8_t *darr = wr + d_off;
+    const uint8_t *marr = (m_off != 0) ? wr + m_off : nullptr;
+
+    float acc = 0.0f;
+    for (int b = lane; b < bpr; b += 32) {
+        const uint4 *qp = reinterpret_cast<const uint4 *>(wr + (size_t)b * qs);
+        const uint4 v0 = qp[0];
+        const uint4 v1 = (qs > 16) ? qp[1] : make_uint4(0u, 0u, 0u, 0u);
+        const float d = __half2float(*reinterpret_cast<const __half *>(darr + b * 2));
+        const float m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr + b * 2)) : 0.0f;
+        const int base = b * 32;
+
+        if (kind == 5) {  // Q8_0: 32 int8 weights
+            #pragma unroll
+            for (int j = 0; j < 32; ++j) {
+                const uint4 vv = (j < 16) ? v0 : v1;
+                const int jb = j & 15;
+                const uint32_t byte = (sel_u32(vv, jb >> 2) >> ((jb & 3) * 8)) & 0xFFu;
+                acc = fmaf((float)(int8_t)byte * d, x[base + j], acc);
+            }
+        } else {          // Q4_0 / Q4_1: 16 bytes -> 32 weights
+            #pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                const uint32_t byte = (sel_u32(v0, j >> 2) >> ((j & 3) * 8)) & 0xFFu;
+                const float lo = (kind == 4) ? ((float)(int)(byte & 0xFu) * d + m)
+                                             : ((float)((int)(byte & 0xFu) - 8) * d);
+                const float hi = (kind == 4) ? ((float)(int)(byte >> 4) * d + m)
+                                             : ((float)((int)(byte >> 4) - 8) * d);
+                acc = fmaf(lo, x[base + j], acc);
+                acc = fmaf(hi, x[base + j + 16], acc);
+            }
+        }
+    }
+
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        acc += __shfl_down_sync(0xffffffffu, acc, o);
+    }
+    if (lane == 0) { y[warp] = acc; }
+}
+
+void gemv_quant_vec_f32(const void *x_f32, const void *sx16, const void *w, int kind,
+                        size_t in, size_t out, int stride, int qs, int d_off, int m_off,
+                        void *y_f32, cudaStream_t stream)
+{
+    if (!x_f32 || !w || !y_f32 || in == 0 || out == 0 || (in % 32) != 0) return;
+    if ((kind == 3 || kind == 4) && sx16 == nullptr) return;
+    const int threads = 256;
+    const unsigned warps_per_block = threads / 32;
+    // Q4_0/Q4_1: four rows per warp for more memory-level parallelism.
+    const int rows_per_warp = (kind == 3 || kind == 4) ? 4 : 1;
+    const unsigned rows_per_block = warps_per_block * (unsigned)rows_per_warp;
+    const unsigned bx = (unsigned)((out + rows_per_block - 1) / rows_per_block);
+    gemv_quant_vec_kernel<<<bx, threads, 0, stream>>>(
+        (const float *)x_f32, (const float *)sx16, (const uint8_t *)w, (float *)y_f32,
+        (int)in, (int)out, stride, qs, d_off, m_off, kind, rows_per_warp);
+}
+
+__global__ void block_sums16_kernel(const float *x, float *sx, int n16)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n16) return;
+    const float4 *x4 = reinterpret_cast<const float4 *>(x + i * 16);
+    const float4 a = __ldg(x4);
+    const float4 b = __ldg(x4 + 1);
+    const float4 c = __ldg(x4 + 2);
+    const float4 d = __ldg(x4 + 3);
+    sx[i] = (a.x + a.y + a.z + a.w) + (b.x + b.y + b.z + b.w) +
+            (c.x + c.y + c.z + c.w) + (d.x + d.y + d.z + d.w);
+}
+
+void block_sums16_f32(const void *x_f32, void *sx16, int n16, cudaStream_t stream)
+{
+    if (!x_f32 || !sx16 || n16 <= 0) return;
+    const int threads = 256;
+    const unsigned bx = (unsigned)((n16 + threads - 1) / threads);
+    block_sums16_kernel<<<bx, threads, 0, stream>>>((const float *)x_f32, (float *)sx16, n16);
+}
+
+// --- GPU logits top-k preselection ---
+
+__device__ __forceinline__ uint32_t logit_key(float f)
+{
+    const uint32_t b = __float_as_uint(f);
+    return b ^ (0x80000000u | (0u - (b >> 31)));
+}
+
+__global__ void logits_max_kernel(const float *x, int n, unsigned *gmax)
+{
+    __shared__ unsigned smax[32];
+    unsigned lm = 0;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        lm = max(lm, logit_key(x[i]));
+    }
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        lm = max(lm, __shfl_down_sync(0xffffffffu, lm, o));
+    }
+    const int lane = threadIdx.x & 31;
+    const int wid = threadIdx.x >> 5;
+    const int nwarps = blockDim.x >> 5;
+    if (lane == 0) { smax[wid] = lm; }
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        unsigned v = (threadIdx.x < nwarps) ? smax[threadIdx.x] : 0u;
+        #pragma unroll
+        for (int o = 16; o > 0; o >>= 1) {
+            v = max(v, __shfl_down_sync(0xffffffffu, v, o));
+        }
+        if (threadIdx.x == 0 && v != 0u) { atomicMax(gmax, v); }
+    }
+}
+
+__global__ void logits_collect_kernel(const float *x, int n, float thresh,
+                                      unsigned *counter, int *idx, float *val, int cap)
+{
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        if (x[i] > thresh) {
+            const unsigned p = atomicAdd(counter, 1u);
+            if ((int)p < cap) {
+                idx[p] = i;
+                val[p] = x[i];
+            }
+        }
+    }
+}
+
+__device__ __forceinline__ float logit_key_to_float(uint32_t k)
+{
+    const uint32_t b = k ^ ((k & 0x80000000u) ? 0x80000000u : 0xFFFFFFFFu);
+    return __uint_as_float(b);
+}
+
+__host__ __device__ __forceinline__ float logit_key_to_float_host(uint32_t k)
+{
+    const uint32_t b = k ^ ((k & 0x80000000u) ? 0x80000000u : 0xFFFFFFFFu);
+    float f;
+    std::memcpy(&f, &b, sizeof(f));
+    return f;
+}
+
+int topk_logits_f32(const void *logits_gpu, int vocab, int need, int cap,
+                    int *idx_out, float *val_out, cudaStream_t stream)
+{
+    if (!logits_gpu || !idx_out || !val_out || vocab <= 0 || need <= 0 || cap <= 0) { return -1; }
+    static unsigned *d_gmax = nullptr;
+    static unsigned *d_counter = nullptr;
+    static int *d_idx = nullptr;
+    static float *d_val = nullptr;
+    static int d_cap = 0;
+    if (d_gmax == nullptr) {
+        CHECK_CUDA(cudaMalloc(&d_gmax, sizeof(unsigned)));
+        CHECK_CUDA(cudaMalloc(&d_counter, sizeof(unsigned)));
+    }
+    if (d_cap < cap) {
+        if (d_idx) { cudaFree(d_idx); cudaFree(d_val); }
+        CHECK_CUDA(cudaMalloc(&d_idx, cap * sizeof(int)));
+        CHECK_CUDA(cudaMalloc(&d_val, cap * sizeof(float)));
+        d_cap = cap;
+    }
+    const float *x = static_cast<const float *>(logits_gpu);
+    const int threads = 256;
+    const unsigned bx = (unsigned)((vocab + threads - 1) / threads);
+    const unsigned gbx = bx < 4096u ? bx : 4096u;
+
+    // Global max (order-preserving key, atomicMax on uint).
+    CHECK_CUDA(cudaMemsetAsync(d_gmax, 0, sizeof(unsigned), stream));
+    logits_max_kernel<<<gbx, threads, 0, stream>>>(x, vocab, d_gmax);
+    unsigned h_key = 0;
+    CHECK_CUDA(cudaMemcpyAsync(&h_key, d_gmax, sizeof(unsigned), cudaMemcpyDeviceToHost, stream));
+    CHECK_CUDA(cudaStreamSynchronize(stream));
+    const float max_val = logit_key_to_float_host(h_key);
+
+    // Collect candidates above max - window; widen until >= need (or shrink
+    // if the bucket overflows `cap`).
+    float window = 25.0f;
+    int count = 0;
+    for (int iter = 0; iter < 12; ++iter) {
+        const float thresh = max_val - window;
+        CHECK_CUDA(cudaMemsetAsync(d_counter, 0, sizeof(unsigned), stream));
+        logits_collect_kernel<<<gbx, threads, 0, stream>>>(x, vocab, thresh, d_counter, d_idx, d_val, cap);
+        unsigned h_count = 0;
+        CHECK_CUDA(cudaMemcpyAsync(&h_count, d_counter, sizeof(unsigned), cudaMemcpyDeviceToHost, stream));
+        CHECK_CUDA(cudaStreamSynchronize(stream));
+        count = (int)h_count;
+        if (count >= need && count <= cap) { break; }
+        // Gentler adjustment avoids oscillating across the [need, cap] band.
+        window *= (count < need) ? 1.6f : 0.6f;
+        if (window > 1e6f || window < 1e-3f) { break; }
+    }
+    if (count < need || count > cap) { return -1; }
+
+    const int ncopy = count;
+    CHECK_CUDA(cudaMemcpyAsync(idx_out, d_idx, ncopy * sizeof(int), cudaMemcpyDeviceToHost, stream));
+    CHECK_CUDA(cudaMemcpyAsync(val_out, d_val, ncopy * sizeof(float), cudaMemcpyDeviceToHost, stream));
+    CHECK_CUDA(cudaStreamSynchronize(stream));
+    return ncopy;
+}
+
+void gemv_quant_f16(const void *x, const void *w, int qtype, size_t in, size_t out, void *y_f32,
+                    cudaStream_t stream)
+{
+    if (!x || !w || !y_f32 || in == 0 || out == 0 || (in % 32) != 0) return;
+    const int bpr = (int)(in / 32);
+    const int threads = 256;
+    const unsigned bx = (unsigned)((out + threads - 1) / threads);
+    const size_t col_blocks = bx;
+    int ksplit = (int)((384 + col_blocks - 1) / col_blocks);
+    if (ksplit < 1) ksplit = 1;
+    if (ksplit > bpr) ksplit = bpr;
+    dim3 grid(bx, (unsigned)ksplit);
+
+    if (qtype == 3) {
+        gemv_quant_kernel<3><<<grid, threads, 0, stream>>>((const __half *)x, (const uint8_t *)w, (float *)y_f32,
+                                                        (int)in, (int)out, bpr, ksplit);
+    } else if (qtype == 4) {
+        gemv_quant_kernel<4><<<grid, threads, 0, stream>>>((const __half *)x, (const uint8_t *)w, (float *)y_f32,
+                                                        (int)in, (int)out, bpr, ksplit);
+    } else if (qtype == 5) {
+        gemv_quant_kernel<5><<<grid, threads, 0, stream>>>((const __half *)x, (const uint8_t *)w, (float *)y_f32,
+                                                        (int)in, (int)out, bpr, ksplit);
+    }
+}
+
 // --- RoPE ---
 
 template <typename T>
 __global__ void rope_kernel(T *data, int head_dim, int n_heads, float base, int pos_offset)
 {
+    // Rotate-half convention (matches CPU apply_rope_inplace):
+    // pair i in [0, head_dim/2) rotates elements (i, i + head_dim/2).
+    const int half_dim = head_dim / 2;
     int seq_idx = blockIdx.y;
     int head_idx = blockIdx.x;
-    int i = threadIdx.x * 2;
+    int i = threadIdx.x;
 
-    if (i < head_dim) {
+    if (i < half_dim) {
         float pos = (float)(seq_idx + pos_offset);
-        float freq = 1.0f / powf(base, (float)i / (float)head_dim);
+        float freq = 1.0f / powf(base, (float)(2 * i) / (float)head_dim);
         float theta = pos * freq;
         float cos_v = cosf(theta);
         float sin_v = sinf(theta);
 
-        int offset = (seq_idx * n_heads * head_dim) + (head_idx * head_dim) + i;
-        float x0 = to_float(data[offset]);
-        float x1 = to_float(data[offset + 1]);
+        int head_base = (seq_idx * n_heads * head_dim) + (head_idx * head_dim);
+        int offset0 = head_base + i;
+        int offset1 = head_base + i + half_dim;
+        float x0 = to_float(data[offset0]);
+        float x1 = to_float(data[offset1]);
 
-        data[offset] = (T)(x0 * cos_v - x1 * sin_v);
-        data[offset + 1] = (T)(x0 * sin_v + x1 * cos_v);
+        data[offset0] = (T)(x0 * cos_v - x1 * sin_v);
+        data[offset1] = (T)(x0 * sin_v + x1 * cos_v);
+    }
+}
+
+template <typename T>
+__global__ void rope_devpos_kernel(T *data, int head_dim, int n_heads, float base, const int *pos_dev)
+{
+    const int half_dim = head_dim / 2;
+    int seq_idx = blockIdx.y;
+    int head_idx = blockIdx.x;
+    int i = threadIdx.x;
+    const int pos_offset = *pos_dev;
+
+    if (i < half_dim) {
+        float pos = (float)(seq_idx + pos_offset);
+        float freq = 1.0f / powf(base, (float)(2 * i) / (float)head_dim);
+        float theta = pos * freq;
+        float cos_v = cosf(theta);
+        float sin_v = sinf(theta);
+
+        int head_base = (seq_idx * n_heads * head_dim) + (head_idx * head_dim);
+        int offset0 = head_base + i;
+        int offset1 = head_base + i + half_dim;
+        float x0 = to_float(data[offset0]);
+        float x1 = to_float(data[offset1]);
+
+        data[offset0] = (T)(x0 * cos_v - x1 * sin_v);
+        data[offset1] = (T)(x0 * sin_v + x1 * cos_v);
+    }
+}
+
+void rope_devpos(void *data, size_t head_dim, size_t seq_len, size_t n_heads, float base,
+                 const int *pos_dev, DType dtype, cudaStream_t stream)
+{
+    if (!data || !pos_dev || head_dim == 0 || seq_len == 0 || n_heads == 0) return;
+
+    dim3 grid((unsigned int)n_heads, (unsigned int)seq_len);
+    int threads = (int)((head_dim / 2 + 31) / 32 * 32);
+    if (threads > 1024) threads = 1024;
+
+    if (dtype == DType::Float16) {
+        rope_devpos_kernel<<<grid, threads, 0, stream>>>((__half *)data, (int)head_dim, (int)n_heads, base, pos_dev);
+    } else if (dtype == DType::BFloat16) {
+        rope_devpos_kernel<<<grid, threads, 0, stream>>>((__nv_bfloat16 *)data, (int)head_dim, (int)n_heads, base, pos_dev);
+    } else {
+        rope_devpos_kernel<<<grid, threads, 0, stream>>>((float *)data, (int)head_dim, (int)n_heads, base, pos_dev);
     }
 }
 
@@ -415,6 +1246,30 @@ void add_inplace(void *out, const void *other, size_t n, DType dtype, cudaStream
         add_inplace_kernel<<<blocks, threads, 0, stream>>>((__half *)out, (const __half *)other, (int)n);
     } else if (dtype == DType::BFloat16) {
         add_inplace_kernel<<<blocks, threads, 0, stream>>>((__nv_bfloat16 *)out, (const __nv_bfloat16 *)other, (int)n);
+    }
+}
+
+template <typename T>
+__global__ void add_row_bias_kernel(T *out, const T *bias, int rows, int cols)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < rows * cols) {
+        out[i] = (T)(to_float(out[i]) + to_float(bias[i % cols]));
+    }
+}
+
+void add_row_bias(void *out, const void *bias, size_t rows, size_t cols, DType dtype, cudaStream_t stream)
+{
+    if (!out || !bias || rows == 0 || cols == 0) return;
+    int threads = 256;
+    int blocks = (int)((rows * cols + threads - 1) / threads);
+
+    if (dtype == DType::Float32) {
+        add_row_bias_kernel<<<blocks, threads, 0, stream>>>((float *)out, (const float *)bias, (int)rows, (int)cols);
+    } else if (dtype == DType::Float16) {
+        add_row_bias_kernel<<<blocks, threads, 0, stream>>>((__half *)out, (const __half *)bias, (int)rows, (int)cols);
+    } else if (dtype == DType::BFloat16) {
+        add_row_bias_kernel<<<blocks, threads, 0, stream>>>((__nv_bfloat16 *)out, (const __nv_bfloat16 *)bias, (int)rows, (int)cols);
     }
 }
 
@@ -507,14 +1362,18 @@ void copy_layout(void *dst, const void *src, const size_t *shape, const size_t *
     for (size_t i = 0; i < dims; ++i) n *= shape[i];
     if (n == 0) return;
 
-    // We must copy shape and strides to GPU memory to be accessible by the kernel
-    // For a small number of dims, we could pass them as arguments, but this is more general.
-    size_t *d_shape = nullptr;
-    size_t *d_strides = nullptr;
-    CHECK_CUDA(cudaMalloc(&d_shape, dims * sizeof(size_t)));
-    CHECK_CUDA(cudaMalloc(&d_strides, dims * sizeof(size_t)));
-    CHECK_CUDA(cudaMemcpyAsync(d_shape, shape, dims * sizeof(size_t), cudaMemcpyHostToDevice, stream));
-    CHECK_CUDA(cudaMemcpyAsync(d_strides, src_strides, dims * sizeof(size_t), cudaMemcpyHostToDevice, stream));
+    // Persistent device staging buffer for shape/strides: avoids cudaMalloc +
+    // stream sync + cudaFree on every call (this runs dozens of times per token).
+    constexpr int kMaxDims = 16;
+    static size_t *d_meta = nullptr;
+    if (d_meta == nullptr) {
+        CHECK_CUDA(cudaMalloc(&d_meta, 2 * kMaxDims * sizeof(size_t)));
+    }
+    if (dims > kMaxDims) return;
+    CHECK_CUDA(cudaMemcpyAsync(d_meta, shape, dims * sizeof(size_t), cudaMemcpyHostToDevice, stream));
+    CHECK_CUDA(cudaMemcpyAsync(d_meta + dims, src_strides, dims * sizeof(size_t), cudaMemcpyHostToDevice, stream));
+    const size_t *d_shape = d_meta;
+    const size_t *d_strides = d_meta + dims;
 
     int threads = 256;
     int blocks = (int)((n + threads - 1) / threads);
@@ -526,12 +1385,173 @@ void copy_layout(void *dst, const void *src, const size_t *shape, const size_t *
     } else if (dtype == DType::BFloat16) {
         copy_layout_kernel<<<blocks, threads, 0, stream>>>((__nv_bfloat16 *)dst, (const __nv_bfloat16 *)src, n, (int)dims, d_shape, d_strides);
     }
+}
 
-    // Cleanup device pointers after kernel launch (can be async if we had a proper stream-aware allocator)
-    // For simplicity, we sync here, but in a production version we'd use a pool or an event.
-    cudaStreamSynchronize(stream);
-    cudaFree(d_shape);
-    cudaFree(d_strides);
+namespace {
+
+// Fused single-token GQA decode attention (FP16): replaces repeat_kv +
+// transpose/contiguous copies + 2x batched_matmul + softmax + output
+// transpose with ONE kernel per layer.
+//   q:     [n_heads*head_dim] FP16, already RoPE'd and pre-scaled by 1/sqrt(head_dim)
+//   K,V:   [max_seq, kv_dim] FP16 row-major KV cache (kv_dim = n_kv*head_dim)
+//   out:   [n_heads*head_dim] FP16
+// kv head for query head h: h / (n_heads / n_kv)  (matches repeat_kv_kernel).
+// pos = number of valid cache rows (effective_len). Requires pos <= 4096.
+// Shared-memory layout for the fused decode attention: w[pos] scores at the
+// front, then the FP32 query copy and reduction scratch at a FIXED offset so
+// the same kernel works whether pos comes from a launch arg or device memory.
+__device__ __forceinline__ void gqa_decode_attn_f16_impl(const __half *q, const __half *K,
+                                                       const __half *V, __half *out, int pos,
+                                                       int n_heads, int n_kv, int head_dim,
+                                                       int kv_dim, int qf_off, float *sm)
+{
+    const int head = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int nthreads = blockDim.x;
+    const int kvh = head / (n_heads / n_kv);
+    const int hd = head_dim;
+
+    float *w = sm;                      // pos scores/weights
+    float *qf = sm + qf_off;            // head_dim query floats
+    float *red = qf + hd;               // reduction scratch (24 floats)
+
+    if (tid < hd) { qf[tid] = __half2float(q[head * hd + tid]); }
+    __syncthreads();
+
+    // Phase 1: scores s[p] = <q_head, K[p, kvh]>
+    const int kvoff = kvh * hd;
+    for (int p = tid; p < pos; p += nthreads) {
+        const __half *krow = K + (size_t)p * kv_dim + kvoff;
+        float s = 0.0f;
+        #pragma unroll 4
+        for (int d = 0; d < hd; ++d) {
+            s = fmaf(qf[d], __half2float(krow[d]), s);
+        }
+        w[p] = s;
+    }
+    __syncthreads();
+
+    // Phase 2: softmax — max reduce (shared-mem, no float atomicMax)
+    float lmax = -CUDART_INF_F;
+    for (int p = tid; p < pos; p += nthreads) { lmax = fmaxf(lmax, w[p]); }
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) { lmax = fmaxf(lmax, __shfl_down_sync(0xffffffffu, lmax, o)); }
+    const int wid = tid >> 5;
+    const int nwarp = (nthreads + 31) >> 5;
+    if ((tid & 31) == 0) { red[1 + wid] = lmax; }
+    __syncthreads();
+    if (tid == 0) {
+        float mx = -CUDART_INF_F;
+        for (int i = 0; i < nwarp; ++i) { mx = fmaxf(mx, red[1 + i]); }
+        red[0] = mx;
+    }
+    __syncthreads();
+    const float mx = red[0];
+
+    // exp + sum reduce
+    float lsum = 0.0f;
+    for (int p = tid; p < pos; p += nthreads) {
+        const float e = expf(w[p] - mx);
+        w[p] = e;
+        lsum += e;
+    }
+    // block reduce lsum
+    for (int o = 16; o > 0; o >>= 1) { lsum += __shfl_down_sync(0xffffffffu, lsum, o); }
+    if ((tid & 31) == 0) { red[9 + wid] = lsum; }
+    __syncthreads();
+    if (tid == 0) {
+        float s = 0.0f;
+        for (int i = 0; i < nwarp; ++i) { s += red[9 + i]; }
+        red[0] = s;
+    }
+    __syncthreads();
+    const float inv_sum = 1.0f / red[0];
+    for (int p = tid; p < pos; p += nthreads) { w[p] *= inv_sum; }
+    __syncthreads();
+
+    // Phase 3: out[d] = sum_p w[p] * V[p, kvh, d]
+    if (tid < hd) {
+        float acc = 0.0f;
+        for (int p = 0; p < pos; ++p) {
+            acc = fmaf(w[p], __half2float(V[(size_t)p * kv_dim + kvoff + tid]), acc);
+        }
+        out[head * hd + tid] = __float2half(acc);
+    }
+}
+
+#define GQA_DEC_ATTN_MAX_POS 4096
+
+__global__ void gqa_decode_attn_f16_kernel(const __half *q, const __half *K, const __half *V,
+                                           __half *out, int pos, int n_heads, int n_kv,
+                                           int head_dim, int kv_dim)
+{
+    extern __shared__ float sm[];
+    gqa_decode_attn_f16_impl(q, K, V, out, pos, n_heads, n_kv, head_dim, kv_dim, pos, sm);
+}
+
+__global__ void gqa_decode_attn_f16_devpos_kernel(const __half *q, const __half *K, const __half *V,
+                                                  __half *out, const int *pos_dev, int n_heads,
+                                                  int n_kv, int head_dim, int kv_dim)
+{
+    extern __shared__ float sm[];
+    gqa_decode_attn_f16_impl(q, K, V, out, (*pos_dev) + 1, n_heads, n_kv, head_dim, kv_dim,
+                             GQA_DEC_ATTN_MAX_POS, sm);
+}
+
+__global__ void kv_write_devpos_kernel(char *dst_base, const char *src, size_t nbytes,
+                                       const int *pos_dev, size_t row_stride)
+{
+    const size_t pos = (size_t)(*pos_dev);
+    char *dst = dst_base + pos * row_stride;
+    const int nvec = (int)(nbytes >> 4);
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < nvec) {
+        reinterpret_cast<uint4 *>(dst)[tid] = reinterpret_cast<const uint4 *>(src)[tid];
+    }
+    const int tail = (int)(nbytes & 15);
+    if (tail != 0 && blockIdx.x == 0 && threadIdx.x == blockDim.x - 1) {
+        char *d = dst + nvec * 16;
+        const char *s = src + nvec * 16;
+        for (int i = 0; i < tail; ++i) d[i] = s[i];
+    }
+}
+
+}  // namespace
+
+void gqa_decode_attention_f16(const void *q, const void *K, const void *V, void *out,
+                              int pos, int n_heads, int n_kv, int head_dim, int kv_dim,
+                              cudaStream_t stream)
+{
+    if (!q || !K || !V || !out || pos <= 0 || pos > 4096) return;
+    const int nthreads = 256;
+    const size_t shmem = (size_t)(pos + head_dim + 24) * sizeof(float);
+    gqa_decode_attn_f16_kernel<<<n_heads, nthreads, shmem, stream>>>(
+        (const __half *)q, (const __half *)K, (const __half *)V, (__half *)out,
+        pos, n_heads, n_kv, head_dim, kv_dim);
+}
+
+void gqa_decode_attention_f16_devpos(const void *q, const void *K, const void *V, void *out,
+                                     const int *pos_dev, int n_heads, int n_kv, int head_dim,
+                                     int kv_dim, cudaStream_t stream)
+{
+    if (!q || !K || !V || !out || !pos_dev || n_heads <= 0) return;
+    const int nthreads = 256;
+    // Fixed max-size shared memory: qf sits at offset MAX_POS; w[] uses pos floats.
+    const size_t shmem = (size_t)(GQA_DEC_ATTN_MAX_POS + head_dim + 24) * sizeof(float);
+    gqa_decode_attn_f16_devpos_kernel<<<n_heads, nthreads, shmem, stream>>>(
+        (const __half *)q, (const __half *)K, (const __half *)V, (__half *)out,
+        pos_dev, n_heads, n_kv, head_dim, kv_dim);
+}
+
+void kv_write_devpos(void *dst_base, const void *src, size_t nbytes,
+                     const int *pos_dev, size_t row_stride_bytes,
+                     cudaStream_t stream)
+{
+    if (!dst_base || !src || !pos_dev || nbytes == 0 || row_stride_bytes == 0) return;
+    const int nthreads = 256;
+    const int blocks = (int)((nbytes / 16 + nthreads - 1) / nthreads);
+    kv_write_devpos_kernel<<<blocks, nthreads, 0, stream>>>(
+        (char *)dst_base, (const char *)src, nbytes, pos_dev, row_stride_bytes);
 }
 
 }  // namespace hal

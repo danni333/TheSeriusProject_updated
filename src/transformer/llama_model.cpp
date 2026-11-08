@@ -65,6 +65,9 @@ LLaMABlock::LLaMABlock(const LLamaConfig &config, const distributed::Distributed
     q_proj = make_param({hidden_size_, local_n_q}, "q_proj");
     k_proj = make_param({hidden_size_, local_n_kv}, "k_proj");
     v_proj = make_param({hidden_size_, local_n_kv}, "v_proj");
+    q_bias = make_param({local_n_q}, "q_bias");
+    k_bias = make_param({local_n_kv}, "k_bias");
+    v_bias = make_param({local_n_kv}, "v_bias");
     o_proj = make_param({local_n_q, hidden_size_}, "o_proj");
     post_attention_layernorm_weight = make_param({hidden_size_}, "post_attention_layernorm");
     gate_proj = make_param({hidden_size_, local_inter}, "gate_proj");
@@ -81,6 +84,9 @@ Node *LLaMABlock::forward(Node *input, size_t pos_offset) const
     Node *query_node = matmul(normed, q_proj.get());
     Node *key_node = matmul(normed, k_proj.get());
     Node *value_node = matmul(normed, v_proj.get());
+    if (q_bias) { query_node = add(query_node, q_bias.get()); }
+    if (k_bias) { key_node = add(key_node, k_bias.get()); }
+    if (v_bias) { value_node = add(value_node, v_bias.get()); }
 
     RoPEResult rope_out = rope(query_node, key_node, head_dim_, rope_theta_, pos_offset);
     query_node = rope_out.queries;
@@ -149,6 +155,9 @@ void LLaMABlock::set_device(hal::DeviceType device) const
     q_proj->data.set_device(device);
     k_proj->data.set_device(device);
     v_proj->data.set_device(device);
+    if (q_bias) { q_bias->data.set_device(device); }
+    if (k_bias) { k_bias->data.set_device(device); }
+    if (v_bias) { v_bias->data.set_device(device); }
     o_proj->data.set_device(device);
     post_attention_layernorm_weight->data.set_device(device);
     gate_proj->data.set_device(device);

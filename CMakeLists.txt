@@ -61,7 +61,10 @@ find_package(OpenMP)
 if(MSVC)
     # /arch:AVX2 enables AVX2 + FMA for the whole project (safe on modern x86-64).
     # Individual files that need AVX-512 get /arch:AVX512 in src/CMakeLists.txt.
-    add_compile_options($<$<NOT:$<CONFIG:Debug>>:/arch:AVX2>)
+    add_compile_options($<$<AND:$<NOT:$<CONFIG:Debug>>,$<COMPILE_LANGUAGE:CXX>>:/arch:AVX2>)
+    # CCCL (CUDA 13 CCCL headers) requires the standard-conforming MSVC
+    # preprocessor; without /Zc:preprocessor cl.exe triggers a fatal #error.
+    add_compile_options($<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>)
 endif()
 
 enable_testing()

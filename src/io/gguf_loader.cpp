@@ -3,11 +3,13 @@
 #include <array>
 #include <fstream>
 #include <cstring>
+#include <iostream>
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numeric>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 
 #include "../transformer/config.h"
@@ -37,14 +39,14 @@ float half_to_float(uint16_t half_val)
     const uint32_t exp = (static_cast<uint32_t>(half_val) >> 10) & 0x1Fu;
     const uint32_t mant = static_cast<uint32_t>(half_val) & 0x3FFu;
 
+    if (exp == 0u && mant != 0u) {
+        // fp16 subnormal: value = mant * 2^-24 (exact in fp32).
+        float v = static_cast<float>(mant) * 0x1p-24f;
+        return sign ? -v : v;
+    }
     uint32_t bits = 0;
     if (exp == 0u) {
         bits = (sign << 31);
-        if (mant != 0u) {
-            // subnormal half -> normalize to float
-            const uint32_t mantissa = mant << 13;
-            bits |= mantissa;
-        }
     } else if (exp == 0x1Fu) {
         bits = (sign << 31) | 0x7F800000u | (mant << 13);
     } else {
@@ -54,6 +56,19 @@ float half_to_float(uint16_t half_val)
     float result = 0.0f;
     std::memcpy(&result, &bits, sizeof(result));
     return result;
+}
+
+// Truncating float -> IEEE 754 half (used for Q4_K->Q4_1 scale repacking).
+uint16_t f32_to_f16(float f)
+{
+    uint32_t x;
+    std::memcpy(&x, &f, sizeof(x));
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const int exp = static_cast<int>((x >> 23) & 0xFFu) - 127 + 15;
+    const uint32_t mant = x & 0x7FFFFFu;
+    if (exp <= 0) { return static_cast<uint16_t>(sign); }
+    if (exp >= 31) { return static_cast<uint16_t>(sign | 0x7C00u); }
+    return static_cast<uint16_t>(sign | (static_cast<uint32_t>(exp) << 10) | (mant >> 13));
 }
 
 void dequantize_q4_0(const uint8_t *data, size_t n, float *out)
@@ -108,6 +123,169 @@ void dequantize_q8_0(const uint8_t *data, size_t n, float *out)
             out[i + j] = q[j] * scale_f;
         }
         data += 34;
+    }
+}
+
+// ggml block_q4_K: 256 weights per 144-byte superblock.
+// { fp16 d, fp16 dmin, uint8 scales[12], uint8 qs[128] }
+// 8 sub-blocks of 32: w = d*sc[j]*nibble - dmin*m[j].
+inline void get_scale_min_k4(int j, const uint8_t *q, uint8_t *d, uint8_t *m)
+{
+    if (j < 4) {
+        *d = q[j] & 63;
+        *m = q[j + 4] & 63;
+    } else {
+        *d = static_cast<uint8_t>((q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4));
+        *m = static_cast<uint8_t>((q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4));
+    }
+}
+
+void dequantize_q4_k(const uint8_t *data, size_t n, float *out)
+{
+    const size_t nb = n / 256;
+    for (size_t i = 0; i < nb; ++i) {
+        const uint8_t *blk = data + i * 144;
+        const float d = half_to_float(static_cast<uint16_t>(blk[0] | (blk[1] << 8)));
+        const float dmin = half_to_float(static_cast<uint16_t>(blk[2] | (blk[3] << 8)));
+        const uint8_t *scales = blk + 4;
+        const uint8_t *q = blk + 16;
+        float *y = out + i * 256;
+        int is = 0;
+        for (int j = 0; j < 256; j += 64) {
+            uint8_t sc, m;
+            get_scale_min_k4(is + 0, scales, &sc, &m);
+            const float d1 = d * sc, m1 = dmin * m;
+            get_scale_min_k4(is + 1, scales, &sc, &m);
+            const float d2 = d * sc, m2 = dmin * m;
+            for (int l = 0; l < 32; ++l) { *y++ = d1 * (q[l] & 0xF) - m1; }
+            for (int l = 0; l < 32; ++l) { *y++ = d2 * (q[l] >> 4) - m2; }
+            q += 32;
+            is += 2;
+        }
+    }
+}
+
+// ggml block_q6_K: 256 weights per 210-byte superblock.
+// { uint8 ql[128], uint8 qh[64], int8 scales[16], fp16 d } — d is LAST.
+void dequantize_q6_k(const uint8_t *data, size_t n, float *out)
+{
+    const size_t nb = n / 256;
+    for (size_t i = 0; i < nb; ++i) {
+        const uint8_t *blk = data + i * 210;
+        const uint8_t *ql = blk;
+        const uint8_t *qh = blk + 128;
+        const int8_t *sc = reinterpret_cast<const int8_t *>(blk + 192);
+        const float d = half_to_float(static_cast<uint16_t>(blk[208] | (blk[209] << 8)));
+        float *y = out + i * 256;
+        for (int half = 0; half < 2; ++half) {
+            const uint8_t *ql_h = ql + half * 64;
+            const uint8_t *qh_h = qh + half * 32;
+            const int8_t *sc_h = sc + half * 8;
+            for (int l = 0; l < 32; ++l) {
+                const int is = l / 16;
+                const int q1 = static_cast<int8_t>((ql_h[l] & 0xF) | (((qh_h[l] >> 0) & 3) << 4)) - 32;
+                const int q2 = static_cast<int8_t>((ql_h[l + 32] & 0xF) | (((qh_h[l] >> 2) & 3) << 4)) - 32;
+                const int q3 = static_cast<int8_t>((ql_h[l] >> 4) | (((qh_h[l] >> 4) & 3) << 4)) - 32;
+                const int q4 = static_cast<int8_t>((ql_h[l + 32] >> 4) | (((qh_h[l] >> 6) & 3) << 4)) - 32;
+                y[l + 0] = d * sc_h[is + 0] * q1;
+                y[l + 32] = d * sc_h[is + 2] * q2;
+                y[l + 64] = d * sc_h[is + 4] * q3;
+                y[l + 96] = d * sc_h[is + 6] * q4;
+            }
+            y += 128;
+        }
+    }
+}
+
+// Convert packed Q4_K superblocks into QuantWeight rows of Q4_1 blocks
+// (w = nibble*D + M per 32 weights). Q4_K sub-block sb uses the low nibble of
+// qs[(sb/2)*32 + l] when sb is even, the high nibble when odd.
+void q4_k_to_q41(const uint8_t *packed, size_t numel, size_t in, size_t out,
+                 quant::QuantWeight &qw)
+{
+    if (numel % 256 != 0 || in % 256 != 0 || in == 0) { return; }
+    const size_t sbs_per_row = in / 256;
+    const size_t bpr = in / 32;  // Q4_1 blocks per row
+    qw.type = quant::QuantType::Q4_1;
+    qw.in = in;
+    qw.out = out;
+    qw.bytes.assign(out * bpr * 20, 0);
+    for (size_t r = 0; r < out; ++r) {
+        const uint8_t *src_row = packed + r * sbs_per_row * 144;
+        uint8_t *dst_row = qw.bytes.data() + r * bpr * 20;
+        for (size_t s = 0; s < sbs_per_row; ++s) {
+            const uint8_t *blk = src_row + s * 144;
+            const float d = half_to_float(static_cast<uint16_t>(blk[0] | (blk[1] << 8)));
+            const float dmin = half_to_float(static_cast<uint16_t>(blk[2] | (blk[3] << 8)));
+            const uint8_t *scales = blk + 4;
+            const uint8_t *qs = blk + 16;
+            for (int sb = 0; sb < 8; ++sb) {
+                uint8_t sc, m;
+                get_scale_min_k4(sb, scales, &sc, &m);
+                const float D = d * sc;
+                const float M = -(dmin * m);
+                const uint8_t *qb = qs + (sb / 2) * 32;
+                const bool hi = (sb & 1) != 0;
+                uint8_t *ob = dst_row + (s * 8 + sb) * 20;
+                // fp16 D and M
+                const uint16_t d16 = f32_to_f16(D);
+                const uint16_t m16 = f32_to_f16(M);
+                ob[0] = static_cast<uint8_t>(d16 & 0xFF);
+                ob[1] = static_cast<uint8_t>(d16 >> 8);
+                ob[2] = static_cast<uint8_t>(m16 & 0xFF);
+                ob[3] = static_cast<uint8_t>(m16 >> 8);
+                // repack nibbles: byte j = w[j] | (w[j+16]<<4)
+                for (int j = 0; j < 16; ++j) {
+                    const uint8_t lo = hi ? (qb[j] >> 4) : (qb[j] & 0xF);
+                    const uint8_t hi_n = hi ? (qb[j + 16] >> 4) : (qb[j + 16] & 0xF);
+                    ob[4 + j] = static_cast<uint8_t>(lo | (hi_n << 4));
+                }
+            }
+        }
+    }
+}
+
+// Requantize a row-major FP32 [out][in] matrix into Q4_1 QuantWeight rows
+// (w = nibble*D + M per 32 weights). Used for K-quant tensors (Q6_K) that have
+// no native packed representation in our kernels.
+void quantize_f32_to_q41(const float *w, size_t in, size_t out, quant::QuantWeight &qw)
+{
+    if (in == 0 || out == 0 || (in % 32) != 0) { return; }
+    const size_t bpr = in / 32;
+    qw.type = quant::QuantType::Q4_1;
+    qw.in = in;
+    qw.out = out;
+    qw.bytes.assign(out * bpr * 20, 0);
+    for (size_t r = 0; r < out; ++r) {
+        const float *wr = w + r * in;
+        uint8_t *dr = qw.bytes.data() + r * bpr * 20;
+        for (size_t b = 0; b < bpr; ++b) {
+            const float *wb = wr + b * 32;
+            float mn = wb[0], mx = wb[0];
+            for (int j = 1; j < 32; ++j) {
+                mn = mn < wb[j] ? mn : wb[j];
+                mx = mx > wb[j] ? mx : wb[j];
+            }
+            const float d = (mx > mn) ? (mx - mn) / 15.0f : 0.0f;
+            const float m = mn;
+            uint8_t *ob = dr + b * 20;
+            const uint16_t d16 = f32_to_f16(d);
+            const uint16_t m16 = f32_to_f16(m);
+            ob[0] = static_cast<uint8_t>(d16 & 0xFF);
+            ob[1] = static_cast<uint8_t>(d16 >> 8);
+            ob[2] = static_cast<uint8_t>(m16 & 0xFF);
+            ob[3] = static_cast<uint8_t>(m16 >> 8);
+            for (int j = 0; j < 16; ++j) {
+                int n0 = 0, n1 = 0;
+                if (d > 0.0f) {
+                    n0 = static_cast<int>(std::lrintf((wb[j] - m) / d));
+                    n1 = static_cast<int>(std::lrintf((wb[j + 16] - m) / d));
+                    n0 = n0 < 0 ? 0 : (n0 > 15 ? 15 : n0);
+                    n1 = n1 < 0 ? 0 : (n1 > 15 ? 15 : n1);
+                }
+                ob[4 + j] = static_cast<uint8_t>(n0 | (n1 << 4));
+            }
+        }
     }
 }
 
@@ -512,8 +690,46 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
                 qw.bytes = std::move(packed);
                 quant_out->emplace(info.name, std::move(qw));
             }
+        } else if (info.dtype == GGMLType::Q4_K) {
+            if (numel % 256 != 0) { continue; }
+            const size_t sb_count = numel / 256;
+            std::vector<uint8_t> packed(sb_count * 144);
+            f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
+            dequantize_q4_k(packed.data(), numel, values.data());
+            if (quant_out != nullptr && shape.size() == 2) {
+                quant::QuantWeight qw;
+                q4_k_to_q41(packed.data(), numel, shape[0], shape[1], qw);
+                if (qw.valid()) { quant_out->emplace(info.name, std::move(qw)); }
+            }
+        } else if (info.dtype == GGMLType::Q6_K) {
+            if (numel % 256 != 0) { continue; }
+            const size_t sb_count = numel / 256;
+            std::vector<uint8_t> packed(sb_count * 210);
+            f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
+            dequantize_q6_k(packed.data(), numel, values.data());
+            // No native Q6_K GEMV kernel: requantize to Q4_1 so these tensors
+            // (attn_v, ffn_down in Q4_K_M mixes) still use the fast path.
+            // token_embd is skipped — it only feeds gather + the lm_head
+            // fallback, which requantizes from FP32 anyway.
+            if (quant_out != nullptr && shape.size() == 2 && info.name != "token_embd.weight") {
+                quant::QuantWeight qw;
+                quantize_f32_to_q41(values.data(), shape[0], shape[1], qw);
+                if (qw.valid()) { quant_out->emplace(info.name, std::move(qw)); }
+            }
+        } else if (info.dtype == GGMLType::BF16) {
+            std::vector<uint16_t> bf16_values(numel);
+            f.read(reinterpret_cast<char *>(bf16_values.data()), static_cast<std::streamsize>(numel * sizeof(uint16_t)));
+            for (size_t i = 0; i < numel; ++i) {
+                uint32_t bits = static_cast<uint32_t>(bf16_values[i]) << 16;
+                float fv;
+                std::memcpy(&fv, &bits, sizeof(fv));
+                values[i] = fv;
+            }
         } else {
-            std::fill(values.begin(), values.end(), 0.0f);
+            // Unsupported quantization (K-quants, etc.): skip the tensor
+            // entirely so callers can fall back (e.g. tied-embedding lm_head)
+            // instead of silently loading an all-zero matrix.
+            continue;
         }
 
         core::Tensor tensor(shape, hal::DType::Float32);
@@ -524,6 +740,29 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
     }
 
     return result;
+}
+
+std::string gguf_architecture(const std::string &path)
+{
+    GGUFMeta meta = load_gguf_metadata(path);
+    if (!meta.valid) { return {}; }
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { return {}; }
+
+    f.seekg(sizeof(GGUFHeader));
+    for (uint64_t i = 0; i < meta.n_kv; ++i) {
+        std::string key;
+        uint32_t type = 0;
+        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) { break; }
+        if (key == "general.architecture" && type == 8) {
+            std::string arch;
+            if (read_string_kv_value(f, &arch)) { return arch; }
+            return {};
+        }
+        if (!skip_gguf_value(f, type)) { break; }
+    }
+    return {};
 }
 
 serius::model::ModelConfig gguf_to_model_config(const std::string &path)
@@ -547,27 +786,33 @@ serius::model::ModelConfig gguf_to_model_config(const std::string &path)
             break;
         }
 
+        // GGUF arch keys are prefixed per-family (llama.*, qwen2.*, qwen3.*,
+        // ...). Match on the suffix after the first dot so every arch works.
+        const size_t dot = key.find('.');
+        const std::string_view skey = (dot == std::string::npos) ? std::string_view(key)
+                                                               : std::string_view(key).substr(dot + 1);
+
         uint64_t value = 0;
         float fvalue = 0.0f;
-        if (key == "llama.rope.freq_base" && read_float_value(f, type, &fvalue)) {
+        if (skey == "rope.freq_base" && read_float_value(f, type, &fvalue)) {
             config.rope_theta = fvalue;
-        } else if (key == "llama.attention.layer_norm_rms_epsilon" && read_float_value(f, type, &fvalue)) {
+        } else if (skey == "attention.layer_norm_rms_epsilon" && read_float_value(f, type, &fvalue)) {
             config.rms_norm_eps = fvalue;
         } else if (read_scalar_value(f, type, &value)) {
-            if (key == "llama.vocab_size") {
+            if (skey == "vocab_size") {
                 config.vocab_size = static_cast<size_t>(value);
-            } else if (key == "llama.embedding_length") {
+            } else if (skey == "embedding_length") {
                 config.d_model = static_cast<size_t>(value);
-            } else if (key == "llama.block_count") {
+            } else if (skey == "block_count") {
                 config.n_layers = static_cast<size_t>(value);
-            } else if (key == "llama.attention.head_count") {
+            } else if (skey == "attention.head_count") {
                 config.n_heads = static_cast<size_t>(value);
                 config.n_kv_heads = static_cast<size_t>(value);
-            } else if (key == "llama.attention.head_count_kv") {
+            } else if (skey == "attention.head_count_kv") {
                 config.n_kv_heads = static_cast<size_t>(value);
-            } else if (key == "llama.feed_forward_length") {
+            } else if (skey == "feed_forward_length") {
                 config.d_ff = static_cast<size_t>(value);
-            } else if (key == "llama.context_length") {
+            } else if (skey == "context_length") {
                 config.max_seq_len = static_cast<size_t>(value);
             }
         } else {

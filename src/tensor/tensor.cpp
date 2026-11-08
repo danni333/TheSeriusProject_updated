@@ -425,14 +425,14 @@ void Tensor::set_item(const std::vector<size_t> &indices, float val)
 Tensor Tensor::contiguous() const
 {
     if (is_contiguous()) {
-        if (owns_data_) {
-            Tensor view(data_, shape_);
-            view.dtype_ = dtype_;
-            view.data_gpu_ = data_gpu_;
-            view.location_ = location_;
-            view.is_pinned_ = is_pinned_;
-            return view;
-        }
+        // Already contiguous: return a non-owning view sharing the same
+        // buffers (host and/or device). Avoids a pointless alloc + copy.
+        Tensor view(data_, shape_);
+        view.dtype_ = dtype_;
+        view.data_gpu_ = data_gpu_;
+        view.location_ = location_;
+        view.is_pinned_ = is_pinned_;
+        return view;
     }
 
     Tensor result(shape_, pool_, dtype_);
@@ -441,8 +441,13 @@ Tensor Tensor::contiguous() const
     if (location_ == DataLocation::GPU || location_ == DataLocation::SYNCED) {
         hal::IBackend *gpu_backend = hal::get_gpu_backend();
         if (gpu_backend != nullptr && gpu_backend->is_available()) {
-            // Allocate GPU memory for result
-            result.syncToDevice(); 
+            // Allocate GPU memory directly: the buffer is fully overwritten by
+            // copy_layout, so uploading the (uninitialized) host data would be
+            // a wasted — and stream-draining — H2D copy.
+            result.data_gpu_ = gpu_backend->malloc(result.size_ * result.element_size());
+            if (result.data_gpu_ == nullptr) {
+                throw std::runtime_error("CUDA malloc failed in contiguous()");
+            }
             
             // Call our new GPU-native copy layout kernel
             hal::copy_layout(result.data_gpu_, this->data_gpu_, shape_.data(), strides_.data(), shape_.size(), dtype_);
@@ -527,6 +532,10 @@ Tensor Tensor::reshape(const std::vector<size_t> &new_shape) const
     // Return a view with new shape
     Tensor res = Tensor(data_, new_shape);
     res.dtype_ = dtype_;
+    if (this->data_gpu_) {
+        res.data_gpu_ = this->data_gpu_;
+        res.location_ = this->location_;
+    }
     return res;
 }
 
@@ -1092,6 +1101,18 @@ void Tensor::syncToDevice() const
     } else if (location_ == DataLocation::SYNCED) {
         // Already synced, nothing to do
     }
+}
+
+void Tensor::alloc_gpu()
+{
+    if (size_ == 0) return;
+    hal::IBackend *backend = hal::get_gpu_backend();
+    if (backend == nullptr || !backend->is_available()) return;
+    if (data_gpu_ == nullptr) {
+        data_gpu_ = backend->malloc(size_ * element_size());
+        if (data_gpu_ == nullptr) throw std::runtime_error("CUDA malloc failed in alloc_gpu");
+    }
+    location_ = DataLocation::GPU;
 }
 
 void Tensor::syncToHost() const

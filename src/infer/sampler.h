@@ -24,6 +24,17 @@ public:
     /// Greedy decode: argmax.
     int sample_greedy(const core::Tensor &logits) const;
 
+    /// Sample from a prefiltered candidate set (e.g. GPU top-k over the raw
+    /// logits). `cand_logits` are the RAW logits for `cand_idx`; the repetition
+    /// penalty is applied here per candidate, exactly as in sample(). The
+    /// candidate set must be a superset of the penalized top_k (a margin of
+    /// ~top_k + top_k is sufficient since penalties only lower logits).
+    /// Returns -1 if the candidate set is empty.
+    int sample_from_candidates(const std::vector<int> &cand_idx,
+                               const std::vector<float> &cand_logits,
+                               const std::vector<int> &recent_tokens,
+                               float repetition_penalty) const;
+
     void set_temperature(float t) { temperature_ = t; }
     void set_top_k(int k) { top_k_ = k; }
     void set_top_p(float p) { top_p_ = p; }

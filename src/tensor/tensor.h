@@ -228,6 +228,11 @@ class Tensor
     /// Synchronize data back to the host (CPU)
     void syncToHost() const;
 
+    /// Allocate device memory WITHOUT uploading host data. Use for buffers
+    /// that will be fully overwritten by device kernels (avoids a draining
+    /// H2D copy of uninitialized data).
+    void alloc_gpu();
+
    private:
     void *data_ = nullptr;          // Host pointer
     void *data_gpu_ = nullptr;      // Device pointer

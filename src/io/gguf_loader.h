@@ -75,6 +75,9 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
     const std::string &path,
     std::unordered_map<std::string, quant::QuantWeight> *quant_out = nullptr);
 
+/// Returns the value of `general.architecture` (e.g. "llama", "qwen2"), or "".
+std::string gguf_architecture(const std::string &path);
+
 serius::model::ModelConfig gguf_to_model_config(const std::string &path);
 
 /// Extract vocabulary and merge rules from a GGUF file.

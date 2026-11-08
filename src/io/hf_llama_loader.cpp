@@ -54,10 +54,12 @@ void transpose_hf_to_cpp(const float *src_buffer, float *dst_buffer, size_t num_
 }
 
 /**
- * @brief GGUF stores attn_q/attn_k output dims with RoPE pairs made adjacent:
- * within each head, order is [f0,s0,f1,s1,...] where f/s are the two
- * head_dim/2 halves, while HF uses [first_half | second_half].
- * This reorders each row's out-features back to HF layout.
+ * @brief GGUF (llama arch) stores attn_q/attn_k output dims permuted for RoPE:
+ * within each head, order is [even indices | odd indices] of the HF
+ * head_dim layout, while HF uses plain [0..head_dim). This reorders each
+ * row's out-features back to HF ordering (inverse of the llama.cpp
+ * convert-time permute: reshape (n_head, head_dim/2, 2, n_embd) then
+ * transpose(0,2,1,3)).
  * Buffer layout: [in_dim][out_dim] row-major; out_dim = n_heads * head_dim.
  */
 void unpermute_gguf_rope_heads(float *weights, size_t in_dim, size_t out_dim, size_t head_dim)
@@ -73,7 +75,8 @@ void unpermute_gguf_rope_heads(float *weights, size_t in_dim, size_t out_dim, si
         for (size_t h = 0; h < n_heads; ++h) {
             float *seg = row + (h * head_dim);
             for (size_t s = 0; s < head_dim; ++s) {
-                const size_t src = (s < half) ? (2 * s) : (2 * (s - half) + 1);
+                // HF position s <- GGUF slot: evens at s/2, odds at (s-1)/2 + half
+                const size_t src = ((s & 1) == 0) ? (s / 2) : ((s - 1) / 2 + half);
                 tmp[s] = seg[src];
             }
             std::copy(tmp.begin(), tmp.end(), seg);
@@ -194,6 +197,9 @@ void load_layers_in_range(SafetensorsFile &safetensors_file, model::LLaMAModel *
         copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.q_proj.weight", block->q_proj->data.data(), hidden * local_q_dim, true, tp_rank, tp_size, true);
         copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.k_proj.weight", block->k_proj->data.data(), hidden * local_kv_dim, true, tp_rank, tp_size, true);
         copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.v_proj.weight", block->v_proj->data.data(), hidden * local_kv_dim, true, tp_rank, tp_size, true);
+        copy_into_param(safetensors_file, layer_prefix + "self_attn.q_proj.bias", block->q_bias->data.data(), local_q_dim, false);
+        copy_into_param(safetensors_file, layer_prefix + "self_attn.k_proj.bias", block->k_bias->data.data(), local_kv_dim, false);
+        copy_into_param(safetensors_file, layer_prefix + "self_attn.v_proj.bias", block->v_bias->data.data(), local_kv_dim, false);
         copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.o_proj.weight", block->o_proj->data.data(), local_q_dim * hidden, true, tp_rank, tp_size, false);
         copy_into_param(safetensors_file, layer_prefix + "post_attention_layernorm.weight", block->post_attention_layernorm_weight->data.data(), hidden, false);
         copy_into_param_tp(safetensors_file, layer_prefix + "mlp.gate_proj.weight", block->gate_proj->data.data(), hidden * local_inter, true, tp_rank, tp_size, true);
@@ -377,13 +383,17 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
     const size_t kv_dim      = cfg.num_key_value_heads * head_dim;
 
     // Helper: copy or transpose a dequantised float tensor from the map into a raw buffer.
-    auto copy_tensor = [&](const std::string &name, float *dst, size_t rows, size_t cols, bool should_transpose) -> bool {
+    auto copy_tensor = [&](const std::string &name, float *dst, size_t rows, size_t cols, bool should_transpose,
+                           bool allow_prefix = false) -> bool {
         auto it = tensors.find(name);
         if (it == tensors.end()) { return false; }
         const core::Tensor &t = it->second;
         size_t expected = rows * cols;
         size_t numel = 1;
         for (size_t d : t.shape()) numel *= d;
+        // Some GGUFs pad the vocabulary (e.g. Qwen 151665 -> 151936); the
+        // padding sits at the end, so a larger tensor can be safely truncated.
+        if (numel > expected && allow_prefix) { numel = expected; }
         if (numel != expected) {
             std::cerr << "[Loader] GGUF: shape mismatch for '" << name
                       << "' expected=" << expected << " got=" << numel << "\n";
@@ -399,8 +409,13 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
 
     // Embedding (no transpose: rows=vocab_size, cols=hidden)
     if (model->embed_tokens() != nullptr) {
-        copy_tensor("token_embd.weight", model->embed_tokens()->data.data(), vocab_size, hidden, false);
+        copy_tensor("token_embd.weight", model->embed_tokens()->data.data(), vocab_size, hidden, false, true);
     }
+
+    // Only the "llama" arch family stores Q/K with RoPE head_dim pairs
+    // permuted in GGUF (verified against Qwen2 GGUFs, which are stored in
+    // plain HF order). Other archs must NOT be unpermuted.
+    const bool rope_perm = (io::gguf_architecture(gguf_path) == "llama");
 
     // Layers
     for (size_t l = 0; l < num_layers; ++l) {
@@ -411,10 +426,15 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
         copy_tensor(pfx + "attn_norm.weight",   block->input_layernorm_weight->data.data(),         1, hidden, false);
         copy_tensor(pfx + "attn_q.weight",       block->q_proj->data.data(),       hidden, hidden, true);
         copy_tensor(pfx + "attn_k.weight",       block->k_proj->data.data(),       kv_dim, hidden, true);
-        // GGUF permutes Q/K head_dim pairs for RoPE; restore HF ordering.
-        unpermute_gguf_rope_heads(block->q_proj->data.data(), hidden, hidden, head_dim);
-        unpermute_gguf_rope_heads(block->k_proj->data.data(), hidden, kv_dim, head_dim);
+        // GGUF permutes Q/K head_dim pairs for RoPE (llama arch only); restore HF ordering.
+        if (rope_perm) {
+            unpermute_gguf_rope_heads(block->q_proj->data.data(), hidden, hidden, head_dim);
+            unpermute_gguf_rope_heads(block->k_proj->data.data(), hidden, kv_dim, head_dim);
+        }
         copy_tensor(pfx + "attn_v.weight",       block->v_proj->data.data(),       kv_dim, hidden, true);
+        copy_tensor(pfx + "attn_q.bias",         block->q_bias->data.data(),       1, hidden, false);
+        copy_tensor(pfx + "attn_k.bias",         block->k_bias->data.data(),       1, kv_dim, false);
+        copy_tensor(pfx + "attn_v.bias",         block->v_bias->data.data(),       1, kv_dim, false);
         copy_tensor(pfx + "attn_output.weight",  block->o_proj->data.data(),       hidden, hidden, true);
         copy_tensor(pfx + "ffn_norm.weight",     block->post_attention_layernorm_weight->data.data(), 1, hidden, false);
         copy_tensor(pfx + "ffn_gate.weight",     block->gate_proj->data.data(),    inter_size, hidden, true);
@@ -427,9 +447,9 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
         copy_tensor("output_norm.weight", model->norm_weight()->data.data(), 1, hidden, false);
     }
     if (model->lm_head() != nullptr) {
-        if (!copy_tensor("output.weight", model->lm_head()->data.data(), vocab_size, hidden, true)) {
+        if (!copy_tensor("output.weight", model->lm_head()->data.data(), vocab_size, hidden, true, true)) {
             // Weight-tying fallback: reuse embedding weights transposed
-            copy_tensor("token_embd.weight", model->lm_head()->data.data(), vocab_size, hidden, true);
+            copy_tensor("token_embd.weight", model->lm_head()->data.data(), vocab_size, hidden, true, true);
         }
         build_lm_head_t(model);
     }
@@ -449,7 +469,8 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
             std::vector<uint8_t> perm(w.bytes.size());
             for (size_t h = 0; h < nh; ++h) {
                 for (size_t s = 0; s < head_dim; ++s) {
-                    const size_t src_local = (s < half) ? (2 * s) : (2 * (s - half) + 1);
+                    // HF row s <- GGUF row: evens at s/2, odds at (s-1)/2 + half
+                    const size_t src_local = ((s & 1) == 0) ? (s / 2) : ((s - 1) / 2 + half);
                     const size_t dst = (h * head_dim + s) * rb;
                     const size_t src = (h * head_dim + src_local) * rb;
                     std::memcpy(perm.data() + dst, w.bytes.data() + src, rb);
@@ -463,8 +484,8 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
     for (size_t l = 0; l < model->layers().size(); ++l) {
         model::LLaMABlock *block = model->layers()[l].get();
         const std::string p = "blk." + std::to_string(l) + ".";
-        block->q_w     = take_quant(p + "attn_q.weight",       true,  hidden,     hidden);
-        block->k_w     = take_quant(p + "attn_k.weight",       true,  hidden,     kv_dim);
+        block->q_w     = take_quant(p + "attn_q.weight",       rope_perm, hidden,     hidden);
+        block->k_w     = take_quant(p + "attn_k.weight",       rope_perm, hidden,     kv_dim);
         block->v_w     = take_quant(p + "attn_v.weight",       false, hidden,     kv_dim);
         block->o_w     = take_quant(p + "attn_output.weight",  false, hidden,     hidden);
         block->gate_w  = take_quant(p + "ffn_gate.weight",     false, hidden,     inter_size);
@@ -502,9 +523,11 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
     if (model->lm_head() != nullptr) {
         quant::QuantWeight lq = take_quant("output.weight", false, hidden, vocab_size);
         if (!lq.valid()) { lq = take_quant("token_embd.weight", false, hidden, vocab_size); }
-        // A Q8_0 token_embd reused as lm_head costs ~2x the per-token DRAM
-        // traffic of Q4_0; requantize from the already-dequantized FP32 head.
-        if (lq.valid() && lq.type != quant::QuantType::Q4_0 &&
+        // A Q8_0/Q6_K-derived token_embd reused as lm_head costs ~2x the
+        // per-token DRAM traffic of Q4_0; requantize from the already-
+        // dequantized FP32 head. Also fires when no packed weight exists at
+        // all (e.g. Q6_K embd, which we dequantize but don't pack).
+        if ((!lq.valid() || lq.type != quant::QuantType::Q4_0) &&
             model->lm_head_t().size() == vocab_size * hidden) {
             lq = quantize_fp32_to_q40(model->lm_head_t().data(), vocab_size, hidden);
         }

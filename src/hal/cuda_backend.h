@@ -4,6 +4,10 @@
 
 #ifdef SERIUS_USE_CUDA
 
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+
 namespace serius {
 namespace hal {
 
@@ -11,7 +15,7 @@ class CudaBackend : public IBackend
 {
    public:
     CudaBackend() = default;
-    ~CudaBackend() override = default;
+    ~CudaBackend() override;
 
     DeviceType get_type() const override { return DeviceType::CUDA; }
 
@@ -37,6 +41,17 @@ class CudaBackend : public IBackend
 
 
     bool is_available() const override;
+
+   private:
+    // Simple size-class free-list cache: avoids cudaMalloc/cudaFree churn for
+    // the many small temporary tensors created per inference step.
+    static constexpr size_t kAllocAlign = 256;
+    static constexpr size_t kCacheLimit = size_t(1) << 30;  // 1 GiB
+
+    std::mutex cache_mutex_;
+    std::unordered_map<size_t, std::vector<void *>> free_lists_;
+    std::unordered_map<void *, size_t> alloc_sizes_;
+    size_t cached_bytes_ = 0;
 };
 
 IBackend *get_cuda_backend();

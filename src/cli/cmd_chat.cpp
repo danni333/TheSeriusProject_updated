@@ -1,5 +1,6 @@
 #include "cli/cmd_chat.h"
 #include "cli/args_parser.h"
+#include "hal/device.h"
 #include "infer/sampler.h"
 #include "io/config_loader.h"
 #include "io/gguf_loader.h"
@@ -9,12 +10,15 @@
 #include "transformer/model.h"
 #include "io/hf_llama_loader.h"
 #include "infer/llama_inference.h"
+#include "hal/fused_kernels.h"
 
 #ifdef _WIN32
 #include <windows.h>
 #endif
 
 #include <chrono>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <random>
@@ -120,7 +124,11 @@ int cmd_chat(int argc, char **argv)
 
     if (model_type == "llama") {
         model::LLamaConfig config;
-        bool has_config_json = std::filesystem::exists(config_path);
+        // config_path may point at a .gguf file itself — only treat it as a
+        // JSON config when it actually ends in .json.
+        bool has_config_json = config_path.size() >= 5 &&
+            config_path.compare(config_path.size() - 5, 5, ".json") == 0 &&
+            std::filesystem::exists(config_path);
         if (has_config_json) {
             config = io::load_llama_config(config_path);
         }
@@ -154,6 +162,11 @@ int cmd_chat(int argc, char **argv)
                     config.max_position_embeddings = mc.max_seq_len;
                     config.rope_theta          = mc.rope_theta;
                     config.rms_norm_eps        = mc.rms_norm_eps;
+                    // GGUF has no reliable vocab_size key for all archs; the
+                    // tokenizer (loaded from the same file) knows the truth.
+                    if (tokenizer.vocab_size() > 0) {
+                        config.vocab_size = tokenizer.vocab_size();
+                    }
                     std::cout << "[Serius] Loaded model config from GGUF metadata (" << candidate_gguf << ")\n";
                 }
             }
@@ -185,6 +198,71 @@ int cmd_chat(int argc, char **argv)
             }
         }
 
+#ifdef SERIUS_USE_CUDA
+        if (std::getenv("SERIUS_NO_GPU") == nullptr) {
+            // Keep an FP32 transposed lm_head [vocab, hidden] on the GPU:
+            // the dedicated logits GEMV kernel reads it coalesced, and FP32
+            // preserves the fine-grained ranking over the 150k+ vocabulary.
+            // The FP32 transposed lm_head (~933 MB VRAM) is only read by the
+            // non-quantized logits fallback; skip it when a packed lm_head
+            // exists. The FP16 copy is still needed by the prefill logits GEMV.
+            const bool need_fp32_lm_head = !model.lm_head_q().valid();
+            if (model.lm_head() != nullptr) {
+                core::Tensor w_t = model.lm_head()->data.transpose(0, 1).contiguous();
+                if (need_fp32_lm_head) {
+                    model.lm_head_fp32() = w_t;
+                    model.lm_head_fp32().set_device(hal::DeviceType::CUDA);
+                }
+                // FP16 copy for the cuBLAS mixed-precision logits GEMV (half the
+                // memory traffic of the FP32 path; FP32 accumulation preserved).
+                model.lm_head_fp16_t() = w_t.cast(hal::DType::Float16);
+                model.lm_head_fp16_t().set_device(hal::DeviceType::CUDA);
+            }
+            auto move_param = [](core::autograd::Node *p) {
+                if (p == nullptr) { return; }
+                p->data = p->data.cast(hal::DType::Float16);
+                p->data.set_device(hal::DeviceType::CUDA);
+            };
+            move_param(model.embed_tokens_raw());
+            for (auto &blk : model.layers()) {
+                move_param(blk->input_layernorm_weight.get());
+                move_param(blk->q_proj.get());
+                move_param(blk->k_proj.get());
+                move_param(blk->v_proj.get());
+                move_param(blk->q_bias.get());
+                move_param(blk->k_bias.get());
+                move_param(blk->v_bias.get());
+                move_param(blk->o_proj.get());
+                move_param(blk->post_attention_layernorm_weight.get());
+                move_param(blk->gate_proj.get());
+                move_param(blk->up_proj.get());
+                move_param(blk->down_proj.get());
+            }
+            move_param(model.norm_weight());
+            // Upload packed GGUF quantized weights (Q4_0/Q4_1/Q8_0) for the
+            // CUDA decode GEMV kernels; no-op for non-quantized models.
+            if (std::getenv("SERIUS_NO_QUANT") == nullptr) {
+                hal::IBackend *be = hal::get_gpu_backend();
+                auto upload_qw = [be](quant::QuantWeight &qw) {
+                    if (!qw.valid() || qw.gpu_data != nullptr) { return; }
+                    // Repack into the aligned layout the vectorized kernel reads.
+                    quant::repack_quant_for_gpu(qw);
+                    const std::vector<uint8_t> &src = qw.dev_stride ? qw.dev_bytes : qw.bytes;
+                    qw.gpu_data = be->malloc(src.size());
+                    be->memcpy_h2d(qw.gpu_data, src.data(), src.size());
+                };
+                for (auto &blk : model.layers()) {
+                    upload_qw(blk->qkv_w);
+                    upload_qw(blk->gate_up_w);
+                    upload_qw(blk->o_w);
+                    upload_qw(blk->down_w);
+                }
+                upload_qw(model.lm_head_q());
+            }
+            std::cout << "[Serius] Model moved to GPU (FP16)\n";
+        }
+#endif
+
         bool is_chatml = (tokenizer.get_id("<|im_start|>") != BPETokenizer::UNK_ID);
 
         auto run_turn = [&](const std::string &user_input) {
@@ -194,6 +272,12 @@ int cmd_chat(int argc, char **argv)
             }
 
             std::vector<TokenId> ids = tokenizer.encode(prompt_text);
+            {
+                size_t _n = 0;
+                if (getenv_s(&_n, nullptr, 0, "SERIUS_PROF") == 0 && _n > 0) {
+                    std::fprintf(stderr, "[chatprof] prompt_tokens=%zu\n", ids.size());
+                }
+            }
             if (!is_chatml && (ids.empty() || ids[0] != BPETokenizer::BOS_ID)) {
                 ids.insert(ids.begin(), BPETokenizer::BOS_ID);
             }
@@ -211,6 +295,33 @@ int cmd_chat(int argc, char **argv)
             auto gen_start = std::chrono::steady_clock::now();
             core::Tensor logits = infer::llama_forward_inference(model, prompt_input, &cache);
             const double t_prefill = std::chrono::duration<double>(std::chrono::steady_clock::now() - gen_start).count();
+
+            // GPU top-k preselection + CPU candidate sampling: identical
+            // output to Sampler::sample but skips the 152k-element
+            // nth_element on the host (~3 ms/token saved).
+            auto gpu_sample = [&](const core::Tensor &lg, size_t row0, int &out_id) -> bool {
+#ifdef SERIUS_USE_CUDA
+                const void *gp = lg.raw_data_gpu();
+                if (gp == nullptr) { return false; }
+                const size_t vs = lg.shape().back();
+                const float *lgp = static_cast<const float *>(gp) + row0 * vs;
+                thread_local std::vector<int> cidx;
+                thread_local std::vector<float> cval;
+                cidx.assign(16384, 0);
+                cval.assign(16384, 0.0f);
+                const int cnt = hal::topk_logits_f32(lgp, static_cast<int>(vs), 384, 16384,
+                                                     cidx.data(), cval.data());
+                if (cnt <= 0) { return false; }
+                cidx.resize(static_cast<size_t>(cnt));
+                cval.resize(static_cast<size_t>(cnt));
+                const int t = sampler.sample_from_candidates(cidx, cval, recent_ids, repeat_penalty);
+                if (t < 0) { return false; }
+                out_id = t;
+                return true;
+#else
+                return false;
+#endif
+            };
 
             int next_id = 0;
             {
@@ -233,9 +344,14 @@ int cmd_chat(int argc, char **argv)
                 const double td0 = chat_prof ? now_s() : 0.0;
                 std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
                 if (chat_prof) { t_dec += now_s() - td0; }
-                if (next_id == static_cast<int>(BPETokenizer::EOS_ID) ||
-                    tok_str == "<|im_end|>" || tok_str == "<|endoftext|>" ||
-                    tok_str == "</s>") {
+                // EOS_ID==2 is the GPT-2/LLaMA convention; ChatML models
+                // (Qwen, SmolLM) end on <|im_end|>. In the Qwen vocab token 2
+                // decodes to "</s>" but is a normal token there, so the legacy
+                // stop strings must only apply to non-ChatML models.
+                if ((!is_chatml && (next_id == static_cast<int>(BPETokenizer::EOS_ID) ||
+                                    tok_str == "<|endoftext|>" ||
+                                    tok_str == "</s>")) ||
+                    tok_str == "<|im_end|>") {
                     break;
                 }
 
@@ -252,7 +368,9 @@ int cmd_chat(int argc, char **argv)
                 core::Tensor next_logits = infer::llama_forward_single_token(model, next_id, pos, &cache);
                 if (chat_prof) { t_fwd += now_s() - tf0; }
                 const double ts0 = chat_prof ? now_s() : 0.0;
-                next_id = sampler.sample(next_logits, recent_ids, repeat_penalty);
+                if (!gpu_sample(next_logits, 0, next_id)) {
+                    next_id = sampler.sample(next_logits, recent_ids, repeat_penalty);
+                }
                 if (chat_prof) { t_smp += now_s() - ts0; }
             }
             if (chat_prof && tokens_generated > 0) {

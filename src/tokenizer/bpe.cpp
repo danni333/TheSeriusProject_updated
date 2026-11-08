@@ -387,7 +387,11 @@ void BPETokenizer::load(const std::string &path_str)
     if (json_in.contains("added_tokens") && json_in["added_tokens"].is_array()) {
         for (const auto &item : json_in["added_tokens"]) {
             if (item.contains("content")) {
-                try_add_special(item["content"].get<std::string>());
+                std::string content = item["content"].get<std::string>();
+                if (item.contains("id") && item["id"].is_number()) {
+                    vocab_.add_token(content, item["id"].get<TokenId>());
+                }
+                try_add_special(content);
             }
         }
     }

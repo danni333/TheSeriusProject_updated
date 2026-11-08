@@ -82,17 +82,23 @@ Tensor block_sparse_attention_cuda(
 
     // Allocate output tensor
     Tensor output({seq_len, d_model});
+    Q.syncToDevice();
+    K.syncToDevice();
+    V.syncToDevice();
+    output.syncToDevice();
 
     // Launch kernel
     dim3 blocks(num_blocks, num_blocks);
     dim3 threads(256);  // Max threads per block
 
     block_sparse_attention_kernel<<<blocks, threads, 0, stream>>>(
-        Q.raw_data_gpu(), K.raw_data_gpu(), V.raw_data_gpu(),
-        output.raw_data_gpu(), d_block_mask,
-        static_cast<int>(seq_len), static_cast<int>(d_model),
+        static_cast<const float *>(Q.raw_data_gpu()), static_cast<const float *>(K.raw_data_gpu()),
+        static_cast<const float *>(V.raw_data_gpu()), static_cast<float *>(output.raw_data_gpu()),
+        d_block_mask, static_cast<int>(seq_len), static_cast<int>(d_model),
         static_cast<int>(block_size));
 
+    output.mark_dirty(Tensor::DataLocation::GPU);
+    output.syncToHost();
     cudaFree(d_block_mask);
 
     return output;

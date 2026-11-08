@@ -31,6 +31,7 @@ size_t dtype_size(DType dtype)
 
 }  // namespace
 
+#ifndef SERIUS_USE_CUDA
 void copy_layout(void *dst, const void *src, const size_t *shape, const size_t *src_strides, size_t dims,
                  DType dtype, cudaStream_t stream)
 {
@@ -61,6 +62,7 @@ void copy_layout(void *dst, const void *src, const size_t *shape, const size_t *
         std::memcpy(dst_bytes + dst_offset, src_bytes + src_offset * elem_size, elem_size);
     }
 }
+#endif  // !SERIUS_USE_CUDA
 
 void *CpuBackend::malloc(size_t size)
 {
