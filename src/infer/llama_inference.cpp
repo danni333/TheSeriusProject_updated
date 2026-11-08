@@ -1522,7 +1522,7 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
         if (dtype == hal::DType::Float16 && qw.dev_stride != 0) {
             // Fused FP16-in/FP16-out GEMV: skips both convert_dtype launches.
             const void *sx = nullptr;
-            if (qw.dev_kind == 3 || qw.dev_kind == 4) {
+            if (qw.dev_kind == 3 || qw.dev_kind == 4 || qw.dev_kind == 6) {
                 hal::block_sums16_f16(x_f16.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(),
                                       (int)(qw.in / 16), s);
                 sx = ctx.qf32_sx.raw_data_gpu();
@@ -1536,7 +1536,7 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
         hal::convert_dtype(x_f32.raw_data_gpu(), x_f16.raw_data_gpu(), qw.in, dtype,
                            hal::DType::Float32, s);
         const void *sx = nullptr;
-        if (qw.dev_kind == 3 || qw.dev_kind == 4) {
+        if (qw.dev_kind == 3 || qw.dev_kind == 4 || qw.dev_kind == 6) {
             hal::block_sums16_f32(x_f32.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(),
                                   (int)(qw.in / 16), s);
             sx = ctx.qf32_sx.raw_data_gpu();
@@ -1618,7 +1618,7 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
     const quant::QuantWeight *lq = model.lm_head_q();
     // FP16 x in, FP32 logits out — still skips the input convert_dtype.
     const void *sx = nullptr;
-    if (lq->dev_kind == 3 || lq->dev_kind == 4) {
+    if (lq->dev_kind == 3 || lq->dev_kind == 4 || lq->dev_kind == 6) {
         hal::block_sums16_f16(ctx.normed_buf.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(),
                               (int)(lq->in / 16), s);
         sx = ctx.qf32_sx.raw_data_gpu();
@@ -1861,7 +1861,7 @@ Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token
             if (qw.dev_stride != 0 && dtype == hal::DType::Float16) {
                 // Fused FP16-in/FP16-out GEMV: skips both convert_dtype launches.
                 const void *sx = nullptr;
-                if (qw.dev_kind == 3 || qw.dev_kind == 4) {
+                if (qw.dev_kind == 3 || qw.dev_kind == 4 || qw.dev_kind == 6) {
                     hal::block_sums16_f16(x_f16.raw_data_gpu(), qf32_sx.raw_data_gpu(),
                                           (int)(qw.in / 16));
                     sx = qf32_sx.raw_data_gpu();
@@ -1878,7 +1878,7 @@ Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token
             float *acc_ptr = static_cast<float *>(qacc.raw_data_gpu());
             if (qw.dev_stride != 0) {
                 const void *sx = nullptr;
-                if (qw.dev_kind == 3 || qw.dev_kind == 4) {
+                if (qw.dev_kind == 3 || qw.dev_kind == 4 || qw.dev_kind == 6) {
                     hal::block_sums16_f32(x_f32.raw_data_gpu(), qf32_sx.raw_data_gpu(),
                                           (int)(qw.in / 16));
                     sx = qf32_sx.raw_data_gpu();
@@ -2037,7 +2037,7 @@ Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token
         logits.alloc_gpu();
         if (lq->dev_stride != 0) {
             const void *sx = nullptr;
-            if (lq->dev_kind == 3 || lq->dev_kind == 4) {
+            if (lq->dev_kind == 3 || lq->dev_kind == 4 || lq->dev_kind == 6) {
                 hal::block_sums16_f32(qf32_normed.raw_data_gpu(), qf32_sx.raw_data_gpu(),
                                       (int)(lq->in / 16));
                 sx = qf32_sx.raw_data_gpu();

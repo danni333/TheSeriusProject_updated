@@ -772,6 +772,34 @@ __device__ __forceinline__ uint32_t sel_u32(uint4 v, int j)
     }
 }
 
+// --- Q4_K (kind 6) scale extraction ---
+// Header = 16B {d f16 | dmin f16 | scales[12]} of one 256-weight superblock.
+// scales bytes live in hh.y (0-3), hh.z (4-7), hh.w (8-11).
+__device__ __forceinline__ uint32_t k4_qbyte(uint32_t yy, uint32_t zz, uint32_t ww, int i)
+{
+    return (i < 4) ? ((yy >> (i * 8)) & 0xFFu)
+         : (i < 8) ? ((zz >> ((i - 4) * 8)) & 0xFFu)
+                   : ((ww >> ((i - 8) * 8)) & 0xFFu);
+}
+
+// j = sub-block index inside the superblock (0..7). w = nib*D + M with
+// D = d*sc, M = -dmin*m — same affine shape as Q4_1.
+__device__ __forceinline__ void k4_block_scales(uint4 hh, int j, float &D, float &M)
+{
+    const float d = __half2float(__ushort_as_half((unsigned short)(hh.x & 0xFFFFu)));
+    const float dmin = __half2float(__ushort_as_half((unsigned short)(hh.x >> 16)));
+    uint32_t sc, mn;
+    if (j < 4) {
+        sc = k4_qbyte(hh.y, hh.z, hh.w, j) & 63u;
+        mn = k4_qbyte(hh.y, hh.z, hh.w, j + 4) & 63u;
+    } else {
+        sc = (k4_qbyte(hh.y, hh.z, hh.w, j + 4) & 0xFu) | ((k4_qbyte(hh.y, hh.z, hh.w, j - 4) >> 6) << 4);
+        mn = (k4_qbyte(hh.y, hh.z, hh.w, j + 4) >> 4) | ((k4_qbyte(hh.y, hh.z, hh.w, j) >> 6) << 4);
+    }
+    D = d * (float)sc;
+    M = -(dmin * (float)mn);
+}
+
 __global__ void gemv_quant_vec_kernel(const float *x, const float *sx16, const uint8_t *w, float *y,
                                       int in, int out, int stride, int qs, int d_off, int m_off, int kind,
                                       int rows_per_warp)
@@ -782,9 +810,9 @@ __global__ void gemv_quant_vec_kernel(const float *x, const float *sx16, const u
     if (r0 >= out) return;
 
     const int bpr = in >> 5;  // in % 32 == 0 guaranteed by repack guard
-    const bool has_m = (kind == 4);
+    const bool has_m = (kind == 4 || kind == 6);
 
-    if (kind == 3 || kind == 4) {
+    if (kind == 3 || kind == 4 || kind == 6) {
         // Q4_0/Q4_1 fast path: float4 x loads, two accumulators per row.
         // rows_per_warp=4 gives each warp four independent weight streams,
         // maximizing memory-level parallelism (bench: +20% GB/s vs 2).
@@ -810,8 +838,15 @@ __global__ void gemv_quant_vec_kernel(const float *x, const float *sx16, const u
             for (int r = 0; r < RPW; ++r) {
                 if (r0 + r >= out) break;
                 const uint4 v = __ldcs(reinterpret_cast<const uint4 *>(wr[r] + (size_t)b * qs));
-                const float d = __half2float(*reinterpret_cast<const __half *>(darr[r] + b * 2));
-                const float m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr[r] + b * 2)) : 0.0f;
+                float d, m;
+                if (kind == 6) {
+                    const uint4 hh = __ldcs(reinterpret_cast<const uint4 *>(
+                        wr[r] + d_off + ((b >> 3) << 4)));
+                    k4_block_scales(hh, b & 7, d, m);
+                } else {
+                    d = __half2float(*reinterpret_cast<const __half *>(darr[r] + b * 2));
+                    m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr[r] + b * 2)) : 0.0f;
+                }
                 // inline fold with shared sx (same b for all rows)
                 const float4 *x4lo = reinterpret_cast<const float4 *>(x + base);
                 const float4 *x4hi = reinterpret_cast<const float4 *>(x + base + 16);
@@ -923,15 +958,17 @@ __global__ void gemv_quant_vec_h_kernel(const __half *x, const float *sx16, cons
     if (r0 >= out) return;
 
     const int bpr = in >> 5;
-    const bool has_m = (kind == 4);
+    const bool has_m = (kind == 4 || kind == 6);
 
-    if (kind == 3 || kind == 4) {
-        // Q4_0/Q4_1 fast path, k-major lane mapping: each lane owns ONE row
-        // (lane>>3, 8 contiguous lanes per row) and strides k-blocks by 8
+    if (kind == 3 || kind == 4 || kind == 6) {
+        // Q4_0/Q4_1/Q4_K fast path, k-major lane mapping: each lane owns ONE
+        // row (lane>>3, 8 contiguous lanes per row) and strides k-blocks by 8
         // (lane&7). The old mapping (all 32 lanes on k, 4 rows inner) wasted
         // ~33% of the second k-iteration whenever bpr%32 != 0 — which is the
         // common case (in=1536 -> bpr=48). This mapping is exactly balanced
         // for any bpr multiple of 8 and needs fewer bytes per lane.
+        // For Q4_K (kind 6) the 8 lanes of a k-group always cover exactly one
+        // 256-weight superblock, so the 16B scale header load broadcasts.
         const int row_local = lane >> 3;          // 0..3
         const int q = lane & 7;                   // k-stride group
         const int rrow = r0 + row_local;
@@ -950,8 +987,17 @@ __global__ void gemv_quant_vec_h_kernel(const __half *x, const float *sx16, cons
                 const int b = q + 8 * (t + u);
                 if (b >= bpr) continue;
                 const uint4 v = __ldcs(reinterpret_cast<const uint4 *>(wr + (size_t)b * qs));
-                const float d = __half2float(*reinterpret_cast<const __half *>(darr + b * 2));
-                const float m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr + b * 2)) : 0.0f;
+                float d, m;
+                if (kind == 6) {
+                    // d_off = byte offset of the per-row header section;
+                    // superblock = b>>3, sub-block = b&7 == q.
+                    const uint4 hh = __ldcs(reinterpret_cast<const uint4 *>(
+                        wr + d_off + ((b >> 3) << 4)));
+                    k4_block_scales(hh, b & 7, d, m);
+                } else {
+                    d = __half2float(*reinterpret_cast<const __half *>(darr + b * 2));
+                    m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr + b * 2)) : 0.0f;
+                }
                 const float sx0 = __ldg(sx16 + 2 * b);
                 const float sx1 = __ldg(sx16 + 2 * b + 1);
                 const int base = b * 32;
@@ -1071,10 +1117,10 @@ void gemv_quant_vec_f16io(const void *x_f16, const void *sx16, const void *w, in
                          void *y, bool y_f16, cudaStream_t stream)
 {
     if (!x_f16 || !w || !y || in == 0 || out == 0 || (in % 32) != 0) return;
-    if ((kind == 3 || kind == 4) && sx16 == nullptr) return;
+    if ((kind == 3 || kind == 4 || kind == 6) && sx16 == nullptr) return;
     const int threads = 256;
     const unsigned warps_per_block = threads / 32;
-    const int rows_per_warp = (kind == 3 || kind == 4) ? 4 : 1;
+    const int rows_per_warp = (kind == 3 || kind == 4 || kind == 6) ? 4 : 1;
     const unsigned rows_per_block = warps_per_block * (unsigned)rows_per_warp;
     const unsigned bx = (unsigned)((out + rows_per_block - 1) / rows_per_block);
     gemv_quant_vec_h_kernel<<<bx, threads, 0, stream>>>(
@@ -1095,11 +1141,11 @@ void gemv_quant_vec_f32(const void *x_f32, const void *sx16, const void *w, int 
                         void *y_f32, cudaStream_t stream)
 {
     if (!x_f32 || !w || !y_f32 || in == 0 || out == 0 || (in % 32) != 0) return;
-    if ((kind == 3 || kind == 4) && sx16 == nullptr) return;
+    if ((kind == 3 || kind == 4 || kind == 6) && sx16 == nullptr) return;
     const int threads = 256;
     const unsigned warps_per_block = threads / 32;
-    // Q4_0/Q4_1: four rows per warp for more memory-level parallelism.
-    const int rows_per_warp = (kind == 3 || kind == 4) ? 4 : 1;
+    // Q4_0/Q4_1/Q4_K: four rows per warp for more memory-level parallelism.
+    const int rows_per_warp = (kind == 3 || kind == 4 || kind == 6) ? 4 : 1;
     const unsigned rows_per_block = warps_per_block * (unsigned)rows_per_warp;
     const unsigned bx = (unsigned)((out + rows_per_block - 1) / rows_per_block);
     gemv_quant_vec_kernel<<<bx, threads, 0, stream>>>(

@@ -291,6 +291,17 @@ void quantize_f32_to_q41(const float *w, size_t in, size_t out, quant::QuantWeig
 
 }  // anonymous namespace
 
+quant::QuantWeight quant_weight_q4k_to_q41(const quant::QuantWeight &w)
+{
+    quant::QuantWeight out;
+    if (w.type != quant::QuantType::Q4_K || w.in == 0 || w.out == 0 ||
+        (w.in % 256) != 0) {
+        return out;
+    }
+    q4_k_to_q41(w.bytes.data(), w.in * w.out, w.in, w.out, out);
+    return out;
+}
+
 namespace {
 
 uint64_t read_u64_le(std::ifstream &f)
@@ -698,7 +709,16 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
             dequantize_q4_k(packed.data(), numel, values.data());
             if (quant_out != nullptr && shape.size() == 2) {
                 quant::QuantWeight qw;
-                q4_k_to_q41(packed.data(), numel, shape[0], shape[1], qw);
+                if (shape[0] % 256 == 0) {
+                    // Native Q4_K: raw superblocks go straight to the GPU
+                    // repack (kind 6) — ~10% fewer bytes than Q4_1 expansion.
+                    qw.type = quant::QuantType::Q4_K;
+                    qw.in = shape[0];
+                    qw.out = shape[1];
+                    qw.bytes = std::move(packed);
+                } else {
+                    q4_k_to_q41(packed.data(), numel, shape[0], shape[1], qw);
+                }
                 if (qw.valid()) { quant_out->emplace(info.name, std::move(qw)); }
             }
         } else if (info.dtype == GGMLType::Q6_K) {

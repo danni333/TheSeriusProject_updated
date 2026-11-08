@@ -519,6 +519,23 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
         };
         block->qkv_w     = fuse_rows(block->q_w, block->k_w, block->v_w);
         block->gate_up_w = fuse_rows2(block->gate_w, block->up_w);
+        // Mixed-type fusion fallback: Q4_K q/k can't fuse with a Q4_1 v
+        // (Q6_K-derived). Expand Q4_K members to Q4_1 and retry — the fused
+        // GEMV needs one kind per launch.
+        if (!block->qkv_w.valid()) {
+            auto as_q41 = [](const quant::QuantWeight &w) -> quant::QuantWeight {
+                return (w.type == quant::QuantType::Q4_K)
+                    ? quant_weight_q4k_to_q41(w) : w;
+            };
+            block->qkv_w = fuse_rows(as_q41(block->q_w), as_q41(block->k_w), as_q41(block->v_w));
+        }
+        if (!block->gate_up_w.valid()) {
+            auto as_q41 = [](const quant::QuantWeight &w) -> quant::QuantWeight {
+                return (w.type == quant::QuantType::Q4_K)
+                    ? quant_weight_q4k_to_q41(w) : w;
+            };
+            block->gate_up_w = fuse_rows2(as_q41(block->gate_w), as_q41(block->up_w));
+        }
     }
     if (model->lm_head() != nullptr) {
         quant::QuantWeight lq = take_quant("output.weight", false, hidden, vocab_size);

@@ -84,5 +84,11 @@ serius::model::ModelConfig gguf_to_model_config(const std::string &path);
 /// Use GGUFTokenizerData to populate a BPETokenizer via load_from_gguf().
 GGUFTokenizerData load_gguf_tokenizer(const std::string &path);
 
+/// Convert a native-Q4_K QuantWeight (raw superblocks) into an equivalent
+/// Q4_1 QuantWeight — used when row-fusion requires a uniform quant type
+/// (e.g. Q4_K q/k fused with a Q6_K-derived Q4_1 v). Returns an invalid
+/// QuantWeight on mismatch.
+quant::QuantWeight quant_weight_q4k_to_q41(const quant::QuantWeight &w);
+
 }  // namespace io
 }  // namespace serius

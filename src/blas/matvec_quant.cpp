@@ -723,6 +723,45 @@ void q41_row_scalar(const uint8_t *row, size_t in, const float *x, float &out)
     }
 }
 
+// ggml block_q4_K scale/min extraction (6-bit fields packed across scales[12]).
+void q4k_scale_min(const uint8_t *sc, int j, int &d6, int &m6)
+{
+    if (j < 4) {
+        d6 = sc[j] & 63;
+        m6 = sc[j + 4] & 63;
+    } else {
+        d6 = (sc[j + 4] & 0xF) | ((sc[j - 4] >> 6) << 4);
+        m6 = (sc[j + 4] >> 4) | ((sc[j] >> 6) << 4);
+    }
+}
+
+// Scalar fallback for native Q4_K rows (raw 144B superblocks, in%256==0).
+void q4k_row_scalar(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    out = 0.0f;
+    const size_t nsb = in / 256;
+    for (size_t s = 0; s < nsb; ++s) {
+        const uint8_t *blk = row + s * 144;
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        const uint8_t *sc = blk + 4;
+        const uint8_t *qs = blk + 16;
+        for (int sb = 0; sb < 8; ++sb) {
+            int d6, m6;
+            q4k_scale_min(sc, sb, d6, m6);
+            const float D = d * static_cast<float>(d6);
+            const float M = dmin * static_cast<float>(m6);
+            const uint8_t *qb = qs + (sb >> 1) * 32;
+            const bool hi = (sb & 1) != 0;
+            const size_t base = (s * 8 + sb) * 32;
+            for (int l = 0; l < 32; ++l) {
+                const int nib = hi ? (qb[l] >> 4) : (qb[l] & 0xF);
+                out += (D * static_cast<float>(nib) - M) * x[base + l];
+            }
+        }
+    }
+}
+
 void q80_row_scalar(const uint8_t *row, size_t in, const float *x, float &out)
 {
     out = 0.0f;
@@ -777,6 +816,7 @@ RowFn pick_row_fn(quant::QuantType type)
         case quant::QuantType::Q4_0: return q40_row_scalar;
         case quant::QuantType::Q4_1: return q41_row_scalar;
         case quant::QuantType::Q8_0: return q80_row_scalar;
+        case quant::QuantType::Q4_K: return q4k_row_scalar;
         default: return nullptr;
     }
 }

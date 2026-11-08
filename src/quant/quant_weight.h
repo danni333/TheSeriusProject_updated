@@ -18,6 +18,7 @@ enum class QuantType : uint8_t
     Q4_0 = 3,   // ggml type 2: fp16 scale + 32 x 4-bit, w = (q-8)*d
     Q4_1 = 4,   // ggml type 3: fp16 d,m + 32 x 4-bit, w = q*d + m
     Q8_0 = 5,   // ggml type 8: fp16 scale + 32 x int8, w = q*d
+    Q4_K = 6,   // ggml type 12: 256 weights / 144B superblock, w = d*sc*nib - dmin*m
 };
 
 /// A weight matrix kept in packed quantized form for fast M==1 inference.
@@ -65,7 +66,11 @@ struct QuantWeight
     size_t blocks_per_row() const { return (in + 31) / 32; }
 
     /// Bytes per output row.
-    size_t row_bytes() const { return blocks_per_row() * block_bytes(type); }
+    size_t row_bytes() const
+    {
+        if (type == QuantType::Q4_K) { return (in / 256) * 144; }
+        return blocks_per_row() * block_bytes(type);
+    }
 };
 
 /// Repack packed GGUF rows into the aligned `dev_bytes` layout described in
@@ -78,6 +83,48 @@ struct QuantWeight
 inline void repack_quant_for_gpu(QuantWeight &w)
 {
     if (!w.valid() || (w.in % 32) != 0 || w.dev_stride != 0) { return; }
+
+    // Q4_K native: keep the 6-bit packed scales instead of expanding each
+    // 32-weight sub-block to a Q4_1 block (20B -> effective ~18B/32w).
+    // Row layout: [bpr*16B nibble payloads, block-major][nsb*16B headers]
+    // where each header is the raw 16B {d f16, dmin f16, scales[12]} of one
+    // 256-weight superblock. Kernel: kind 6.
+    if (w.type == QuantType::Q4_K) {
+        if (w.in % 256 != 0) { return; }
+        const size_t bpr = w.in / 32;    // 32-weight sub-blocks per row
+        const size_t nsb = w.in / 256;   // superblocks per row
+        const size_t pay = bpr * 16;
+        const size_t stride = pay + nsb * 16;
+        w.dev_bytes.assign(w.out * stride, 0);
+        for (size_t r = 0; r < w.out; ++r) {
+            const uint8_t *src = w.bytes.data() + r * nsb * 144;
+            uint8_t *dst = w.dev_bytes.data() + r * stride;
+            uint8_t *payd = dst;
+            uint8_t *hd = dst + pay;
+            for (size_t s = 0; s < nsb; ++s) {
+                const uint8_t *blk = src + s * 144;
+                std::memcpy(hd + s * 16, blk, 16);   // d, dmin, scales[12]
+                const uint8_t *qs = blk + 16;
+                for (int ls = 0; ls < 8; ++ls) {
+                    const int p = ls >> 1;
+                    const bool hi = (ls & 1) != 0;
+                    uint8_t *ob = payd + (s * 8 + ls) * 16;
+                    for (int j = 0; j < 16; ++j) {
+                        const uint8_t lo = hi ? (qs[p * 32 + j] >> 4) : (qs[p * 32 + j] & 0xF);
+                        const uint8_t hn = hi ? (qs[p * 32 + j + 16] >> 4) : (qs[p * 32 + j + 16] & 0xF);
+                        ob[j] = static_cast<uint8_t>(lo | (hn << 4));
+                    }
+                }
+            }
+        }
+        w.dev_stride = stride;
+        w.dev_qs = 16;
+        w.dev_d = pay;    // header section offset (reuses d_off kernel arg)
+        w.dev_m = 0;
+        w.dev_kind = 6;
+        return;
+    }
+
     const size_t bpr = w.blocks_per_row();
     const size_t src_bb = QuantWeight::block_bytes(w.type);
     size_t qs, d_sz = 2, m_sz = 0;
