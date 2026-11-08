@@ -314,10 +314,46 @@ int cmd_chat(int argc, char **argv)
                 cudaDeviceSynchronize();
                 gbe->free(buf);
             }
+
+            // Real-path prefill warmup: pays the one-time costs the shape
+            // warmup above can't — first-touch page faults on the prefill
+            // scratch arena, custom kernel module loads, and cuBLASLt
+            // heuristic selection for the actual projection shapes.
+            {
+                infer::KVCache warm_cache;
+                const size_t wn = 128;
+                core::Tensor warm_in({wn});
+                for (size_t i = 0; i < wn; ++i) {
+                    warm_in[i] = static_cast<float>(1000 + (i % 1000));
+                }
+                (void)infer::llama_forward_inference_last(model, warm_in, &warm_cache);
+            }
         }
 #endif
 
         bool is_chatml = (tokenizer.get_id("<|im_start|>") != BPETokenizer::UNK_ID);
+
+        // Reuse one KVCache across turns: the GPU arena + per-layer views
+        // persist, so the CUDA decode graph (bound to those raw pointers)
+        // stays valid instead of being recaptured every turn.
+        infer::KVCache cache;
+
+#ifdef SERIUS_USE_CUDA
+        if (std::getenv("SERIUS_NO_GPU") == nullptr) {
+            // Decode-graph warmup on the persistent cache: captures the CUDA
+            // graph once here so the first real turn doesn't pay capture
+            // cost inside its first decode step.
+            const size_t wn = 16;
+            core::Tensor warm_in({wn});
+            for (size_t i = 0; i < wn; ++i) {
+                warm_in[i] = static_cast<float>(1000 + (i % 1000));
+            }
+            (void)infer::llama_forward_inference_last(model, warm_in, &cache);
+            (void)infer::llama_forward_single_token(model, 1000, wn, &cache);
+            (void)infer::llama_forward_single_token(model, 1001, wn + 1, &cache);
+            cache.clear();
+        }
+#endif
 
         auto run_turn = [&](const std::string &user_input) {
             std::string prompt_text = user_input;
@@ -336,7 +372,7 @@ int cmd_chat(int argc, char **argv)
                 ids.insert(ids.begin(), BPETokenizer::BOS_ID);
             }
 
-            infer::KVCache cache;
+            cache.clear();
             core::Tensor prompt_input({ids.size()});
             for (size_t i = 0; i < ids.size(); ++i) {
                 prompt_input[i] = static_cast<float>(ids[i]);
