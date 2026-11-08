@@ -229,18 +229,18 @@ class Tensor
     void syncToHost() const;
 
    private:
-    void *data_;                     // Host pointer
-    void *data_gpu_;                 // Device pointer
-    mutable DataLocation location_;  // Where is the most recent data?
+    void *data_ = nullptr;          // Host pointer
+    void *data_gpu_ = nullptr;      // Device pointer
+    mutable DataLocation location_ = DataLocation::CPU;  // Where is the most recent data?
 
     std::vector<size_t> shape_;
     std::vector<size_t> strides_;
-    size_t size_;
-    hal::DType dtype_;
-    bool owns_data_;
-    memory::MemoryPool *pool_;  // nullptr if heap-allocated
-    bool is_gpu_pool_;          // Is the GPU memory from a pool?
-    bool is_pinned_;            // Whether host memory is pinned
+    size_t size_ = 0;
+    hal::DType dtype_ = hal::DType::Float32;
+    bool owns_data_ = false;
+    memory::MemoryPool *pool_ = nullptr;  // nullptr if heap-allocated
+    bool is_gpu_pool_ = false;            // Is the GPU memory from a pool?
+    bool is_pinned_ = false;              // Whether host memory is pinned
 
     /// Internal memory cleanup (handles both CPU and GPU)
     void free_data();

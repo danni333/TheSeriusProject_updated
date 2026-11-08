@@ -33,6 +33,12 @@ class FactExtractor
     /// Enable/disable extraction of definitions (X is Y patterns).
     void set_extract_definitions(bool enable) { extract_definitions_ = enable; }
 
+    /// Current minimum fact length.
+    size_t min_length() const { return min_length_; }
+
+    /// Clean and normalize a fact string.
+    std::string clean_fact(const std::string &text) const;
+
    private:
     size_t min_length_ = 10;
     size_t max_length_ = 500;
@@ -44,9 +50,6 @@ class FactExtractor
 
     /// Check if a sentence is a definition (X is Y, X refers to Y, etc.).
     bool is_definition(const std::string &sentence) const;
-
-    /// Clean and normalize a fact string.
-    std::string clean_fact(const std::string &text) const;
 
     /// Check if a fact is valid (not too short, not garbage).
     bool is_valid_fact(const std::string &fact) const;

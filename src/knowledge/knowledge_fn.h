@@ -60,6 +60,9 @@ class KnowledgeFunction
     /// Clear the knowledge table.
     void clear() { table_.clear(); }
 
+    /// Merge latent representations by averaging.
+    static core::Tensor merge_latents(const core::Tensor &a, const core::Tensor &b);
+
     /// Get statistics about the knowledge table.
     struct Stats
     {
@@ -74,9 +77,6 @@ class KnowledgeFunction
     SemanticHash hasher_;
     std::unordered_map<uint64_t, CompressedKnowledge> table_;
     size_t embedding_dim_;
-
-    /// Merge latent representations by averaging.
-    static core::Tensor merge_latents(const core::Tensor &a, const core::Tensor &b);
 };
 
 }  // namespace knowledge

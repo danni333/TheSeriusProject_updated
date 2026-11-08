@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 #include "stress/stress_runner.h"
 #include "stress/report.h"
 #include "stress/leak_detector.h"

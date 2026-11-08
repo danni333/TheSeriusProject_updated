@@ -668,24 +668,32 @@ void Server::setup_routes()
                 "text/event-stream",
                 [this, prompt, max_new, sampler, req_id, requested_model](size_t offset, httplib::DataSink &sink) -> bool {
                     if (offset > 0) {
-                        return false;
+                        sink.done();
+                        return true;
                     }
 
                     std::lock_guard<std::mutex> lock(inference_mutex_);
                     auto t_start = std::chrono::steady_clock::now();
                     metrics_->on_request_start();
 
-                    if (llama_model_ && tokenizer_) {
-                        stream_llama(*llama_model_, *tokenizer_, prompt, max_new, sampler, req_id, requested_model, sink, metrics_.get());
-                    } else if (transformer_model_ && tokenizer_) {
-                        stream_transformer(*transformer_model_, *tokenizer_, prompt, max_new, sampler, req_id, requested_model, sink, metrics_.get());
-                    } else {
-                        stream_fallback("Serius API is running without a loaded model. Load a model to get live completions.", req_id, requested_model, sink);
+                    try {
+                        if (llama_model_ && tokenizer_) {
+                            stream_llama(*llama_model_, *tokenizer_, prompt, max_new, sampler, req_id, requested_model, sink, metrics_.get());
+                        } else if (transformer_model_ && tokenizer_) {
+                            stream_transformer(*transformer_model_, *tokenizer_, prompt, max_new, sampler, req_id, requested_model, sink, metrics_.get());
+                        } else {
+                            stream_fallback("Serius API is running without a loaded model. Load a model to get live completions.", req_id, requested_model, sink);
+                        }
+                    } catch (const std::exception &e) {
+                        std::string err = std::string("data: {\"error\":\"") + e.what() + "\"}\n\ndata: [DONE]\n\n";
+                        sink.write(err.data(), err.size());
+                    } catch (...) {
                     }
 
                     auto t_end = std::chrono::steady_clock::now();
                     metrics_->on_request_end(std::chrono::duration<float>(t_end - t_start).count());
-                    return false;
+                    sink.done();
+                    return true;
                 });
             return;
         }
@@ -757,7 +765,10 @@ void Server::setup_routes()
             res.set_chunked_content_provider(
                 "text/event-stream",
                 [this, prompt, max_new, sampler, req_id, requested_model](size_t offset, httplib::DataSink &sink) -> bool {
-                    if (offset > 0) return false;
+                    if (offset > 0) {
+                        sink.done();
+                        return true;
+                    }
 
                     std::lock_guard<std::mutex> lock(inference_mutex_);
                     auto t_start = std::chrono::steady_clock::now();
@@ -773,7 +784,8 @@ void Server::setup_routes()
 
                     auto t_end = std::chrono::steady_clock::now();
                     metrics_->on_request_end(std::chrono::duration<float>(t_end - t_start).count());
-                    return false;
+                    sink.done();
+                    return true;
                 });
             return;
         }
@@ -848,7 +860,7 @@ void Server::setup_routes()
         nlohmann::json out;
         out["object"] = "list";
         out["data"] = nlohmann::json::array();
-        out["model"] = body.value("model", model_name());
+        out["model"] = body.value("model", model_name_);
 
         size_t total_prompt_tokens = 0;
 

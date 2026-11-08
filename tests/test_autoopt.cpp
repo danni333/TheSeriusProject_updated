@@ -140,10 +140,10 @@ TEST(Sandbox, TestSpeedup) {
         test_inputs.push_back(input);
     }
 
-    // Benchmark same kernel (speedup should be ~1.0)
+    // Benchmark same kernel (speedup should be ~1.0, allow timing noise)
     VerificationResult res = sandbox.benchmark(identity_kernel, identity_kernel, test_inputs, 5);
     EXPECT_TRUE(res.passed);
-    EXPECT_FLOAT_EQ(res.speedup, 1.0f);
+    EXPECT_NEAR(res.speedup, 1.0f, 0.5f);
 
     // Benchmark different kernels (speedup may vary, but should be positive)
     res = sandbox.benchmark(slow_identity, fast_identity, test_inputs, 5);

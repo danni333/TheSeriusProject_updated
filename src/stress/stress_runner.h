@@ -52,6 +52,9 @@ public:
     /// Run chaos test: malformed inputs and error scenarios
     void run_chaos(const std::string& server_url);
 
+    /// Calculate percentile from latency values
+    float calculate_percentile(std::vector<float>& values, float percentile);
+
 private:
     /// Worker thread that simulates a single user
     void worker(const std::string& url, const std::string& prompt,
@@ -67,9 +70,6 @@ private:
 
     /// Get current RAM usage (in bytes)
     size_t get_ram_usage();
-
-    /// Calculate percentile from latency values
-    float calculate_percentile(std::vector<float>& values, float percentile);
 };
 
 }  // namespace stress

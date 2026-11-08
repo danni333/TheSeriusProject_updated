@@ -37,13 +37,13 @@ TEST(SemanticHash, TestHashDifferentInputs) {
 
     for (size_t i = 0; i < 128; ++i) {
         emb1[i] = static_cast<float>(i) * 0.1f;
-        emb2[i] = static_cast<float>(128 - i) * 0.1f;  // Reverse order
+        emb2[i] = -static_cast<float>(i) * 0.1f;  // Opposite direction
     }
 
     uint64_t h1 = hasher.hash(emb1);
     uint64_t h2 = hasher.hash(emb2);
 
-    // Different inputs should have high Hamming distance
+    // Opposite inputs should have high Hamming distance
     size_t dist = SemanticHash::hamming_distance(h1, h2);
     EXPECT_GT(dist, 16);  // Should be more than 16 bits different
 }

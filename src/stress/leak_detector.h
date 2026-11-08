@@ -37,12 +37,13 @@ public:
     /// Generate human-readable summary
     std::string format_summary(const LeakAnalysis& analysis);
 
-private:
     /// Calculate linear regression slope
     float calculate_slope(const std::vector<std::pair<float, size_t>>& data);
 
     /// Calculate drift (end - start)
     int64_t calculate_drift(const std::vector<size_t>& values);
+
+private:
 };
 
 }  // namespace stress
