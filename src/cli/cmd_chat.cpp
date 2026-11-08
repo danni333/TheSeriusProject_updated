@@ -411,8 +411,14 @@ int cmd_chat(int argc, char **argv)
                 thread_local std::vector<float> cval;
                 cidx.assign(16384, 0);
                 cval.assign(16384, 0.0f);
-                const int cnt = hal::topk_logits_f32(lgp, static_cast<int>(vs), 384, 16384,
-                                                     cidx.data(), cval.data());
+                int cnt = hal::gpu_topk_raw_candidates(lgp, static_cast<int>(vs), 16384, 2048,
+                                                       cidx.data(), cval.data());
+                if (cnt <= 0) {
+                    // Cooperative path unavailable/failed — iterative fallback.
+                    cnt = hal::topk_logits_f32(lgp, static_cast<int>(vs), 384, 16384,
+                                               cidx.data(), cval.data());
+                    if (cnt <= 0) { return false; }
+                }
                 if (cnt <= 0) { return false; }
                 cidx.resize(static_cast<size_t>(cnt));
                 cval.resize(static_cast<size_t>(cnt));

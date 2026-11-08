@@ -120,6 +120,15 @@ void block_sums16_f16(const void *x_f16, void *sx16, int n16, cudaStream_t strea
 int topk_logits_f32(const void *logits_gpu, int vocab, int need, int cap,
                     int *idx_out, float *val_out, cudaStream_t stream = nullptr);
 
+/// One-shot GPU candidate selection: global max -> threshold collect ->
+/// cooperative top-N compaction, all on device with a single host sync.
+/// Returns the exact top-`max_out`-bounded raw logits (unordered, count in
+/// [~640, ~1920] typically), or -1 when the cooperative path is unavailable
+/// or the count can't be bounded — caller should fall back to
+/// topk_logits_f32.
+int gpu_topk_raw_candidates(const void *logits_gpu, int vocab, int cap, int max_out,
+                            int *idx_out, float *val_out, cudaStream_t stream = nullptr);
+
 /// Device-side dtype conversion between FP32/FP16/BF16 (no host round-trip).
 void convert_dtype(void *out, const void *in, size_t n, DType in_dtype, DType out_dtype,
                    cudaStream_t stream = nullptr);

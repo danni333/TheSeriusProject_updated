@@ -1294,6 +1294,172 @@ int topk_logits_f32(const void *logits_gpu, int vocab, int need, int cap,
     return ncopy;
 }
 
+// --- Cooperative top-k selection over collected candidates ---
+//
+// The candidate set from logits_collect_packed_kernel is unordered and can
+// hold thousands of entries; the CPU sampler only needs a superset of the
+// penalized top_k (~40). This kernel binary-searches a logit threshold on
+// device (grid.sync between passes) and compacts the above-threshold set —
+// i.e. the exact top-N raw logits — into `out`. All threads track lo/hi/mid
+// identically so no threshold state needs to live in global memory.
+
+__global__ void topk_select_coop_kernel(const uint2 *pk, const unsigned *count_p,
+                                        const unsigned *gmax,
+                                        unsigned *cnts, float *g_state,
+                                        uint2 *out, int max_out, int ncap)
+{
+    namespace cg = cooperative_groups;
+    cg::grid_group grid = cg::this_grid();
+
+    // count_p counts EVERY element above threshold, including ones beyond
+    // the packed buffer's `cap` — clamp reads, and flag overflow so the host
+    // falls back (the packed subset would be arbitrary, not the true top-N).
+    const unsigned raw_n = *count_p;
+    const bool overflow = raw_n > (unsigned)ncap;
+    const int n = (int)min(raw_n, (unsigned)ncap);
+    const float max_val = logit_key_to_float(*gmax);
+    float lo = max_val - 100.0f, hi = max_val;
+    float mid = 0.5f * (lo + hi);
+    float sel_mid = mid;
+    bool done = false;
+    const unsigned TARGET_LO = 640, TARGET_HI = 1920;  // accept window
+
+    __shared__ unsigned smem[32];
+    const int lane = threadIdx.x & 31;
+    const int wid = threadIdx.x >> 5;
+
+    // cnts[0]/cnts[1] ping-pong per iteration: each counter is only written
+    // during its count phase and only reset after a second grid.sync, so the
+    // threshold `total` every thread reads is race-free and identical —
+    // divergent lo/hi/mid would deadlock grid.sync().
+    for (int it = 0; it < 22 && !done && n > 0; ++it) {
+        unsigned *cnt = cnts + (it & 1);
+        unsigned c = 0;
+        for (int i = threadIdx.x; i < n; i += blockDim.x) {
+            if (__uint_as_float(pk[i].y) > mid) { ++c; }
+        }
+        #pragma unroll
+        for (int o = 16; o > 0; o >>= 1) { c += __shfl_down_sync(0xffffffffu, c, o); }
+        if (lane == 0) { smem[wid] = c; }
+        __syncthreads();
+        if (wid == 0) {
+            c = (lane < (blockDim.x >> 5)) ? smem[lane] : 0u;
+            #pragma unroll
+            for (int o = 16; o > 0; o >>= 1) { c += __shfl_down_sync(0xffffffffu, c, o); }
+            if (lane == 0) { atomicAdd(cnt, c); }
+        }
+        __syncthreads();   // smem reuse guard for next iteration
+        grid.sync();       // counts final; *cnt stable until the reset below
+        const unsigned total = *cnt;
+        if (total >= TARGET_LO && total <= TARGET_HI) { done = true; sel_mid = mid; }
+        else if (total > TARGET_HI) { lo = mid; } else { hi = mid; }
+        mid = 0.5f * (lo + hi);
+        grid.sync();       // all threads finished reading *cnt
+        if (blockIdx.x == 0 && threadIdx.x == 0) { *cnt = 0; }  // reuse at it+2
+    }
+
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        g_state[0] = (done && !overflow) ? 1.0f : 0.0f;
+        cnts[2] = 0;  // compaction slot counter
+    }
+    grid.sync();
+
+    if (done) {
+        for (int i = threadIdx.x; i < n; i += blockDim.x) {
+            if (__uint_as_float(pk[i].y) > sel_mid) {
+                const unsigned p = atomicAdd(&cnts[2], 1u);
+                if ((int)p < max_out) { out[p] = pk[i]; }
+            }
+        }
+    }
+    grid.sync();
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        g_state[1] = (float)cnts[2];
+    }
+}
+
+/// One-shot GPU candidate selection: max -> threshold collect -> cooperative
+/// top-N compaction. Returns the number of candidates written to idx_out /
+/// val_out (the exact top-N raw logits, unordered), or -1 on failure / when
+/// the cooperative path is unavailable or the count can't be bounded.
+int gpu_topk_raw_candidates(const void *logits_gpu, int vocab, int cap, int max_out,
+                            int *idx_out, float *val_out, cudaStream_t stream)
+{
+    if (!logits_gpu || !idx_out || !val_out || vocab <= 0 || cap <= 0 || max_out <= 0) { return -1; }
+    static unsigned *d_gmax = nullptr;
+    static unsigned *d_ccount = nullptr;   // collect count (n candidates)
+    static unsigned *d_cnts = nullptr;     // coop counters: [0],[1] ping-pong, [2] compaction
+    static uint2 *d_packed = nullptr;
+    static uint2 *d_sel = nullptr;
+    static float *d_state = nullptr;
+    static int d_cap = 0, d_maxout = 0;
+    if (d_gmax == nullptr) {
+        CHECK_CUDA(cudaMalloc(&d_gmax, sizeof(unsigned)));
+        CHECK_CUDA(cudaMalloc(&d_ccount, sizeof(unsigned)));
+        CHECK_CUDA(cudaMalloc(&d_cnts, 4 * sizeof(unsigned)));
+        CHECK_CUDA(cudaMalloc(&d_state, 2 * sizeof(float)));
+    }
+    if (d_cap < cap) {
+        if (d_packed) { cudaFree(d_packed); }
+        CHECK_CUDA(cudaMalloc(&d_packed, cap * sizeof(uint2)));
+        d_cap = cap;
+    }
+    if (d_maxout < max_out) {
+        if (d_sel) { cudaFree(d_sel); }
+        CHECK_CUDA(cudaMalloc(&d_sel, max_out * sizeof(uint2)));
+        d_maxout = max_out;
+    }
+    static std::vector<uint2> h_sel;
+    static float h_state[2];
+    if ((int)h_sel.size() < max_out) { h_sel.resize(max_out); }
+
+    // Cooperative-launch capability (queried once).
+    static int coop_grid = -2;
+    if (coop_grid == -2) {
+        int dev = 0, numBlocksPerSm = 0, smCount = 0;
+        cudaGetDevice(&dev);
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&numBlocksPerSm,
+                                                    (const void *)topk_select_coop_kernel, 256, 0);
+        cudaDeviceGetAttribute(&smCount, cudaDevAttrMultiProcessorCount, dev);
+        coop_grid = (numBlocksPerSm > 0 && smCount > 0) ? numBlocksPerSm * smCount : 0;
+        if (coop_grid > 64) { coop_grid = 64; }
+        if (coop_grid < 1) { coop_grid = -1; }
+    }
+    if (coop_grid < 0) { return -1; }
+
+    const float *x = static_cast<const float *>(logits_gpu);
+    const int threads = 256;
+    const unsigned bx = (unsigned)((vocab + threads - 1) / threads);
+    const unsigned gbx = bx < 4096u ? bx : 4096u;
+
+    CHECK_CUDA(cudaMemsetAsync(d_gmax, 0, sizeof(unsigned), stream));
+    CHECK_CUDA(cudaMemsetAsync(d_ccount, 0, sizeof(unsigned), stream));
+    CHECK_CUDA(cudaMemsetAsync(d_cnts, 0, 4 * sizeof(unsigned), stream));
+    logits_max_kernel<<<gbx, threads, 0, stream>>>(x, vocab, d_gmax);
+    logits_collect_packed_kernel<<<gbx, threads, 0, stream>>>(
+        x, vocab, d_gmax, 20.0f, d_ccount, d_packed, cap);
+
+    void *args[] = { &d_packed, &d_ccount, &d_gmax, &d_cnts, &d_state, &d_sel, &max_out, &cap };
+    cudaError_t lerr = cudaLaunchCooperativeKernel(
+        (const void *)topk_select_coop_kernel, dim3((unsigned)coop_grid), dim3(256),
+        args, 0, stream);
+    if (lerr != cudaSuccess) { cudaGetLastError(); return -1; }
+
+    CHECK_CUDA(cudaMemcpyAsync(h_state, d_state, 2 * sizeof(float), cudaMemcpyDeviceToHost, stream));
+    CHECK_CUDA(cudaMemcpyAsync(h_sel.data(), d_sel, max_out * sizeof(uint2), cudaMemcpyDeviceToHost, stream));
+    CHECK_CUDA(cudaStreamSynchronize(stream));
+    if (h_state[0] != 1.0f) { return -1; }
+    const int ncopy = (int)h_state[1];
+    if (ncopy <= 0 || ncopy > max_out) { return -1; }
+    for (int i = 0; i < ncopy; ++i) {
+        idx_out[i] = (int)h_sel[i].x;
+        float fv;
+        std::memcpy(&fv, &h_sel[i].y, sizeof(fv));
+        val_out[i] = fv;
+    }
+    return ncopy;
+}
+
 void gemv_quant_f16(const void *x, const void *w, int qtype, size_t in, size_t out, void *y_f32,
                     cudaStream_t stream)
 {
