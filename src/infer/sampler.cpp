@@ -90,7 +90,8 @@ int Sampler::sample(const core::Tensor &logits, const std::vector<int> &recent_t
     }
 
     const size_t nk = keys.size();
-    std::vector<float> probs(nk);
+    thread_local std::vector<float> probs;
+    probs.resize(nk);
     const float inv_t = 1.0f / temperature_;
     const float max_val = nk > 0 ? keyf(static_cast<uint32_t>(keys[0] >> 32)) * inv_t : 0.0f;
     for (size_t i = 0; i < nk; ++i) {
@@ -135,7 +136,9 @@ int Sampler::sample_from_candidates(const std::vector<int> &cand_idx,
 
     // Repetition penalty: identical semantics to sample() — each occurrence
     // of a token id in recent_tokens re-applies the penalty to its logit.
-    std::vector<float> penalized(nc);
+    // thread_local scratch: these buffers are rebuilt every decode token.
+    thread_local std::vector<float> penalized;
+    penalized.resize(nc);
     if (repetition_penalty > 1.0f && !recent_tokens.empty()) {
         std::unordered_map<int, int> counts;
         for (int tid : recent_tokens) {
@@ -154,6 +157,41 @@ int Sampler::sample_from_candidates(const std::vector<int> &cand_idx,
     } else {
         for (size_t i = 0; i < nc; ++i) { penalized[i] = cand_logits[i]; }
     }
+    return sample_from_penalized(cand_idx, penalized);
+}
+
+int Sampler::sample_from_candidates_dense(const std::vector<int> &cand_idx,
+                                          const std::vector<float> &cand_logits,
+                                          const int *token_counts, size_t counts_size,
+                                          float repetition_penalty) const
+{
+    const size_t nc = cand_idx.size();
+    if (nc == 0 || cand_logits.size() < nc || token_counts == nullptr) { return -1; }
+
+    thread_local std::vector<float> penalized;
+    penalized.resize(nc);
+    if (repetition_penalty > 1.0f) {
+        for (size_t i = 0; i < nc; ++i) {
+            const int id = cand_idx[i];
+            int cnt = (id >= 0 && static_cast<size_t>(id) < counts_size) ? token_counts[id] : 0;
+            float v = cand_logits[i];
+            // cnt applications of the penalty; cnt is almost always 0 or 1.
+            while (cnt-- > 0) {
+                v = (v > 0.0f) ? v / repetition_penalty : v * repetition_penalty;
+            }
+            penalized[i] = v;
+        }
+    } else {
+        for (size_t i = 0; i < nc; ++i) { penalized[i] = cand_logits[i]; }
+    }
+    return sample_from_penalized(cand_idx, penalized);
+}
+
+int Sampler::sample_from_penalized(const std::vector<int> &cand_idx,
+                                   const std::vector<float> &penalized) const
+{
+    const size_t nc = cand_idx.size();
+    if (nc == 0) { return -1; }
 
     if (temperature_ <= 0.0f) {
         size_t best = 0;
@@ -178,7 +216,8 @@ int Sampler::sample_from_candidates(const std::vector<int> &cand_idx,
         return f;
     };
 
-    std::vector<uint64_t> keys(nc);
+    thread_local std::vector<uint64_t> keys;
+    keys.resize(nc);
     for (size_t i = 0; i < nc; ++i) {
         keys[i] = (static_cast<uint64_t>(fkey(penalized[i])) << 32) | i;
     }
@@ -192,7 +231,8 @@ int Sampler::sample_from_candidates(const std::vector<int> &cand_idx,
     }
 
     const size_t nk = keys.size();
-    std::vector<float> probs(nk);
+    thread_local std::vector<float> probs;
+    probs.resize(nk);
     const float inv_t = 1.0f / temperature_;
     const float max_val = nk > 0 ? keyf(static_cast<uint32_t>(keys[0] >> 32)) * inv_t : 0.0f;
     for (size_t i = 0; i < nk; ++i) {

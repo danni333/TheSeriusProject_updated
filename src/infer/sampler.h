@@ -35,12 +35,23 @@ public:
                                const std::vector<int> &recent_tokens,
                                float repetition_penalty) const;
 
+    /// Same as above but takes a dense occurrence-count array (indexed by
+    /// token id, size > max id) instead of the recent_tokens list — avoids
+    /// rebuilding a hash map on every decode step.
+    int sample_from_candidates_dense(const std::vector<int> &cand_idx,
+                                     const std::vector<float> &cand_logits,
+                                     const int *token_counts, size_t counts_size,
+                                     float repetition_penalty) const;
+
     void set_temperature(float t) { temperature_ = t; }
     void set_top_k(int k) { top_k_ = k; }
     void set_top_p(float p) { top_p_ = p; }
     void set_seed(uint64_t seed) { rng_.seed(static_cast<std::mt19937::result_type>(seed)); }
 
 private:
+    int sample_from_penalized(const std::vector<int> &cand_idx,
+                              const std::vector<float> &penalized) const;
+
     float temperature_;
     int top_k_;
     float top_p_;

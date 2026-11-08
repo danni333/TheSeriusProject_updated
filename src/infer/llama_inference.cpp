@@ -1636,6 +1636,10 @@ bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int t
                                            size_t pos, KVCache *cache, Tensor &out_logits) {
     if (cache == nullptr || pos + 1 > 4096) return false;
     {
+        size_t n = 0;
+        if (getenv_s(&n, nullptr, 0, "SERIUS_NO_GRAPH") == 0 && n > 0) return false;
+    }
+    {
         const GraphDisabledKey &dk = graph_disabled();
         if (dk.model == &model && dk.cache_inst == cache->instance_id) return false;
     }

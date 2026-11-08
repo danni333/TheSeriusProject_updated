@@ -381,6 +381,18 @@ int cmd_chat(int argc, char **argv)
             std::vector<int> recent_ids;
             recent_ids.reserve(ids.size() + max_new_tokens);
             for (TokenId tid : ids) recent_ids.push_back(static_cast<int>(tid));
+            // Dense occurrence counts for the repetition penalty: updated
+            // incrementally so the per-token sampler does O(1) lookups instead
+            // of rebuilding a hash map over the whole history.
+            thread_local std::vector<int> tok_counts;
+            if (tok_counts.size() < tokenizer.vocab_size()) {
+                tok_counts.assign(tokenizer.vocab_size(), 0);
+            } else {
+                std::fill(tok_counts.begin(), tok_counts.end(), 0);
+            }
+            for (int tid : recent_ids) {
+                if (tid >= 0 && static_cast<size_t>(tid) < tok_counts.size()) { ++tok_counts[tid]; }
+            }
 
             auto gen_start = std::chrono::steady_clock::now();
             core::Tensor logits = infer::llama_forward_inference_last(model, prompt_input, &cache);
@@ -404,7 +416,8 @@ int cmd_chat(int argc, char **argv)
                 if (cnt <= 0) { return false; }
                 cidx.resize(static_cast<size_t>(cnt));
                 cval.resize(static_cast<size_t>(cnt));
-                const int t = sampler.sample_from_candidates(cidx, cval, recent_ids, repeat_penalty);
+                const int t = sampler.sample_from_candidates_dense(
+                    cidx, cval, tok_counts.data(), tok_counts.size(), repeat_penalty);
                 if (t < 0) { return false; }
                 out_id = t;
                 return true;
@@ -453,6 +466,7 @@ int cmd_chat(int argc, char **argv)
                 size_t pos = ids.size();
                 ids.push_back(static_cast<TokenId>(next_id));
                 recent_ids.push_back(next_id);
+                if (next_id >= 0 && static_cast<size_t>(next_id) < tok_counts.size()) { ++tok_counts[next_id]; }
 
                 const double tf0 = chat_prof ? now_s() : 0.0;
                 core::Tensor next_logits = infer::llama_forward_single_token(model, next_id, pos, &cache);

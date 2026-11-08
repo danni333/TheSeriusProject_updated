@@ -926,30 +926,37 @@ __global__ void gemv_quant_vec_h_kernel(const __half *x, const float *sx16, cons
     const bool has_m = (kind == 4);
 
     if (kind == 3 || kind == 4) {
-        constexpr int RPW = 4;
-        float accA[RPW], accB[RPW];
-        const uint8_t *wr[RPW], *darr[RPW], *marr[RPW];
-        #pragma unroll
-        for (int r = 0; r < RPW; ++r) {
-            accA[r] = 0.0f; accB[r] = 0.0f;
-            if (r0 + r < out) {
-                wr[r] = w + (size_t)(r0 + r) * stride;
-                darr[r] = wr[r] + d_off;
-                marr[r] = (m_off != 0) ? wr[r] + m_off : nullptr;
-            }
-        }
-        for (int b = lane; b < bpr; b += 32) {
-            const int base = b * 32;
-            const float sx0 = __ldg(sx16 + 2 * b);
-            const float sx1 = __ldg(sx16 + 2 * b + 1);
-            const __half *xl_p = x + base;
-            const __half *xh_p = x + base + 16;
+        // Q4_0/Q4_1 fast path, k-major lane mapping: each lane owns ONE row
+        // (lane>>3, 8 contiguous lanes per row) and strides k-blocks by 8
+        // (lane&7). The old mapping (all 32 lanes on k, 4 rows inner) wasted
+        // ~33% of the second k-iteration whenever bpr%32 != 0 — which is the
+        // common case (in=1536 -> bpr=48). This mapping is exactly balanced
+        // for any bpr multiple of 8 and needs fewer bytes per lane.
+        const int row_local = lane >> 3;          // 0..3
+        const int q = lane & 7;                   // k-stride group
+        const int rrow = r0 + row_local;
+        // Clamp to a valid row so out-of-range lanes still participate in
+        // the __shfl_xor_sync reduction (mask requires all 32 lanes).
+        const int rclamp = (rrow < out) ? rrow : (out - 1);
+        const uint8_t *wr = w + (size_t)rclamp * stride;
+        const uint8_t *darr = wr + d_off;
+        const uint8_t *marr = (m_off != 0) ? wr + m_off : nullptr;
+
+        float accA = 0.0f, accB = 0.0f;
+        const int maxit = (bpr + 7) >> 3;         // ceil(bpr/8)
+        for (int t = 0; t < maxit; t += 4) {
             #pragma unroll
-            for (int r = 0; r < RPW; ++r) {
-                if (r0 + r >= out) break;
-                const uint4 v = __ldcs(reinterpret_cast<const uint4 *>(wr[r] + (size_t)b * qs));
-                const float d = __half2float(*reinterpret_cast<const __half *>(darr[r] + b * 2));
-                const float m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr[r] + b * 2)) : 0.0f;
+            for (int u = 0; u < 4; ++u) {
+                const int b = q + 8 * (t + u);
+                if (b >= bpr) continue;
+                const uint4 v = __ldcs(reinterpret_cast<const uint4 *>(wr + (size_t)b * qs));
+                const float d = __half2float(*reinterpret_cast<const __half *>(darr + b * 2));
+                const float m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr + b * 2)) : 0.0f;
+                const float sx0 = __ldg(sx16 + 2 * b);
+                const float sx1 = __ldg(sx16 + 2 * b + 1);
+                const int base = b * 32;
+                const __half *xl_p = x + base;
+                const __half *xh_p = x + base + 16;
                 float ta = 0.0f, tb = 0.0f;
                 #pragma unroll
                 for (int j = 0; j < 16; j += 4) {
@@ -974,29 +981,26 @@ __global__ void gemv_quant_vec_h_kernel(const __half *x, const float *sx16, cons
                     ta = fmaf((float)(int)(b3 & 0xFu), xb.y, ta);
                     tb = fmaf((float)(int)(b3 >> 4), xd.y, tb);
                 }
-                accA[r] = fmaf(d, ta, accA[r]);
-                accB[r] = fmaf(d, tb, accB[r]);
+                accA = fmaf(d, ta, accA);
+                accB = fmaf(d, tb, accB);
                 if (has_m) {
-                    accA[r] = fmaf(m, sx0, accA[r]);
-                    accB[r] = fmaf(m, sx1, accB[r]);
+                    accA = fmaf(m, sx0, accA);
+                    accB = fmaf(m, sx1, accB);
                 } else {
-                    accA[r] = fmaf(-8.0f * d, sx0, accA[r]);
-                    accB[r] = fmaf(-8.0f * d, sx1, accB[r]);
+                    accA = fmaf(-8.0f * d, sx0, accA);
+                    accB = fmaf(-8.0f * d, sx1, accB);
                 }
             }
         }
+        // Reduce across the 8 lanes sharing this row (contiguous lane group).
+        float acc = accA + accB;
         #pragma unroll
-        for (int r = 0; r < RPW; ++r) {
-            if (r0 + r >= out) break;
-            float acc = accA[r] + accB[r];
-            #pragma unroll
-            for (int o = 16; o > 0; o >>= 1) {
-                acc += __shfl_down_sync(0xffffffffu, acc, o);
-            }
-            if (lane == 0) {
-                if (y_f16) reinterpret_cast<__half *>(y)[r0 + r] = __float2half(acc);
-                else reinterpret_cast<float *>(y)[r0 + r] = acc;
-            }
+        for (int o = 4; o > 0; o >>= 1) {
+            acc += __shfl_xor_sync(0xffffffffu, acc, o, 8);
+        }
+        if ((lane & 7) == 0 && rrow < out) {
+            if (y_f16) reinterpret_cast<__half *>(y)[rrow] = __float2half(acc);
+            else reinterpret_cast<float *>(y)[rrow] = acc;
         }
         return;
     }
@@ -1186,6 +1190,25 @@ __host__ __device__ __forceinline__ float logit_key_to_float_host(uint32_t k)
     return f;
 }
 
+// Single-pass variant: reads the global max computed by logits_max_kernel
+// directly on device, derives the threshold, and collects candidates packed
+// as {idx, val_bits} pairs — no host round-trip between max and collect.
+__global__ void logits_collect_packed_kernel(const float *x, int n, const unsigned *gmax,
+                                             float window, unsigned *counter,
+                                             uint2 *out, int cap)
+{
+    const float mx = logit_key_to_float(*gmax);   // gmax holds the order-preserving key, not raw bits
+    const float thresh = mx - window;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += gridDim.x * blockDim.x) {
+        if (x[i] > thresh) {
+            const unsigned p = atomicAdd(counter, 1u);
+            if ((int)p < cap) {
+                out[p] = make_uint2((unsigned)i, __float_as_uint(x[i]));
+            }
+        }
+    }
+}
+
 int topk_logits_f32(const void *logits_gpu, int vocab, int need, int cap,
                     int *idx_out, float *val_out, cudaStream_t stream)
 {
@@ -1194,25 +1217,52 @@ int topk_logits_f32(const void *logits_gpu, int vocab, int need, int cap,
     static unsigned *d_counter = nullptr;
     static int *d_idx = nullptr;
     static float *d_val = nullptr;
+    static uint2 *d_packed = nullptr;
     static int d_cap = 0;
     if (d_gmax == nullptr) {
         CHECK_CUDA(cudaMalloc(&d_gmax, sizeof(unsigned)));
         CHECK_CUDA(cudaMalloc(&d_counter, sizeof(unsigned)));
     }
     if (d_cap < cap) {
-        if (d_idx) { cudaFree(d_idx); cudaFree(d_val); }
+        if (d_idx) { cudaFree(d_idx); cudaFree(d_val); cudaFree(d_packed); }
         CHECK_CUDA(cudaMalloc(&d_idx, cap * sizeof(int)));
         CHECK_CUDA(cudaMalloc(&d_val, cap * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&d_packed, cap * sizeof(uint2)));
         d_cap = cap;
     }
+    static std::vector<uint2> h_packed;
+    if ((int)h_packed.size() < cap) { h_packed.resize(cap); }
     const float *x = static_cast<const float *>(logits_gpu);
     const int threads = 256;
     const unsigned bx = (unsigned)((vocab + threads - 1) / threads);
     const unsigned gbx = bx < 4096u ? bx : 4096u;
 
-    // Global max (order-preserving key, atomicMax on uint).
+    // Fast path: max kernel -> packed collect kernel back-to-back on the
+    // same stream (the collect kernel reads gmax on device), then ONE sync
+    // covering both D2H copies. Saves ~2-3 stream syncs per token vs the
+    // iterative threshold loop below.
     CHECK_CUDA(cudaMemsetAsync(d_gmax, 0, sizeof(unsigned), stream));
+    CHECK_CUDA(cudaMemsetAsync(d_counter, 0, sizeof(unsigned), stream));
     logits_max_kernel<<<gbx, threads, 0, stream>>>(x, vocab, d_gmax);
+    logits_collect_packed_kernel<<<gbx, threads, 0, stream>>>(
+        x, vocab, d_gmax, 20.0f, d_counter, d_packed, cap);
+    unsigned h_count = 0;
+    CHECK_CUDA(cudaMemcpyAsync(&h_count, d_counter, sizeof(unsigned), cudaMemcpyDeviceToHost, stream));
+    CHECK_CUDA(cudaMemcpyAsync(h_packed.data(), d_packed, cap * sizeof(uint2), cudaMemcpyDeviceToHost, stream));
+    CHECK_CUDA(cudaStreamSynchronize(stream));
+    const int fast_count = (int)h_count;
+    if (fast_count >= need && fast_count <= cap) {
+        for (int i = 0; i < fast_count; ++i) {
+            idx_out[i] = (int)h_packed[i].x;
+            float fv;
+            std::memcpy(&fv, &h_packed[i].y, sizeof(fv));
+            val_out[i] = fv;
+        }
+        return fast_count;
+    }
+
+    // Fallback: window 25 didn't land in [need, cap] — recover max on host
+    // and run the adaptive iterative path.
     unsigned h_key = 0;
     CHECK_CUDA(cudaMemcpyAsync(&h_key, d_gmax, sizeof(unsigned), cudaMemcpyDeviceToHost, stream));
     CHECK_CUDA(cudaStreamSynchronize(stream));
@@ -1226,10 +1276,10 @@ int topk_logits_f32(const void *logits_gpu, int vocab, int need, int cap,
         const float thresh = max_val - window;
         CHECK_CUDA(cudaMemsetAsync(d_counter, 0, sizeof(unsigned), stream));
         logits_collect_kernel<<<gbx, threads, 0, stream>>>(x, vocab, thresh, d_counter, d_idx, d_val, cap);
-        unsigned h_count = 0;
-        CHECK_CUDA(cudaMemcpyAsync(&h_count, d_counter, sizeof(unsigned), cudaMemcpyDeviceToHost, stream));
+        unsigned h_count2 = 0;
+        CHECK_CUDA(cudaMemcpyAsync(&h_count2, d_counter, sizeof(unsigned), cudaMemcpyDeviceToHost, stream));
         CHECK_CUDA(cudaStreamSynchronize(stream));
-        count = (int)h_count;
+        count = (int)h_count2;
         if (count >= need && count <= cap) { break; }
         // Gentler adjustment avoids oscillating across the [need, cap] band.
         window *= (count < need) ? 1.6f : 0.6f;
