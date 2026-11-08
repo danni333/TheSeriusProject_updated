@@ -7,6 +7,7 @@
 #include "../autograd/node.h"
 #include "positional.h"
 #include "../distributed/context.h"
+#include "../quant/quant_weight.h"
 
 namespace serius {
 namespace model {
@@ -62,6 +63,14 @@ class LLaMABlock
     std::unique_ptr<core::autograd::Node> up_proj;
     std::unique_ptr<core::autograd::Node> down_proj;
 
+    /// Optional packed-quantized copies of the projection weights, populated
+    /// by the GGUF loader. Used by the M==1 decode path (matvec_q); the FP32
+    /// Node params above remain the source of truth for training/prefill.
+    quant::QuantWeight q_w, k_w, v_w, o_w, gate_w, up_w, down_w;
+    /// Fused q|k|v and gate|up row-concatenated weights (same type/in/row_bytes)
+    /// for fewer, larger GEMV calls in the decode path.
+    quant::QuantWeight qkv_w, gate_up_w;
+
    private:
     size_t hidden_size_;
     size_t n_heads_;
@@ -97,6 +106,17 @@ class LLaMAModel
 
     core::autograd::Node *embed_tokens_raw() const { return embed_tokens_.get(); }
 
+    /// Transposed lm_head [vocab, hidden] for fast row-major GEMV inference.
+    /// Empty until populated by the weight loader; inference falls back to
+    /// the regular matmul path when unset.
+    core::Tensor &lm_head_t() { return lm_head_t_; }
+    const core::Tensor *lm_head_t() const { return lm_head_t_.size() > 0 ? &lm_head_t_ : nullptr; }
+
+    /// Optional packed-quantized lm_head [vocab rows x hidden cols] for the
+    /// fast decode GEMV. Populated by the GGUF loader when available.
+    quant::QuantWeight &lm_head_q() { return lm_head_q_; }
+    const quant::QuantWeight *lm_head_q() const { return lm_head_q_.valid() ? &lm_head_q_ : nullptr; }
+
    private:
     LLamaConfig config_;
     distributed::DistributedTopology topology_;
@@ -104,6 +124,8 @@ class LLaMAModel
     std::vector<std::unique_ptr<LLaMABlock>> layers_;
     std::unique_ptr<core::autograd::Node> norm_weight_;
     std::unique_ptr<core::autograd::Node> lm_head_;
+    core::Tensor lm_head_t_;
+    quant::QuantWeight lm_head_q_;
 };
 
 }  // namespace model

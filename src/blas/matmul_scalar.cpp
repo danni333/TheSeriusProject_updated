@@ -48,6 +48,20 @@ void matmul_scalar(const float *A, const float *B, float *C, size_t M, size_t N,
     }
 }
 
+// Transposed-weight GEMV: y[j] = dot(W[j,:], x[:]), W is [N,K] row-major.
+void matvec_t_scalar(const float *W, const float *x, float *y, size_t N, size_t K)
+{
+    #pragma omp parallel for schedule(static) if (N >= 1024)
+    for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
+        const float *w = W + static_cast<size_t>(j) * K;
+        float sum = 0.0f;
+        for (size_t k = 0; k < K; ++k) {
+            sum += w[k] * x[k];
+        }
+        y[static_cast<size_t>(j)] = sum;
+    }
+}
+
 }  // namespace blas
 }  // namespace core
 }  // namespace serius

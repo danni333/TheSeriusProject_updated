@@ -2,6 +2,7 @@
 #include "cli/args_parser.h"
 #include "infer/sampler.h"
 #include "io/config_loader.h"
+#include "io/gguf_loader.h"
 #include "tokenizer/bpe.h"
 #include "transformer/llama_model.h"
 #include "transformer/qwen_model.h"
@@ -90,10 +91,74 @@ int cmd_chat(int argc, char **argv)
         std::cout << "[Serius] Loaded vocab (" << tokenizer.vocab_size() << " tokens) from " << vocab_path << "\n";
     }
 
+    // If no vocab was loaded from JSON, look for GGUF tokenizer in model_path or model_dir
+    if (tokenizer.vocab_size() <= 260) {
+        std::string candidate_gguf;
+        if (std::filesystem::is_regular_file(model_path) &&
+            model_path.size() >= 5 && model_path.compare(model_path.size() - 5, 5, ".gguf") == 0) {
+            candidate_gguf = model_path;
+        } else if (std::filesystem::is_directory(model_dir)) {
+            for (const auto &entry : std::filesystem::directory_iterator(model_dir)) {
+                std::string p = entry.path().string();
+                if (p.size() >= 5 && p.compare(p.size() - 5, 5, ".gguf") == 0) {
+                    candidate_gguf = p;
+                    break;
+                }
+            }
+        }
+
+        if (!candidate_gguf.empty()) {
+            auto tok_data = io::load_gguf_tokenizer(candidate_gguf);
+            if (tok_data.valid) {
+                tokenizer.load_from_gguf(tok_data);
+                std::cout << "[Serius] Loaded vocab (" << tokenizer.vocab_size() << " tokens) from GGUF " << candidate_gguf << "\n";
+            }
+        }
+    }
+
     infer::Sampler sampler(temperature, 40, 0.9f, seed);
 
     if (model_type == "llama") {
-        model::LLamaConfig config = io::load_llama_config(config_path);
+        model::LLamaConfig config;
+        bool has_config_json = std::filesystem::exists(config_path);
+        if (has_config_json) {
+            config = io::load_llama_config(config_path);
+        }
+
+        // If config.json is missing (common with GGUF-only distributions),
+        // extract model dimensions directly from the GGUF metadata.
+        if (!has_config_json) {
+            std::string candidate_gguf;
+            if (std::filesystem::is_regular_file(model_path) &&
+                model_path.size() >= 5 && model_path.compare(model_path.size() - 5, 5, ".gguf") == 0) {
+                candidate_gguf = model_path;
+            } else if (std::filesystem::is_directory(model_dir)) {
+                for (const auto &entry : std::filesystem::directory_iterator(model_dir)) {
+                    std::string p = entry.path().string();
+                    if (p.size() >= 5 && p.compare(p.size() - 5, 5, ".gguf") == 0) {
+                        candidate_gguf = p;
+                        break;
+                    }
+                }
+            }
+
+            if (!candidate_gguf.empty()) {
+                auto mc = io::gguf_to_model_config(candidate_gguf);
+                if (mc.vocab_size > 0) {
+                    config.vocab_size        = mc.vocab_size;
+                    config.hidden_size       = mc.d_model;
+                    config.num_hidden_layers = mc.n_layers;
+                    config.num_attention_heads = mc.n_heads;
+                    config.num_key_value_heads = mc.n_kv_heads;
+                    config.intermediate_size   = mc.d_ff;
+                    config.max_position_embeddings = mc.max_seq_len;
+                    config.rope_theta          = mc.rope_theta;
+                    config.rms_norm_eps        = mc.rms_norm_eps;
+                    std::cout << "[Serius] Loaded model config from GGUF metadata (" << candidate_gguf << ")\n";
+                }
+            }
+        }
+
         if (config.vocab_size == 0) {
             config.vocab_size = tokenizer.vocab_size() > 0 ? tokenizer.vocab_size() : 32000;
         }
@@ -105,9 +170,16 @@ int cmd_chat(int argc, char **argv)
 
         model::LLaMAModel model(config);
 
-        if (std::filesystem::is_directory(model_dir)) {
+        if (std::filesystem::is_regular_file(model_path) &&
+            model_path.size() >= 5 && model_path.compare(model_path.size() - 5, 5, ".gguf") == 0) {
+            if (io::load_llama_weights_from_gguf_file(model_path, &model)) {
+                std::cout << "[Serius] Successfully loaded weights from GGUF file " << model_path << "\n";
+            } else {
+                std::cout << "[Serius] Warning: Could not load weights from " << model_path << " (using random init)\n";
+            }
+        } else if (std::filesystem::is_directory(model_dir)) {
             if (io::load_llama_weights_from_dir(model_dir, &model)) {
-                std::cout << "[Serius] Successfully loaded .safetensors weights from " << model_dir << "\n";
+                std::cout << "[Serius] Successfully loaded weights from " << model_dir << "\n";
             } else {
                 std::cout << "[Serius] Warning: Could not load weights from " << model_dir << " (using random init)\n";
             }
@@ -138,6 +210,7 @@ int cmd_chat(int argc, char **argv)
 
             auto gen_start = std::chrono::steady_clock::now();
             core::Tensor logits = infer::llama_forward_inference(model, prompt_input, &cache);
+            const double t_prefill = std::chrono::duration<double>(std::chrono::steady_clock::now() - gen_start).count();
 
             int next_id = 0;
             {
@@ -150,23 +223,44 @@ int cmd_chat(int argc, char **argv)
             }
 
             size_t tokens_generated = 0;
+            const bool chat_prof = [] {
+                size_t n = 0;
+                return getenv_s(&n, nullptr, 0, "SERIUS_PROF") == 0 && n > 0;
+            }();
+            double t_dec = 0, t_fwd = 0, t_smp = 0, t_out = 0;
+            auto now_s = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
             for (int gen = 0; gen < max_new_tokens; ++gen) {
+                const double td0 = chat_prof ? now_s() : 0.0;
                 std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
+                if (chat_prof) { t_dec += now_s() - td0; }
                 if (next_id == static_cast<int>(BPETokenizer::EOS_ID) ||
                     tok_str == "<|im_end|>" || tok_str == "<|endoftext|>" ||
                     tok_str == "</s>") {
                     break;
                 }
 
+                const double to0 = chat_prof ? now_s() : 0.0;
                 std::cout << tok_str << std::flush;
+                if (chat_prof) { t_out += now_s() - to0; }
                 tokens_generated++;
 
                 size_t pos = ids.size();
                 ids.push_back(static_cast<TokenId>(next_id));
                 recent_ids.push_back(next_id);
 
+                const double tf0 = chat_prof ? now_s() : 0.0;
                 core::Tensor next_logits = infer::llama_forward_single_token(model, next_id, pos, &cache);
+                if (chat_prof) { t_fwd += now_s() - tf0; }
+                const double ts0 = chat_prof ? now_s() : 0.0;
                 next_id = sampler.sample(next_logits, recent_ids, repeat_penalty);
+                if (chat_prof) { t_smp += now_s() - ts0; }
+            }
+            if (chat_prof && tokens_generated > 0) {
+                std::cerr << "[chatprof] decode=" << t_dec * 1e3 / tokens_generated
+                          << "ms fwd=" << t_fwd * 1e3 / tokens_generated
+                          << "ms sampler=" << t_smp * 1e3 / tokens_generated
+                          << "ms out=" << t_out * 1e3 / tokens_generated
+                          << "ms prefill=" << t_prefill * 1e3 / tokens_generated << "ms/tok\n";
             }
             auto gen_end = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(gen_end - gen_start).count();

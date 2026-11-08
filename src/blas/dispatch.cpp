@@ -334,6 +334,19 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
 
 // --- Convenience Wrappers ---
 
+// Transposed-weight GEMV dispatcher: y = W[N,K] * x[K]
+void matvec_t(const float *W, const float *x, float *y, size_t N, size_t K)
+{
+    auto info = get_cpu_info();
+    if (info.has_avx512f) {
+        matvec_t_avx512(W, x, y, N, K);
+    } else if (info.has_avx2) {
+        matvec_t_avx2(W, x, y, N, K);
+    } else {
+        matvec_t_scalar(W, x, y, N, K);
+    }
+}
+
 Tensor matmul(const Tensor &mat_a, const Tensor &mat_b, void *stream)
 {
     if (mat_a.ndim() != 2 || mat_b.ndim() != 2) {

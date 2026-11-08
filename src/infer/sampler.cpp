@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <numeric>
 
 namespace serius {
@@ -29,39 +30,67 @@ int Sampler::sample(const core::Tensor &logits, const std::vector<int> &recent_t
         ptr += (seq_len - 1) * vocab_size;
     }
 
-    std::vector<float> work_logits(ptr, ptr + vocab_size);
-
-    if (repetition_penalty > 1.0f && !recent_tokens.empty()) {
+    const bool need_penalty = repetition_penalty > 1.0f && !recent_tokens.empty();
+    thread_local std::vector<float> work_storage;
+    const float *work = ptr;
+    if (need_penalty) {
+        work_storage.assign(ptr, ptr + vocab_size);
         for (int tid : recent_tokens) {
             if (tid >= 0 && static_cast<size_t>(tid) < vocab_size) {
-                if (work_logits[tid] > 0.0f) {
-                    work_logits[tid] /= repetition_penalty;
+                if (work_storage[tid] > 0.0f) {
+                    work_storage[tid] /= repetition_penalty;
                 } else {
-                    work_logits[tid] *= repetition_penalty;
+                    work_storage[tid] *= repetition_penalty;
                 }
             }
         }
+        work = work_storage.data();
     }
 
     if (temperature_ <= 0.0f) {
-        return static_cast<int>(std::max_element(work_logits.begin(), work_logits.end()) - work_logits.begin());
+        return static_cast<int>(std::max_element(work, work + vocab_size) - work);
     }
-
-    std::vector<std::pair<float, size_t>> indexed;
-    indexed.reserve(vocab_size);
-    float inv_t = 1.0f / temperature_;
-    for (size_t i = 0; i < vocab_size; ++i) {
-        indexed.emplace_back(work_logits[i] * inv_t, i);
-    }
-    std::sort(indexed.begin(), indexed.end(),
-              [](const std::pair<float, size_t> &a, const std::pair<float, size_t> &b) { return a.first > b.first; });
 
     int k = (top_k_ > 0) ? static_cast<int>(std::min(static_cast<size_t>(top_k_), vocab_size))
                          : static_cast<int>(vocab_size);
-    std::vector<float> probs(static_cast<size_t>(k));
-    float max_val = (k > 0) ? indexed[0].first : 0.0f;
-    for (int i = 0; i < k; ++i) {
-        probs[static_cast<size_t>(i)] = std::exp(indexed[static_cast<size_t>(i)].first - max_val);
+
+    // Pack (order-preserving logit key << 32) | index into uint64: integer
+    // nth_element over 8-byte keys is ~2-3x faster than pair<float,size_t>.
+    // key = float_bits ^ (sign ? ~0 : 0x80000000) preserves float ordering.
+    auto fkey = [](float f) -> uint32_t {
+        uint32_t b;
+        std::memcpy(&b, &f, sizeof(b));
+        return b ^ ((b & 0x80000000u) ? 0xFFFFFFFFu : 0x80000000u);
+    };
+    auto keyf = [](uint32_t k) -> float {
+        const uint32_t b = k ^ ((k & 0x80000000u) ? 0x80000000u : 0xFFFFFFFFu);
+        float f;
+        std::memcpy(&f, &b, sizeof(f));
+        return f;
+    };
+
+    thread_local std::vector<uint64_t> keys;
+    keys.resize(vocab_size);  // persistent: avoids ~400KB of page faults per token
+    const float inv_t = 1.0f / temperature_;
+    for (size_t i = 0; i < vocab_size; ++i) {
+        keys[i] = (static_cast<uint64_t>(fkey(work[i] * inv_t)) << 32) | i;
+    }
+
+    auto cmp_desc = [](uint64_t a, uint64_t b) { return a > b; };
+
+    if (static_cast<size_t>(k) < keys.size()) {
+        std::nth_element(keys.begin(), keys.begin() + k, keys.end(), cmp_desc);
+        std::sort(keys.begin(), keys.begin() + k, cmp_desc);
+        keys.resize(static_cast<size_t>(k));
+    } else {
+        std::sort(keys.begin(), keys.end(), cmp_desc);
+    }
+
+    const size_t nk = keys.size();
+    std::vector<float> probs(nk);
+    const float max_val = nk > 0 ? keyf(static_cast<uint32_t>(keys[0] >> 32)) : 0.0f;
+    for (size_t i = 0; i < nk; ++i) {
+        probs[i] = std::exp(keyf(static_cast<uint32_t>(keys[i] >> 32)) - max_val);
     }
     float sum = std::accumulate(probs.begin(), probs.end(), 0.f);
     if (sum > 0.f) {
@@ -89,7 +118,7 @@ int Sampler::sample(const core::Tensor &logits, const std::vector<int> &recent_t
     }
     std::discrete_distribution<size_t> dist(probs.begin(), probs.end());
     size_t chosen = dist(rng_);
-    return static_cast<int>(indexed[chosen].second);
+    return static_cast<int>(keys[chosen] & 0xFFFFFFFFull);
 }
 
 int Sampler::sample_greedy(const core::Tensor &logits) const

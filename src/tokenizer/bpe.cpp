@@ -1,5 +1,6 @@
 #include "bpe.h"
 #include "gpt2_table.h"
+#include "../io/gguf_loader.h"
 
 #include <algorithm>
 #include <fstream>
@@ -402,6 +403,77 @@ void BPETokenizer::load(const std::string &path_str)
     std::sort(special_tokens_.begin(), special_tokens_.end(), [](const std::string &a, const std::string &b) {
         return a.length() > b.length();
     });
+}
+
+void BPETokenizer::load_from_gguf(const io::GGUFTokenizerData &data)
+{
+    if (!data.valid) { return; }
+
+    vocab_.token_to_id.clear();
+    vocab_.id_to_token.clear();
+    vocab_.merges.clear();
+    special_tokens_.clear();
+    is_gpt2_byte_level_ = false;
+    is_sentencepiece_   = false;
+
+    // Build vocab from token list (index = token-id).
+    // GGUF token_type: 1=normal, 3=control/special, 6=byte.
+    for (size_t idx = 0; idx < data.tokens.size(); ++idx) {
+        const std::string &tok = data.tokens[idx];
+        TokenId tid = static_cast<TokenId>(idx);
+        vocab_.add_token(tok, tid);
+
+        // Control tokens → special_tokens list
+        if (!data.token_types.empty() && idx < data.token_types.size()) {
+            int32_t tt = data.token_types[idx];
+            if (tt == 3 /*control*/ || tt == 4 /*user-defined*/) {
+                if (std::find(special_tokens_.begin(), special_tokens_.end(), tok) == special_tokens_.end()) {
+                    special_tokens_.push_back(tok);
+                }
+            }
+        }
+    }
+
+    // Detect tokenizer style
+    is_gpt2_byte_level_ = (vocab_.token_to_id.find("\xc4\xa0") != vocab_.token_to_id.end() &&
+                           vocab_.token_to_id.find(" ") == vocab_.token_to_id.end());
+    is_sentencepiece_   = (!is_gpt2_byte_level_ &&
+                           vocab_.token_to_id.find("\xe2\x96\x81") != vocab_.token_to_id.end());
+
+    // Build merge table from BPE merges ("token_a token_b" pairs)
+    for (const std::string &merge_str : data.merges) {
+        size_t space = merge_str.find(' ');
+        if (space == std::string::npos) { continue; }
+        std::string t1 = merge_str.substr(0, space);
+        std::string t2 = merge_str.substr(space + 1);
+        auto it1 = vocab_.token_to_id.find(t1);
+        auto it2 = vocab_.token_to_id.find(t2);
+        if (it1 == vocab_.token_to_id.end() || it2 == vocab_.token_to_id.end()) { continue; }
+        std::string combined = t1 + t2;
+        auto itc = vocab_.token_to_id.find(combined);
+        if (itc != vocab_.token_to_id.end()) {
+            vocab_.merges[{it1->second, it2->second}] = itc->second;
+        }
+    }
+
+    // Always register common control tokens as special
+    auto try_add_special = [&](const std::string &token) {
+        if (vocab_.token_to_id.find(token) != vocab_.token_to_id.end()) {
+            if (std::find(special_tokens_.begin(), special_tokens_.end(), token) == special_tokens_.end()) {
+                special_tokens_.push_back(token);
+            }
+        }
+    };
+    try_add_special("<|im_start|>");
+    try_add_special("<|im_end|>");
+    try_add_special("<|endoftext|>");
+    try_add_special("<s>");
+    try_add_special("</s>");
+    try_add_special("<unk>");
+    try_add_special("<pad>");
+
+    std::sort(special_tokens_.begin(), special_tokens_.end(),
+              [](const std::string &a, const std::string &b) { return a.length() > b.length(); });
 }
 
 }  // namespace serius

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdint>
+#include <vector>
+
 #include "../tensor/tensor.h"
 #include "../transformer/llama_model.h"
 
@@ -10,6 +13,8 @@ struct KVCacheLayer {
     KVCacheLayer() : k({0, 0}), v({0, 0}), current_len(0) {}
     core::Tensor k; // [max_seq_len, kv_dim]
     core::Tensor v; // [max_seq_len, kv_dim]
+    // FP16 KV cache (CPU decode path): halves DRAM traffic vs fp32.
+    std::vector<uint16_t> k16, v16;  // [max_seq_len, kv_dim]
     size_t current_len = 0;
 };
 

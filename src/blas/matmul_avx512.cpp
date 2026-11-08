@@ -61,7 +61,9 @@ void matmul_avx512(const float *A, const float *B, float *C, size_t M, size_t N,
         // High-performance AVX-512 vector-matrix multiplication
         // Process 64 columns at once to reuse broadcasted A[k]
         // AVX-512 has 16 floats per vector (512 bits)
-        #pragma omp parallel for
+        // Parallelise when the GEMV is large enough to amortise the
+        // OpenMP fork/join cost (layer projections and lm_head alike).
+        #pragma omp parallel for if (static_cast<int64_t>(N) * static_cast<int64_t>(K) >= 262144) schedule(static)
         for (int64_t j = 0; j < static_cast<int64_t>(N); j += 64) {
             if (j + 64 <= static_cast<int64_t>(N)) {
                 __m512 sum0 = _mm512_setzero_ps();
@@ -169,6 +171,35 @@ void matmul_avx512(const float *A, const float *B, float *C, size_t M, size_t N,
             }
         }
     }
+}
+
+// Transposed-weight GEMV: y[j] = dot(W[j,:], x[:]), W is [N,K] row-major.
+// Each row streams sequentially; x stays hot in cache across rows.
+void matvec_t_avx512(const float *W, const float *x, float *y, size_t N, size_t K)
+{
+#if defined(__AVX512F__) || defined(_MSC_VER)
+    #pragma omp parallel for schedule(static) if (N >= 1024)
+    for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
+        const float *w = W + static_cast<size_t>(j) * K;
+        __m512 acc0 = _mm512_setzero_ps();
+        __m512 acc1 = _mm512_setzero_ps();
+        __m512 acc2 = _mm512_setzero_ps();
+        __m512 acc3 = _mm512_setzero_ps();
+        size_t k = 0;
+        for (; k + 64 <= K; k += 64) {
+            acc0 = _mm512_fmadd_ps(_mm512_loadu_ps(w + k + 0),  _mm512_loadu_ps(x + k + 0),  acc0);
+            acc1 = _mm512_fmadd_ps(_mm512_loadu_ps(w + k + 16), _mm512_loadu_ps(x + k + 16), acc1);
+            acc2 = _mm512_fmadd_ps(_mm512_loadu_ps(w + k + 32), _mm512_loadu_ps(x + k + 32), acc2);
+            acc3 = _mm512_fmadd_ps(_mm512_loadu_ps(w + k + 48), _mm512_loadu_ps(x + k + 48), acc3);
+        }
+        float sum = _mm512_reduce_add_ps(acc0) + _mm512_reduce_add_ps(acc1)
+                  + _mm512_reduce_add_ps(acc2) + _mm512_reduce_add_ps(acc3);
+        for (; k < K; ++k) { sum += w[k] * x[k]; }
+        y[static_cast<size_t>(j)] = sum;
+    }
+#else
+    matvec_t_scalar(W, x, y, N, K);
+#endif
 }
 
 }  // namespace blas

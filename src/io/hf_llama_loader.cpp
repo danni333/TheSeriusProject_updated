@@ -1,16 +1,20 @@
 #include "hf_llama_loader.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
 #include <cmath>
+#include <cstring>
 #include <vector>
 #include <string>
+#include <iostream>
 
 #include <nlohmann/json.hpp>
 
 #include "../transformer/llama_model.h"
 #include "safetensors_loader.h"
+#include "gguf_loader.h"
 
 namespace fs = std::filesystem;
 
@@ -45,6 +49,34 @@ void transpose_hf_to_cpp(const float *src_buffer, float *dst_buffer, size_t num_
     for (size_t r_idx = 0; r_idx < num_rows; ++r_idx) {
         for (size_t c_idx = 0; c_idx < num_cols; ++c_idx) {
             dst_buffer[(c_idx * num_rows) + r_idx] = src_buffer[(r_idx * num_cols) + c_idx];
+        }
+    }
+}
+
+/**
+ * @brief GGUF stores attn_q/attn_k output dims with RoPE pairs made adjacent:
+ * within each head, order is [f0,s0,f1,s1,...] where f/s are the two
+ * head_dim/2 halves, while HF uses [first_half | second_half].
+ * This reorders each row's out-features back to HF layout.
+ * Buffer layout: [in_dim][out_dim] row-major; out_dim = n_heads * head_dim.
+ */
+void unpermute_gguf_rope_heads(float *weights, size_t in_dim, size_t out_dim, size_t head_dim)
+{
+    if (head_dim < 2 || (head_dim % 2) != 0 || out_dim % head_dim != 0) {
+        return;
+    }
+    const size_t half = head_dim / 2;
+    const size_t n_heads = out_dim / head_dim;
+    std::vector<float> tmp(head_dim);
+    for (size_t i = 0; i < in_dim; ++i) {
+        float *row = weights + (i * out_dim);
+        for (size_t h = 0; h < n_heads; ++h) {
+            float *seg = row + (h * head_dim);
+            for (size_t s = 0; s < head_dim; ++s) {
+                const size_t src = (s < half) ? (2 * s) : (2 * (s - half) + 1);
+                tmp[s] = seg[src];
+            }
+            std::copy(tmp.begin(), tmp.end(), seg);
         }
     }
 }
@@ -171,6 +203,91 @@ void load_layers_in_range(SafetensorsFile &safetensors_file, model::LLaMAModel *
 }
 
 /**
+ * @brief Builds the transposed lm_head [vocab, hidden] used by the fast
+ * row-major GEMV decode path. lm_head param layout is [hidden, vocab].
+ */
+void build_lm_head_t(model::LLaMAModel *model)
+{
+    if (model->lm_head() == nullptr) { return; }
+    const size_t vocab  = model->config().vocab_size;
+    const size_t hidden = model->config().hidden_size;
+    core::Tensor &dst = model->lm_head_t();
+    dst = core::Tensor({vocab, hidden});
+    const float *src = model->lm_head()->data.data();
+    float *d = dst.data();
+    #pragma omp parallel for schedule(static)
+    for (int64_t j = 0; j < static_cast<int64_t>(vocab); ++j) {
+        const size_t jj = static_cast<size_t>(j);
+        for (size_t i = 0; i < hidden; ++i) {
+            d[jj * hidden + i] = src[i * vocab + jj];
+        }
+    }
+}
+
+// fp32 -> fp16 (round-to-nearest would be nicer; truncation error <0.1% is
+// fine for block scales).
+inline uint16_t f32_to_f16(float f)
+{
+    uint32_t x;
+    std::memcpy(&x, &f, sizeof(x));
+    const uint32_t sign = (x >> 16) & 0x8000u;
+    const int exp = static_cast<int>((x >> 23) & 0xFFu) - 127 + 15;
+    const uint32_t mant = x & 0x7FFFFFu;
+    if (exp <= 0) { return static_cast<uint16_t>(sign); }
+    if (exp >= 31) { return static_cast<uint16_t>(sign | 0x7C00u); }
+    return static_cast<uint16_t>(sign | (static_cast<uint32_t>(exp) << 10) | (mant >> 13));
+}
+
+/**
+ * @brief Quantizes an [N, K] row-major fp32 matrix into ggml-style Q4_0 blocks
+ * (fp16 scale + 32 x 4-bit, w = (nib - 8) * d). Used to shrink large non-Q4
+ * tensors such as a Q8_0 token_embd reused as lm_head.
+ */
+quant::QuantWeight quantize_fp32_to_q40(const float *w, size_t N, size_t K)
+{
+    quant::QuantWeight q;
+    q.type = quant::QuantType::Q4_0;
+    q.in = K;
+    q.out = N;
+    const size_t bpr = (K + 31) / 32;
+    q.bytes.resize(N * bpr * 18);
+    #pragma omp parallel for schedule(static)
+    for (int64_t r = 0; r < static_cast<int64_t>(N); ++r) {
+        uint8_t *row = q.bytes.data() + static_cast<size_t>(r) * bpr * 18;
+        const float *src = w + static_cast<size_t>(r) * K;
+        for (size_t b = 0; b < bpr; ++b) {
+            float amax = 0.0F;
+            for (size_t e = 0; e < 32; ++e) {
+                const size_t idx = b * 32 + e;
+                const float v = (idx < K) ? src[idx] : 0.0F;
+                amax = std::max(amax, std::fabs(v));
+            }
+            const float d = (amax > 0.0F) ? (amax / 7.0F) : 1e-8F;
+            uint8_t *blk = row + b * 18;
+            blk[0] = static_cast<uint8_t>(f32_to_f16(d) & 0xFF);
+            blk[1] = static_cast<uint8_t>(f32_to_f16(d) >> 8);
+            for (size_t j = 0; j < 16; ++j) {
+                int n0 = 8, n1 = 8;
+                const size_t i0 = b * 32 + j;
+                const size_t i1 = b * 32 + j + 16;
+                if (i0 < K) {
+                    int qq = static_cast<int>(std::lrint(src[i0] / d));
+                    qq = std::max(-8, std::min(7, qq));
+                    n0 = qq + 8;
+                }
+                if (i1 < K) {
+                    int qq = static_cast<int>(std::lrint(src[i1] / d));
+                    qq = std::max(-8, std::min(7, qq));
+                    n1 = qq + 8;
+                }
+                blk[2 + j] = static_cast<uint8_t>(n0 | (n1 << 4));
+            }
+        }
+    }
+    return q;
+}
+
+/**
  * @brief Loads tensors from a single safetensors file into the model.
  */
 bool load_one_file_into_model(SafetensorsFile &safetensors_file, model::LLaMAModel *model)
@@ -198,11 +315,15 @@ bool load_one_file_into_model(SafetensorsFile &safetensors_file, model::LLaMAMod
     }
     
     if (model->lm_head() != nullptr) {
+        bool lm_head_filled = false;
         if (safetensors_file.tensors().count("lm_head.weight") > 0) {
             copy_into_param(safetensors_file, "lm_head.weight", model->lm_head()->data.data(), cfg.vocab_size * cfg.hidden_size, true);
+            lm_head_filled = true;
         } else if (safetensors_file.tensors().count("model.embed_tokens.weight") > 0) {
             copy_into_param(safetensors_file, "model.embed_tokens.weight", model->lm_head()->data.data(), cfg.vocab_size * cfg.hidden_size, true);
+            lm_head_filled = true;
         }
+        if (lm_head_filled) { build_lm_head_t(model); }
     }
     return true;
 }
@@ -231,6 +352,169 @@ bool load_llama_weights_from_file(const std::string &safetensors_path, model::LL
     return load_one_file_into_model(safetensors_file, model);
 }
 
+// ---------------------------------------------------------------------------
+// GGUF loader: dequantise all tensors and map them into the LLaMAModel using
+// the same safetensors-compatible naming convention (HF layout).
+// ---------------------------------------------------------------------------
+bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaMAModel *model)
+{
+    if (model == nullptr) { return false; }
+
+    std::cout << "[Loader] Detected GGUF file: " << gguf_path << "\n";
+    std::unordered_map<std::string, quant::QuantWeight> qmap;
+    auto tensors = io::load_all_tensors(gguf_path, &qmap);
+    if (tensors.empty()) {
+        std::cerr << "[Loader] GGUF: no tensors loaded from " << gguf_path << "\n";
+        return false;
+    }
+
+    const model::LLamaConfig &cfg = model->config();
+    const size_t vocab_size  = cfg.vocab_size;
+    const size_t hidden      = cfg.hidden_size;
+    const size_t num_layers  = cfg.num_hidden_layers;
+    const size_t inter_size  = cfg.intermediate_size;
+    const size_t head_dim    = hidden / cfg.num_attention_heads;
+    const size_t kv_dim      = cfg.num_key_value_heads * head_dim;
+
+    // Helper: copy or transpose a dequantised float tensor from the map into a raw buffer.
+    auto copy_tensor = [&](const std::string &name, float *dst, size_t rows, size_t cols, bool should_transpose) -> bool {
+        auto it = tensors.find(name);
+        if (it == tensors.end()) { return false; }
+        const core::Tensor &t = it->second;
+        size_t expected = rows * cols;
+        size_t numel = 1;
+        for (size_t d : t.shape()) numel *= d;
+        if (numel != expected) {
+            std::cerr << "[Loader] GGUF: shape mismatch for '" << name
+                      << "' expected=" << expected << " got=" << numel << "\n";
+            return false;
+        }
+        if (!should_transpose) {
+            std::copy(t.data(), t.data() + numel, dst);
+        } else {
+            transpose_hf_to_cpp(t.data(), dst, rows, cols);
+        }
+        return true;
+    };
+
+    // Embedding (no transpose: rows=vocab_size, cols=hidden)
+    if (model->embed_tokens() != nullptr) {
+        copy_tensor("token_embd.weight", model->embed_tokens()->data.data(), vocab_size, hidden, false);
+    }
+
+    // Layers
+    for (size_t l = 0; l < num_layers; ++l) {
+        if (l >= model->layers().size()) break;
+        model::LLaMABlock *block = model->layers()[l].get();
+        std::string pfx = "blk." + std::to_string(l) + ".";
+
+        copy_tensor(pfx + "attn_norm.weight",   block->input_layernorm_weight->data.data(),         1, hidden, false);
+        copy_tensor(pfx + "attn_q.weight",       block->q_proj->data.data(),       hidden, hidden, true);
+        copy_tensor(pfx + "attn_k.weight",       block->k_proj->data.data(),       kv_dim, hidden, true);
+        // GGUF permutes Q/K head_dim pairs for RoPE; restore HF ordering.
+        unpermute_gguf_rope_heads(block->q_proj->data.data(), hidden, hidden, head_dim);
+        unpermute_gguf_rope_heads(block->k_proj->data.data(), hidden, kv_dim, head_dim);
+        copy_tensor(pfx + "attn_v.weight",       block->v_proj->data.data(),       kv_dim, hidden, true);
+        copy_tensor(pfx + "attn_output.weight",  block->o_proj->data.data(),       hidden, hidden, true);
+        copy_tensor(pfx + "ffn_norm.weight",     block->post_attention_layernorm_weight->data.data(), 1, hidden, false);
+        copy_tensor(pfx + "ffn_gate.weight",     block->gate_proj->data.data(),    inter_size, hidden, true);
+        copy_tensor(pfx + "ffn_up.weight",       block->up_proj->data.data(),      inter_size, hidden, true);
+        copy_tensor(pfx + "ffn_down.weight",     block->down_proj->data.data(),    hidden, inter_size, true);
+    }
+
+    // Final norm and lm_head
+    if (model->norm_weight() != nullptr) {
+        copy_tensor("output_norm.weight", model->norm_weight()->data.data(), 1, hidden, false);
+    }
+    if (model->lm_head() != nullptr) {
+        if (!copy_tensor("output.weight", model->lm_head()->data.data(), vocab_size, hidden, true)) {
+            // Weight-tying fallback: reuse embedding weights transposed
+            copy_tensor("token_embd.weight", model->lm_head()->data.data(), vocab_size, hidden, true);
+        }
+        build_lm_head_t(model);
+    }
+
+    // Populate packed-quantized weights for the fast M==1 decode path.
+    // GGUF stores Q/K rows with RoPE pairs interleaved; reorder rows to HF
+    // layout (same permutation as unpermute_gguf_rope_heads on the FP32 path).
+    auto take_quant = [&](const std::string &name, bool rope_perm, size_t exp_in, size_t exp_out) -> quant::QuantWeight {
+        auto it = qmap.find(name);
+        if (it == qmap.end()) { return {}; }
+        if (it->second.in != exp_in || it->second.out != exp_out) { return {}; }
+        quant::QuantWeight w = it->second;
+        if (rope_perm && head_dim >= 2 && (head_dim % 2) == 0 && w.out % head_dim == 0) {
+            const size_t half = head_dim / 2;
+            const size_t nh = w.out / head_dim;
+            const size_t rb = w.row_bytes();
+            std::vector<uint8_t> perm(w.bytes.size());
+            for (size_t h = 0; h < nh; ++h) {
+                for (size_t s = 0; s < head_dim; ++s) {
+                    const size_t src_local = (s < half) ? (2 * s) : (2 * (s - half) + 1);
+                    const size_t dst = (h * head_dim + s) * rb;
+                    const size_t src = (h * head_dim + src_local) * rb;
+                    std::memcpy(perm.data() + dst, w.bytes.data() + src, rb);
+                }
+            }
+            w.bytes = std::move(perm);
+        }
+        return w;
+    };
+
+    for (size_t l = 0; l < model->layers().size(); ++l) {
+        model::LLaMABlock *block = model->layers()[l].get();
+        const std::string p = "blk." + std::to_string(l) + ".";
+        block->q_w     = take_quant(p + "attn_q.weight",       true,  hidden,     hidden);
+        block->k_w     = take_quant(p + "attn_k.weight",       true,  hidden,     kv_dim);
+        block->v_w     = take_quant(p + "attn_v.weight",       false, hidden,     kv_dim);
+        block->o_w     = take_quant(p + "attn_output.weight",  false, hidden,     hidden);
+        block->gate_w  = take_quant(p + "ffn_gate.weight",     false, hidden,     inter_size);
+        block->up_w    = take_quant(p + "ffn_up.weight",       false, hidden,     inter_size);
+        block->down_w  = take_quant(p + "ffn_down.weight",     false, inter_size, hidden);
+
+        // Fuse row-compatible quantized weights into single GEMV calls.
+        auto fuse_rows = [](const quant::QuantWeight &a, const quant::QuantWeight &b, const quant::QuantWeight &c) -> quant::QuantWeight {
+            if (!a.valid() || !b.valid() || !c.valid()) { return {}; }
+            if (a.type != b.type || a.type != c.type || a.in != b.in || a.in != c.in ||
+                a.row_bytes() != b.row_bytes() || a.row_bytes() != c.row_bytes()) { return {}; }
+            quant::QuantWeight f;
+            f.type = a.type; f.in = a.in;
+            f.out = a.out + b.out + c.out;
+            f.bytes.reserve(a.bytes.size() + b.bytes.size() + c.bytes.size());
+            f.bytes.insert(f.bytes.end(), a.bytes.begin(), a.bytes.end());
+            f.bytes.insert(f.bytes.end(), b.bytes.begin(), b.bytes.end());
+            f.bytes.insert(f.bytes.end(), c.bytes.begin(), c.bytes.end());
+            return f;
+        };
+        auto fuse_rows2 = [](const quant::QuantWeight &a, const quant::QuantWeight &b) -> quant::QuantWeight {
+            if (!a.valid() || !b.valid()) { return {}; }
+            if (a.type != b.type || a.in != b.in || a.row_bytes() != b.row_bytes()) { return {}; }
+            quant::QuantWeight f;
+            f.type = a.type; f.in = a.in;
+            f.out = a.out + b.out;
+            f.bytes.reserve(a.bytes.size() + b.bytes.size());
+            f.bytes.insert(f.bytes.end(), a.bytes.begin(), a.bytes.end());
+            f.bytes.insert(f.bytes.end(), b.bytes.begin(), b.bytes.end());
+            return f;
+        };
+        block->qkv_w     = fuse_rows(block->q_w, block->k_w, block->v_w);
+        block->gate_up_w = fuse_rows2(block->gate_w, block->up_w);
+    }
+    if (model->lm_head() != nullptr) {
+        quant::QuantWeight lq = take_quant("output.weight", false, hidden, vocab_size);
+        if (!lq.valid()) { lq = take_quant("token_embd.weight", false, hidden, vocab_size); }
+        // A Q8_0 token_embd reused as lm_head costs ~2x the per-token DRAM
+        // traffic of Q4_0; requantize from the already-dequantized FP32 head.
+        if (lq.valid() && lq.type != quant::QuantType::Q4_0 &&
+            model->lm_head_t().size() == vocab_size * hidden) {
+            lq = quantize_fp32_to_q40(model->lm_head_t().data(), vocab_size, hidden);
+        }
+        if (lq.valid()) { model->lm_head_q() = std::move(lq); }
+    }
+
+    std::cout << "[Loader] GGUF: loaded " << tensors.size() << " dequantised tensors from " << gguf_path << "\n";
+    return true;
+}
+
 bool load_llama_weights_from_dir(const std::string &dir_path, model::LLaMAModel *model)
 {
     if (model == nullptr) { return false; }
@@ -239,22 +523,42 @@ bool load_llama_weights_from_dir(const std::string &dir_path, model::LLaMAModel 
     size_t files_loaded = 0;
 
     try {
+        // --- Priority 1: load a single GGUF file (quantised, faster) ---
         for (const auto &entry : fs::directory_iterator(dir_path)) {
             if (!entry.is_regular_file()) { continue; }
             std::string path_str = entry.path().string();
-            if (path_str.size() < 12 || path_str.compare(path_str.size() - 12, 12, ".safetensors") != 0) { continue; }
+            if (path_str.size() < 5 || path_str.compare(path_str.size() - 5, 5, ".gguf") != 0) { continue; }
 
             files_attempted++;
-            std::cout << "[Loader] Attempting to load: " << path_str << "\n";
-
-            SafetensorsFile safetensors_file;
-            if (load_safetensors(path_str, &safetensors_file)) {
+            std::cout << "[Loader] Attempting to load GGUF: " << path_str << "\n";
+            if (load_llama_weights_from_gguf_file(path_str, model)) {
                 any_file_loaded = true;
                 files_loaded++;
-                load_one_file_into_model(safetensors_file, model);
-                std::cout << "[Loader] Successfully loaded: " << path_str << "\n";
+                std::cout << "[Loader] Successfully loaded GGUF: " << path_str << "\n";
             } else {
-                std::cerr << "[Loader] Failed to load safetensors file: " << path_str << "\n";
+                std::cerr << "[Loader] Failed to load GGUF file: " << path_str << "\n";
+            }
+        }
+
+        // --- Priority 2: fallback to safetensors shards ---
+        if (!any_file_loaded) {
+            for (const auto &entry : fs::directory_iterator(dir_path)) {
+                if (!entry.is_regular_file()) { continue; }
+                std::string path_str = entry.path().string();
+                if (path_str.size() < 12 || path_str.compare(path_str.size() - 12, 12, ".safetensors") != 0) { continue; }
+
+                files_attempted++;
+                std::cout << "[Loader] Attempting to load: " << path_str << "\n";
+
+                SafetensorsFile safetensors_file;
+                if (load_safetensors(path_str, &safetensors_file)) {
+                    any_file_loaded = true;
+                    files_loaded++;
+                    load_one_file_into_model(safetensors_file, model);
+                    std::cout << "[Loader] Successfully loaded: " << path_str << "\n";
+                } else {
+                    std::cerr << "[Loader] Failed to load safetensors file: " << path_str << "\n";
+                }
             }
         }
     } catch (const std::exception &e) {

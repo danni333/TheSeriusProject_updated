@@ -52,7 +52,17 @@ FetchContent_Declare(sqlite3
 FetchContent_MakeAvailable(json spdlog googletest httplib sqlite3)
 
 find_package(OpenMP)
-# OpenMP is handled per-target to avoid NVCC compatibility issues
+# OpenMP is handled per-target to avoid NVCC compatibility issues.
+# On Windows/MSVC, OpenMP is bundled with the compiler – no extra install needed.
+
+# --- SIMD flags (applied globally for Release / RelWithDebInfo) ---
+# Per-file SIMD flags are set in src/CMakeLists.txt (matmul_avx2.cpp, matmul_avx512.cpp).
+# Here we ensure the dispatcher + inference code get AVX2 by default on MSVC builds.
+if(MSVC)
+    # /arch:AVX2 enables AVX2 + FMA for the whole project (safe on modern x86-64).
+    # Individual files that need AVX-512 get /arch:AVX512 in src/CMakeLists.txt.
+    add_compile_options($<$<NOT:$<CONFIG:Debug>>:/arch:AVX2>)
+endif()
 
 enable_testing()
 

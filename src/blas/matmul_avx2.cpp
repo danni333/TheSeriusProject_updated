@@ -49,7 +49,9 @@ void matmul_avx2(const float *A, const float *B, float *C, size_t M, size_t N, s
     if (M == 1) {
         // High-performance AVX2 vector-matrix multiplication
         // Process 32 columns at once to reuse broadcasted A[k]
-        #pragma omp parallel for
+        // Use OpenMP only for large matrices (e.g. lm_head with vocab_size 32k/49k)
+        // to avoid thread synchronization overhead on small layer projections (N=576/1536).
+        #pragma omp parallel for if (static_cast<int64_t>(N) * static_cast<int64_t>(K) >= 262144) schedule(static)
         for (int64_t j = 0; j < static_cast<int64_t>(N); j += 32) {
             if (j + 32 <= static_cast<int64_t>(N)) {
                 __m256 sum0 = _mm256_setzero_ps();
@@ -94,8 +96,10 @@ void matmul_avx2(const float *A, const float *B, float *C, size_t M, size_t N, s
     }
 
     // General AVX2 matrix multiplication - process 8 columns at a time per row.
-    // Each row of A is multiplied against all columns of B, fully accumulating over K.
-    for (size_t i = 0; i < M; ++i) {
+    // OpenMP parallelises across rows; each thread handles independent rows of C.
+    #pragma omp parallel for schedule(static)
+    for (int64_t ii = 0; ii < static_cast<int64_t>(M); ++ii) {
+        size_t i = static_cast<size_t>(ii);
         size_t j = 0;
         for (; j + 8 <= N; j += 8) {
             __m256 acc = _mm256_setzero_ps();
@@ -114,6 +118,36 @@ void matmul_avx2(const float *A, const float *B, float *C, size_t M, size_t N, s
             }
             C[i * ldc + j] = sum;
         }
+    }
+}
+
+// Transposed-weight GEMV: y[j] = dot(W[j,:], x[:]), W is [N,K] row-major.
+// Each row streams sequentially; x stays hot in cache across rows.
+void matvec_t_avx2(const float *W, const float *x, float *y, size_t N, size_t K)
+{
+    #pragma omp parallel for schedule(static) if (N >= 1024)
+    for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
+        const float *w = W + static_cast<size_t>(j) * K;
+        __m256 acc0 = _mm256_setzero_ps();
+        __m256 acc1 = _mm256_setzero_ps();
+        __m256 acc2 = _mm256_setzero_ps();
+        __m256 acc3 = _mm256_setzero_ps();
+        size_t k = 0;
+        for (; k + 32 <= K; k += 32) {
+            acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(w + k + 0),  _mm256_loadu_ps(x + k + 0),  acc0);
+            acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(w + k + 8),  _mm256_loadu_ps(x + k + 8),  acc1);
+            acc2 = _mm256_fmadd_ps(_mm256_loadu_ps(w + k + 16), _mm256_loadu_ps(x + k + 16), acc2);
+            acc3 = _mm256_fmadd_ps(_mm256_loadu_ps(w + k + 24), _mm256_loadu_ps(x + k + 24), acc3);
+        }
+        alignas(32) float buf[32];
+        _mm256_store_ps(buf + 0,  acc0);
+        _mm256_store_ps(buf + 8,  acc1);
+        _mm256_store_ps(buf + 16, acc2);
+        _mm256_store_ps(buf + 24, acc3);
+        float sum = 0.0f;
+        for (int i = 0; i < 32; ++i) { sum += buf[i]; }
+        for (; k < K; ++k) { sum += w[k] * x[k]; }
+        y[static_cast<size_t>(j)] = sum;
     }
 }
 

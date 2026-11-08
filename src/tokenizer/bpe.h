@@ -6,8 +6,9 @@
 
 #include "vocab.h"
 
-
 namespace serius {
+
+namespace io { struct GGUFTokenizerData; }  // forward declare
 
 class BPETokenizer
 {
@@ -37,6 +38,10 @@ class BPETokenizer
     // Logic to save/load (optional but recommended for later)
     void save(const std::string &path) const;
     void load(const std::string &path);
+
+    /// Load vocabulary and merge rules from a GGUFTokenizerData struct.
+    /// Supports both BPE (gpt2-style) and SentencePiece-style GGUF tokenizers.
+    void load_from_gguf(const io::GGUFTokenizerData &data);
 
     void init_basic_vocab();
 

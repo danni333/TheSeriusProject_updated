@@ -23,6 +23,7 @@ add_library(serius_core
     blas/dispatch.cpp
     blas/matmul_avx2.cpp
     blas/matmul_avx512.cpp
+    blas/matvec_quant.cpp
     autograd/node.cpp
     autograd/engine.cpp
     autograd/ops.cpp
@@ -226,13 +227,13 @@ if(MSVC)
         $<$<COMPILE_LANGUAGE:CXX>:/FS>
     )
     set_source_files_properties(blas/matmul_avx2.cpp infer/llama_inference.cpp PROPERTIES COMPILE_FLAGS "/arch:AVX2")
-    set_source_files_properties(blas/matmul_avx512.cpp PROPERTIES COMPILE_FLAGS "/arch:AVX512")
+    set_source_files_properties(blas/matmul_avx512.cpp blas/matvec_quant.cpp PROPERTIES COMPILE_FLAGS "/arch:AVX512")
 else()
     target_compile_options(serius_core PRIVATE 
         $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic -Werror=return-type>
     )
     set_source_files_properties(blas/matmul_avx2.cpp PROPERTIES COMPILE_FLAGS "-mavx2 -mfma")
-    set_source_files_properties(blas/matmul_avx512.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mfma")
+    set_source_files_properties(blas/matmul_avx512.cpp blas/matvec_quant.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mfma")
 endif()
 target_include_directories(serius_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib)

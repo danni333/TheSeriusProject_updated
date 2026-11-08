@@ -8,6 +8,7 @@
 
 #include "../tensor/tensor.h"
 #include "../transformer/model.h"
+#include "../quant/quant_weight.h"
 
 namespace serius {
 namespace io {
@@ -51,15 +52,34 @@ struct GGUFTensorInfo
     uint64_t offset;
 };
 
+/// Vocabulary and merge rules extracted from a GGUF file's KV metadata.
+struct GGUFTokenizerData
+{
+    std::string              tokenizer_model;   ///< "llama", "gpt2", etc.
+    std::vector<std::string> tokens;            ///< token strings, index = token-id
+    std::vector<int32_t>     token_types;       ///< 1=normal, 3=control, 6=byte, etc.
+    std::vector<float>       scores;            ///< SentencePiece log-prob scores
+    std::vector<std::string> merges;            ///< BPE merge rules: "▁Ġ a" etc.
+    int32_t bos_token_id = 1;
+    int32_t eos_token_id = 2;
+    bool valid = false;
+};
+
 GGUFMeta load_gguf_metadata(const std::string &path);
 
 std::vector<std::string> gguf_tensor_names(const std::string &path);
 
 std::optional<GGUFTensorInfo> get_tensor_info(const std::string &path, const std::string &tensor_name);
 
-std::unordered_map<std::string, core::Tensor> load_all_tensors(const std::string &path);
+std::unordered_map<std::string, core::Tensor> load_all_tensors(
+    const std::string &path,
+    std::unordered_map<std::string, quant::QuantWeight> *quant_out = nullptr);
 
 serius::model::ModelConfig gguf_to_model_config(const std::string &path);
+
+/// Extract vocabulary and merge rules from a GGUF file.
+/// Use GGUFTokenizerData to populate a BPETokenizer via load_from_gguf().
+GGUFTokenizerData load_gguf_tokenizer(const std::string &path);
 
 }  // namespace io
 }  // namespace serius

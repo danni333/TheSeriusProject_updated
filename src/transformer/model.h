@@ -39,6 +39,8 @@ struct ModelConfig
     size_t n_layers = DEFAULT_N_LAYERS;
     size_t d_ff = DEFAULT_D_FF;
     size_t max_seq_len = DEFAULT_MAX_SEQ_LEN;
+    float rope_theta = 10000.0f;
+    float rms_norm_eps = 1e-5f;
 
     bool moe_enabled = false;
     size_t num_experts = 0;

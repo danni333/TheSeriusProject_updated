@@ -123,8 +123,8 @@
 
 ### 🧪 Benchmarking & Qualità (Fase 54–59)
 
-- [x] **Fase 54** — [Performance Benchmarks](fase54_performance_benchmarks.md)
-- [x] **Fase 55** — [Stress Testing](fase55_stress_testing.md)
+- [ ] **Fase 54** — [Performance Benchmarks](fase54_performance_benchmarks.md)
+- [ ] **Fase 55** — [Stress Testing](fase55_stress_testing.md)
 - [ ] **Fase 56** — [E2E Tests](fase56_e2e_tests.md)
 - [ ] **Fase 57** — [Voice Interface](fase57_voice_interface.md)
 - [ ] **Fase 58** — [Edge Deployment](fase58_edge_deployment.md)
@@ -148,6 +148,10 @@
 - [ ] **Fase 70** — [Biomedical AI](fase70+.md)
 - [ ] **Fase 71** — [Climate Science](fase71+.md)
 - [ ] **Fase 72** — [Quantum ML](fase72+.md)
+
+### 🏁 Obiettivo Competitivo (Fase 73)
+
+- [ ] **Fase 73** — [Inferenza Veloce](fase73_inferenza_rapida.md) (Pesi quantizzati a runtime + kernel GEMV dequant-on-the-fly, fusioni QKV/gate_up, threading persistente; target ≥1.2× llama.cpp in tok/s)
 
 ---
 

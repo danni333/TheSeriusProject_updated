@@ -8,6 +8,7 @@
 #include <limits>
 #include <numeric>
 #include <sstream>
+#include <unordered_map>
 
 #include "../transformer/config.h"
 
@@ -61,11 +62,15 @@ void dequantize_q4_0(const uint8_t *data, size_t n, float *out)
         uint16_t scale = data[0] | (data[1] << 8);
         float scale_f = half_to_float(scale);
         const uint8_t *q = data + 2;
-        for (size_t j = 0; j < 16 && i + j < n; ++j) {
-            int4_t v0 = (q[j >> 1] >> 0) & 0x0F;
-            int4_t v1 = (q[j >> 1] >> 4) & 0x0F;
-            out[i + j * 2 + 0] = (v0 - 8) * scale_f;
-            out[i + j * 2 + 1] = (v1 - 8) * scale_f;
+        for (size_t j = 0; j < 16; ++j) {
+            int4_t v0 = static_cast<int4_t>(q[j] & 0x0F) - 8;
+            int4_t v1 = static_cast<int4_t>((q[j] >> 4) & 0x0F) - 8;
+            if (i + j < n) {
+                out[i + j] = v0 * scale_f;
+            }
+            if (i + j + 16 < n) {
+                out[i + j + 16] = v1 * scale_f;
+            }
         }
         data += 18;
     }
@@ -79,11 +84,15 @@ void dequantize_q4_1(const uint8_t *data, size_t n, float *out)
         float d_f = half_to_float(d);
         float m_f = half_to_float(m);
         const uint8_t *q = data + 4;
-        for (size_t j = 0; j < 16 && i + j < n; ++j) {
-            int4_t v0 = (q[j >> 1] >> 0) & 0x0F;
-            int4_t v1 = (q[j >> 1] >> 4) & 0x0F;
-            out[i + j * 2 + 0] = v0 * d_f + m_f;
-            out[i + j * 2 + 1] = v1 * d_f + m_f;
+        for (size_t j = 0; j < 16; ++j) {
+            int4_t v0 = static_cast<int4_t>(q[j] & 0x0F);
+            int4_t v1 = static_cast<int4_t>((q[j] >> 4) & 0x0F);
+            if (i + j < n) {
+                out[i + j] = v0 * d_f + m_f;
+            }
+            if (i + j + 16 < n) {
+                out[i + j + 16] = v1 * d_f + m_f;
+            }
         }
         data += 20;
     }
@@ -175,9 +184,9 @@ bool skip_gguf_value(std::ifstream &f, uint32_t type)
         case 7: /* bool */ { uint8_t v = 0; f.read(reinterpret_cast<char *>(&v), 1); return f.good(); }
         case 8: return read_string_kv_value(f, nullptr);
         case 9: {
-            uint32_t n = read_u32_le(f);
-            for (uint32_t i = 0; i < n; ++i) {
-                uint32_t elem_type = read_u32_le(f);
+            uint32_t elem_type = read_u32_le(f);
+            uint64_t n = read_u64_le(f);
+            for (uint64_t i = 0; i < n && f.good(); ++i) {
                 if (!skip_gguf_value(f, elem_type)) return false;
             }
             return f.good();
@@ -207,6 +216,23 @@ bool read_gguf_kv_entry(std::ifstream &f, std::string *key, uint32_t *type, uint
     if (key) *key = std::move(key_value);
     if (value_length) *value_length = 0;
     return true;
+}
+
+bool read_float_value(std::ifstream &f, uint32_t type, float *out)
+{
+    if (type == 6) {
+        float v = 0.0f;
+        f.read(reinterpret_cast<char *>(&v), sizeof(v));
+        if (out) *out = v;
+        return f.good();
+    }
+    if (type == 12) {
+        double v = 0.0;
+        f.read(reinterpret_cast<char *>(&v), sizeof(v));
+        if (out) *out = static_cast<float>(v);
+        return f.good();
+    }
+    return false;
 }
 
 bool read_scalar_value(std::ifstream &f, uint32_t type, uint64_t *out)
@@ -382,7 +408,9 @@ std::optional<GGUFTensorInfo> get_tensor_info(const std::string &path, const std
     return std::nullopt;
 }
 
-std::unordered_map<std::string, core::Tensor> load_all_tensors(const std::string &path)
+std::unordered_map<std::string, core::Tensor> load_all_tensors(
+    const std::string &path,
+    std::unordered_map<std::string, quant::QuantWeight> *quant_out)
 {
     std::unordered_map<std::string, core::Tensor> result;
     GGUFMeta meta = load_gguf_metadata(path);
@@ -420,7 +448,12 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(const std::string
         return result;
     }
 
-    const std::streampos data_base = f.tellg();
+    const std::streampos cur_pos = f.tellg();
+    constexpr uint64_t GGUF_DEFAULT_ALIGNMENT = 32;
+    const uint64_t cur_u64 = static_cast<uint64_t>(cur_pos);
+    const uint64_t rem = cur_u64 % GGUF_DEFAULT_ALIGNMENT;
+    const uint64_t data_base_u64 = (rem == 0) ? cur_u64 : (cur_u64 + (GGUF_DEFAULT_ALIGNMENT - rem));
+    const std::streampos data_base = static_cast<std::streampos>(data_base_u64);
     for (const auto &info : tensor_infos) {
         std::vector<size_t> shape;
         shape.reserve(info.shape.size());
@@ -445,16 +478,40 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(const std::string
             std::vector<uint8_t> packed(block_count * 18);
             f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
             dequantize_q4_0(packed.data(), numel, values.data());
+            if (quant_out != nullptr && shape.size() == 2) {
+                quant::QuantWeight qw;
+                qw.type = quant::QuantType::Q4_0;
+                qw.in = shape[0];
+                qw.out = shape[1];
+                qw.bytes = std::move(packed);
+                quant_out->emplace(info.name, std::move(qw));
+            }
         } else if (info.dtype == GGMLType::Q4_1) {
             const size_t block_count = (numel + 31) / 32;
             std::vector<uint8_t> packed(block_count * 20);
             f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
             dequantize_q4_1(packed.data(), numel, values.data());
+            if (quant_out != nullptr && shape.size() == 2) {
+                quant::QuantWeight qw;
+                qw.type = quant::QuantType::Q4_1;
+                qw.in = shape[0];
+                qw.out = shape[1];
+                qw.bytes = std::move(packed);
+                quant_out->emplace(info.name, std::move(qw));
+            }
         } else if (info.dtype == GGMLType::Q8_0) {
             const size_t block_count = (numel + 31) / 32;
             std::vector<uint8_t> packed(block_count * 34);
             f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
             dequantize_q8_0(packed.data(), numel, values.data());
+            if (quant_out != nullptr && shape.size() == 2) {
+                quant::QuantWeight qw;
+                qw.type = quant::QuantType::Q8_0;
+                qw.in = shape[0];
+                qw.out = shape[1];
+                qw.bytes = std::move(packed);
+                quant_out->emplace(info.name, std::move(qw));
+            }
         } else {
             std::fill(values.begin(), values.end(), 0.0f);
         }
@@ -491,7 +548,12 @@ serius::model::ModelConfig gguf_to_model_config(const std::string &path)
         }
 
         uint64_t value = 0;
-        if (read_scalar_value(f, type, &value)) {
+        float fvalue = 0.0f;
+        if (key == "llama.rope.freq_base" && read_float_value(f, type, &fvalue)) {
+            config.rope_theta = fvalue;
+        } else if (key == "llama.attention.layer_norm_rms_epsilon" && read_float_value(f, type, &fvalue)) {
+            config.rms_norm_eps = fvalue;
+        } else if (read_scalar_value(f, type, &value)) {
             if (key == "llama.vocab_size") {
                 config.vocab_size = static_cast<size_t>(value);
             } else if (key == "llama.embedding_length") {
@@ -516,6 +578,99 @@ serius::model::ModelConfig gguf_to_model_config(const std::string &path)
     }
 
     return config;
+}
+
+// ---------------------------------------------------------------------------
+// GGUF tokenizer extraction
+// Reads the tokenizer vocabulary and merges from GGUF metadata KV pairs and
+// returns them as a GGUFTokenizerData struct the caller can feed directly to
+// BPETokenizer::load_gguf().
+// ---------------------------------------------------------------------------
+GGUFTokenizerData load_gguf_tokenizer(const std::string &path)
+{
+    GGUFTokenizerData out;
+    GGUFMeta meta = load_gguf_metadata(path);
+    if (!meta.valid) { return out; }
+
+    std::ifstream f(path, std::ios::binary);
+    if (!f) { return out; }
+
+    f.seekg(sizeof(GGUFHeader));
+    for (uint64_t i = 0; i < meta.n_kv; ++i) {
+        std::string key;
+        uint32_t type = 0;
+        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) { break; }
+
+        // ---- tokenizer.ggml.tokens  (type 9 = array of string) ----
+        if (key == "tokenizer.ggml.tokens" && type == 9) {
+            uint32_t n_elem_type = read_u32_le(f);
+            (void)n_elem_type;  // should be 8 (string)
+            uint64_t n_tokens   = read_u64_le(f);
+            out.tokens.reserve(static_cast<size_t>(n_tokens));
+            for (uint64_t t = 0; t < n_tokens; ++t) {
+                std::string tok;
+                read_string_kv_value(f, &tok);
+                out.tokens.push_back(std::move(tok));
+            }
+        }
+        // ---- tokenizer.ggml.token_type (array of int32) ----
+        else if (key == "tokenizer.ggml.token_type" && type == 9) {
+            uint32_t n_elem_type = read_u32_le(f);
+            (void)n_elem_type;
+            uint64_t n_types = read_u64_le(f);
+            out.token_types.reserve(static_cast<size_t>(n_types));
+            for (uint64_t t = 0; t < n_types; ++t) {
+                int32_t tt = read_i32_le(f);
+                out.token_types.push_back(tt);
+            }
+        }
+        // ---- tokenizer.ggml.scores (array of float32) ----
+        else if (key == "tokenizer.ggml.scores" && type == 9) {
+            uint32_t n_elem_type = read_u32_le(f);
+            (void)n_elem_type;
+            uint64_t n_scores = read_u64_le(f);
+            out.scores.reserve(static_cast<size_t>(n_scores));
+            for (uint64_t t = 0; t < n_scores; ++t) {
+                float sc = 0.0f;
+                f.read(reinterpret_cast<char*>(&sc), sizeof(sc));
+                out.scores.push_back(sc);
+            }
+        }
+        // ---- tokenizer.ggml.merges (array of string) ----
+        else if (key == "tokenizer.ggml.merges" && type == 9) {
+            uint32_t n_elem_type = read_u32_le(f);
+            (void)n_elem_type;
+            uint64_t n_merges = read_u64_le(f);
+            out.merges.reserve(static_cast<size_t>(n_merges));
+            for (uint64_t m = 0; m < n_merges; ++m) {
+                std::string merge;
+                read_string_kv_value(f, &merge);
+                out.merges.push_back(std::move(merge));
+            }
+        }
+        // ---- tokenizer.ggml.bos_token_id ----
+        else if (key == "tokenizer.ggml.bos_token_id") {
+            uint64_t v = 0;
+            if (read_scalar_value(f, type, &v)) out.bos_token_id = static_cast<int32_t>(v);
+            else skip_gguf_value(f, type);
+        }
+        // ---- tokenizer.ggml.eos_token_id ----
+        else if (key == "tokenizer.ggml.eos_token_id") {
+            uint64_t v = 0;
+            if (read_scalar_value(f, type, &v)) out.eos_token_id = static_cast<int32_t>(v);
+            else skip_gguf_value(f, type);
+        }
+        // ---- tokenizer.ggml.model (string: "llama", "gpt2", …) ----
+        else if (key == "tokenizer.ggml.model" && type == 8) {
+            read_string_kv_value(f, &out.tokenizer_model);
+        }
+        else {
+            if (!skip_gguf_value(f, type)) { break; }
+        }
+    }
+
+    out.valid = !out.tokens.empty();
+    return out;
 }
 
 }  // namespace io
