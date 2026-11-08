@@ -98,6 +98,18 @@ void gemv_quant_vec_f32(const void *x_f32, const void *sx16, const void *w, int 
 /// thread; used by gemv_quant_vec_f32 for Q4_0/Q4_1.
 void block_sums16_f32(const void *x_f32, void *sx16, int n16, cudaStream_t stream = nullptr);
 
+/// Fused-IO variant of gemv_quant_vec_f32: x is __half (converted in-register,
+/// bit-identical results) and y is written directly as __half (y_f16=true) or
+/// float. Eliminates the convert_dtype launches around each quantized
+/// projection. `sx16` semantics identical to gemv_quant_vec_f32.
+void gemv_quant_vec_f16io(const void *x_f16, const void *sx16, const void *w, int kind,
+                          size_t in, size_t out, int stride, int qs, int d_off, int m_off,
+                          void *y, bool y_f16, cudaStream_t stream = nullptr);
+
+/// sx16[i] = sum(float(x_f16[16i .. 16i+15])) — FP16 input variant of
+/// block_sums16_f32.
+void block_sums16_f16(const void *x_f16, void *sx16, int n16, cudaStream_t stream = nullptr);
+
 /// GPU top-k preselection over a FP32 logits row [vocab]. Returns up to `cap`
 /// candidate (index, logit) pairs whose logit exceeds max_logit - window,
 /// widening the window until at least `need` candidates are found (or `cap`
@@ -126,6 +138,14 @@ void rope(void *data, size_t head_dim, size_t seq_len, size_t n_heads, float bas
 /// every decode position. Only seq_len==1 is supported (pos = *pos_dev).
 void rope_devpos(void *data, size_t head_dim, size_t seq_len, size_t n_heads, float base,
                  const int *pos_dev, DType dtype, cudaStream_t stream = 0);
+
+/// Fused bias + RoPE (+ optional uniform scale) for decode: applies
+/// data[i] += bias[i] (bias may be nullptr), rotates, then multiplies by
+/// `scale` (1.0 = disabled). Replaces add_row_bias + rope_devpos +
+/// scale_inplace with a single launch. pos is read from *pos_dev.
+void rope_bias_devpos(void *data, size_t head_dim, size_t seq_len, size_t n_heads, float base,
+                      const int *pos_dev, const void *bias, float scale, DType dtype,
+                      cudaStream_t stream = 0);
 
 // Softmax (row-wise)
 void softmax(void *x, size_t rows, size_t cols, DType dtype, cudaStream_t stream = nullptr);
@@ -170,6 +190,13 @@ void gqa_decode_attention_f16_devpos(const void *q, const void *K, const void *V
 void kv_write_devpos(void *dst_base, const void *src, size_t nbytes,
                      const int *pos_dev, size_t row_stride_bytes,
                      cudaStream_t stream = 0);
+
+/// kv_write_devpos variant that also adds a per-column bias while copying:
+/// dst[i] = src[i] + bias[i] (bias may be nullptr → plain copy). Used to fold
+/// the V-projection bias into the KV-cache write.
+void kv_write_bias_devpos(void *dst_base, const void *src, const void *bias, size_t n_elems,
+                          const int *pos_dev, size_t row_stride_elems, DType dtype,
+                          cudaStream_t stream = 0);
 
 /// Copy from src to dst with a layout transformation defined by src_strides and shape.
 /// Used for GPU-native contiguous() and transpose() operations.

@@ -173,7 +173,7 @@ int cmd_chat(int argc, char **argv)
             
             // Now llama_forward_inference natively populates the cache in one parallel go.
             cache.clear();
-            serius::core::Tensor logits = serius::infer::llama_forward_inference(model, prompt_input, &cache);
+            serius::core::Tensor logits = serius::infer::llama_forward_inference_last(model, prompt_input, &cache);
             
             int next_id = 0;
             {

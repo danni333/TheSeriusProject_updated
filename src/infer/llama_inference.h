@@ -25,7 +25,11 @@ struct KVCache {
           scratch_mlp_gate({0, 0}), scratch_mlp_up({0, 0}), scratch_mlp_down({0, 0}) {}
 
     std::vector<KVCacheLayer> layers;
-    
+
+    // Single GPU arena backing all layers' K/V tensors on the CUDA path:
+    // 112 separate cudaMallocs cost ~200 ms; one slab + views is ~1 call.
+    core::Tensor gpu_arena;
+
     // Scratch buffers to avoid repeated allocations during inference
     core::Tensor scratch_h;
     core::Tensor scratch_normed;
@@ -54,6 +58,13 @@ struct KVCache {
 core::Tensor llama_forward_inference(const model::LLaMAModel &model,
                                      const core::Tensor &token_ids,
                                      KVCache *cache = nullptr);
+
+/// Same as llama_forward_inference but returns logits for the last position
+/// only, shape [1, vocab_size]. Cheaper on CUDA: skips the {seq_len, vocab}
+/// logits tensor and its host copy.
+core::Tensor llama_forward_inference_last(const model::LLaMAModel &model,
+                                          const core::Tensor &token_ids,
+                                          KVCache *cache = nullptr);
 
 /// Same but for a single token (optimized path for generation steps).
 /// @param model  Loaded LLaMAModel

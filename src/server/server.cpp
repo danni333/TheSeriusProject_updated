@@ -97,7 +97,7 @@ GenerationResult generate_llama(const model::LLaMAModel &model,
         prompt_input[i] = static_cast<float>(ids[i]);
     }
 
-    core::Tensor logits = infer::llama_forward_inference(model, prompt_input, &cache);
+    core::Tensor logits = infer::llama_forward_inference_last(model, prompt_input, &cache);
     size_t vocab_size = logits.shape().back();
     size_t last_row = logits.shape()[0] - 1;
     core::Tensor last_logits({vocab_size});
@@ -169,7 +169,7 @@ void stream_llama(const model::LLaMAModel &model,
         prompt_input[i] = static_cast<float>(ids[i]);
     }
 
-    core::Tensor logits = infer::llama_forward_inference(model, prompt_input, &cache);
+    core::Tensor logits = infer::llama_forward_inference_last(model, prompt_input, &cache);
     size_t vocab_size = logits.shape().back();
     size_t last_row = logits.shape()[0] - 1;
     core::Tensor last_logits({vocab_size});

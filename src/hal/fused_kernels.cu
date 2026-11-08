@@ -904,6 +904,188 @@ __global__ void gemv_quant_vec_kernel(const float *x, const float *sx16, const u
     if (lane == 0) { y[warp] = acc; }
 }
 
+// F16-IO variant: x is __half (converted in-register — FP16->FP32 is exact,
+// so results are identical to the convert_dtype + f32-x path), y is written
+// directly as __half or float. Eliminates two convert_dtype launches per
+// projection. Bench: ~217 GB/s vs ~182 GB/s for the f32-x variant.
+__device__ __forceinline__ float2 h22f2(uint32_t u)
+{
+    return __half22float2(*reinterpret_cast<const __half2 *>(&u));
+}
+
+__global__ void gemv_quant_vec_h_kernel(const __half *x, const float *sx16, const uint8_t *w,
+                                        void *y, int y_f16, int in, int out, int stride, int qs,
+                                        int d_off, int m_off, int kind, int rows_per_warp)
+{
+    const int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
+    const int lane = threadIdx.x & 31;
+    const int r0 = warp * rows_per_warp;
+    if (r0 >= out) return;
+
+    const int bpr = in >> 5;
+    const bool has_m = (kind == 4);
+
+    if (kind == 3 || kind == 4) {
+        constexpr int RPW = 4;
+        float accA[RPW], accB[RPW];
+        const uint8_t *wr[RPW], *darr[RPW], *marr[RPW];
+        #pragma unroll
+        for (int r = 0; r < RPW; ++r) {
+            accA[r] = 0.0f; accB[r] = 0.0f;
+            if (r0 + r < out) {
+                wr[r] = w + (size_t)(r0 + r) * stride;
+                darr[r] = wr[r] + d_off;
+                marr[r] = (m_off != 0) ? wr[r] + m_off : nullptr;
+            }
+        }
+        for (int b = lane; b < bpr; b += 32) {
+            const int base = b * 32;
+            const float sx0 = __ldg(sx16 + 2 * b);
+            const float sx1 = __ldg(sx16 + 2 * b + 1);
+            const __half *xl_p = x + base;
+            const __half *xh_p = x + base + 16;
+            #pragma unroll
+            for (int r = 0; r < RPW; ++r) {
+                if (r0 + r >= out) break;
+                const uint4 v = __ldcs(reinterpret_cast<const uint4 *>(wr[r] + (size_t)b * qs));
+                const float d = __half2float(*reinterpret_cast<const __half *>(darr[r] + b * 2));
+                const float m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr[r] + b * 2)) : 0.0f;
+                float ta = 0.0f, tb = 0.0f;
+                #pragma unroll
+                for (int j = 0; j < 16; j += 4) {
+                    const uint32_t w0 = sel_u32(v, (j + 0) >> 2);
+                    const uint32_t w1 = sel_u32(v, (j + 1) >> 2);
+                    const uint32_t w2 = sel_u32(v, (j + 2) >> 2);
+                    const uint32_t w3 = sel_u32(v, (j + 3) >> 2);
+                    const uint32_t b0 = (w0 >> (((j + 0) & 3) * 8)) & 0xFFu;
+                    const uint32_t b1 = (w1 >> (((j + 1) & 3) * 8)) & 0xFFu;
+                    const uint32_t b2 = (w2 >> (((j + 2) & 3) * 8)) & 0xFFu;
+                    const uint32_t b3 = (w3 >> (((j + 3) & 3) * 8)) & 0xFFu;
+                    const uint2 xl2 = __ldg(reinterpret_cast<const uint2 *>(xl_p + j));
+                    const uint2 xh2 = __ldg(reinterpret_cast<const uint2 *>(xh_p + j));
+                    const float2 xa = h22f2(xl2.x), xb = h22f2(xl2.y);
+                    const float2 xc = h22f2(xh2.x), xd = h22f2(xh2.y);
+                    ta = fmaf((float)(int)(b0 & 0xFu), xa.x, ta);
+                    tb = fmaf((float)(int)(b0 >> 4), xc.x, tb);
+                    ta = fmaf((float)(int)(b1 & 0xFu), xa.y, ta);
+                    tb = fmaf((float)(int)(b1 >> 4), xc.y, tb);
+                    ta = fmaf((float)(int)(b2 & 0xFu), xb.x, ta);
+                    tb = fmaf((float)(int)(b2 >> 4), xd.x, tb);
+                    ta = fmaf((float)(int)(b3 & 0xFu), xb.y, ta);
+                    tb = fmaf((float)(int)(b3 >> 4), xd.y, tb);
+                }
+                accA[r] = fmaf(d, ta, accA[r]);
+                accB[r] = fmaf(d, tb, accB[r]);
+                if (has_m) {
+                    accA[r] = fmaf(m, sx0, accA[r]);
+                    accB[r] = fmaf(m, sx1, accB[r]);
+                } else {
+                    accA[r] = fmaf(-8.0f * d, sx0, accA[r]);
+                    accB[r] = fmaf(-8.0f * d, sx1, accB[r]);
+                }
+            }
+        }
+        #pragma unroll
+        for (int r = 0; r < RPW; ++r) {
+            if (r0 + r >= out) break;
+            float acc = accA[r] + accB[r];
+            #pragma unroll
+            for (int o = 16; o > 0; o >>= 1) {
+                acc += __shfl_down_sync(0xffffffffu, acc, o);
+            }
+            if (lane == 0) {
+                if (y_f16) reinterpret_cast<__half *>(y)[r0 + r] = __float2half(acc);
+                else reinterpret_cast<float *>(y)[r0 + r] = acc;
+            }
+        }
+        return;
+    }
+
+    // Generic path (Q8_0): one row per warp.
+    const uint8_t *wr = w + (size_t)r0 * stride;
+    const uint8_t *darr = wr + d_off;
+    const uint8_t *marr = (m_off != 0) ? wr + m_off : nullptr;
+
+    float acc = 0.0f;
+    for (int b = lane; b < bpr; b += 32) {
+        const uint4 *qp = reinterpret_cast<const uint4 *>(wr + (size_t)b * qs);
+        const uint4 v0 = qp[0];
+        const uint4 v1 = (qs > 16) ? qp[1] : make_uint4(0u, 0u, 0u, 0u);
+        const float d = __half2float(*reinterpret_cast<const __half *>(darr + b * 2));
+        const float m = has_m ? __half2float(*reinterpret_cast<const __half *>(marr + b * 2)) : 0.0f;
+        const int base = b * 32;
+
+        if (kind == 5) {  // Q8_0: 32 int8 weights
+            #pragma unroll
+            for (int j = 0; j < 32; ++j) {
+                const uint4 vv = (j < 16) ? v0 : v1;
+                const int jb = j & 15;
+                const uint32_t byte = (sel_u32(vv, jb >> 2) >> ((jb & 3) * 8)) & 0xFFu;
+                acc = fmaf((float)(int8_t)byte * d, __half2float(x[base + j]), acc);
+            }
+        } else {          // Q4_0 / Q4_1: 16 bytes -> 32 weights
+            #pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                const uint32_t byte = (sel_u32(v0, j >> 2) >> ((j & 3) * 8)) & 0xFFu;
+                const float lo = (kind == 4) ? ((float)(int)(byte & 0xFu) * d + m)
+                                             : ((float)((int)(byte & 0xFu) - 8) * d);
+                const float hi = (kind == 4) ? ((float)(int)(byte >> 4) * d + m)
+                                             : ((float)((int)(byte >> 4) - 8) * d);
+                acc = fmaf(lo, __half2float(x[base + j]), acc);
+                acc = fmaf(hi, __half2float(x[base + j + 16]), acc);
+            }
+        }
+    }
+
+    #pragma unroll
+    for (int o = 16; o > 0; o >>= 1) {
+        acc += __shfl_down_sync(0xffffffffu, acc, o);
+    }
+    if (lane == 0) {
+        if (y_f16) reinterpret_cast<__half *>(y)[warp] = __float2half(acc);
+        else reinterpret_cast<float *>(y)[warp] = acc;
+    }
+}
+
+__global__ void block_sums16_h_kernel(const __half *x, float *sx, int n16)
+{
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n16) return;
+    const __half *p = x + i * 16;
+    float s = 0.0f;
+    #pragma unroll
+    for (int j = 0; j < 16; j += 4) {
+        const uint2 v = __ldg(reinterpret_cast<const uint2 *>(p + j));
+        const float2 a = h22f2(v.x), b = h22f2(v.y);
+        s += (a.x + a.y) + (b.x + b.y);
+    }
+    sx[i] = s;
+}
+
+void gemv_quant_vec_f16io(const void *x_f16, const void *sx16, const void *w, int kind,
+                         size_t in, size_t out, int stride, int qs, int d_off, int m_off,
+                         void *y, bool y_f16, cudaStream_t stream)
+{
+    if (!x_f16 || !w || !y || in == 0 || out == 0 || (in % 32) != 0) return;
+    if ((kind == 3 || kind == 4) && sx16 == nullptr) return;
+    const int threads = 256;
+    const unsigned warps_per_block = threads / 32;
+    const int rows_per_warp = (kind == 3 || kind == 4) ? 4 : 1;
+    const unsigned rows_per_block = warps_per_block * (unsigned)rows_per_warp;
+    const unsigned bx = (unsigned)((out + rows_per_block - 1) / rows_per_block);
+    gemv_quant_vec_h_kernel<<<bx, threads, 0, stream>>>(
+        (const __half *)x_f16, (const float *)sx16, (const uint8_t *)w, y, y_f16 ? 1 : 0,
+        (int)in, (int)out, stride, qs, d_off, m_off, kind, rows_per_warp);
+}
+
+void block_sums16_f16(const void *x_f16, void *sx16, int n16, cudaStream_t stream)
+{
+    if (!x_f16 || !sx16 || n16 <= 0) return;
+    const int threads = 256;
+    const unsigned bx = (unsigned)((n16 + threads - 1) / threads);
+    block_sums16_h_kernel<<<bx, threads, 0, stream>>>((const __half *)x_f16, (float *)sx16, n16);
+}
+
 void gemv_quant_vec_f32(const void *x_f32, const void *sx16, const void *w, int kind,
                         size_t in, size_t out, int stride, int qs, int d_off, int m_off,
                         void *y_f32, cudaStream_t stream)
@@ -1159,6 +1341,67 @@ void rope_devpos(void *data, size_t head_dim, size_t seq_len, size_t n_heads, fl
         rope_devpos_kernel<<<grid, threads, 0, stream>>>((__nv_bfloat16 *)data, (int)head_dim, (int)n_heads, base, pos_dev);
     } else {
         rope_devpos_kernel<<<grid, threads, 0, stream>>>((float *)data, (int)head_dim, (int)n_heads, base, pos_dev);
+    }
+}
+
+template <typename T>
+__global__ void rope_bias_devpos_kernel(T *data, int head_dim, int n_heads, float base,
+                                        const int *pos_dev, const T *bias, float scale)
+{
+    const int half_dim = head_dim / 2;
+    int seq_idx = blockIdx.y;
+    int head_idx = blockIdx.x;
+    int i = threadIdx.x;
+    const int pos_offset = *pos_dev;
+
+    if (i < half_dim) {
+        // Bias is per-column within a row: index repeats for every seq position.
+        const int b0 = head_idx * head_dim + i;
+        const int b1 = b0 + half_dim;
+        const float fb0 = bias ? to_float(bias[b0]) : 0.0f;
+        const float fb1 = bias ? to_float(bias[b1]) : 0.0f;
+
+        float pos = (float)(seq_idx + pos_offset);
+        float freq = 1.0f / powf(base, (float)(2 * i) / (float)head_dim);
+        float theta = pos * freq;
+        float cos_v = cosf(theta);
+        float sin_v = sinf(theta);
+
+        int head_base = (seq_idx * n_heads * head_dim) + (head_idx * head_dim);
+        int offset0 = head_base + i;
+        int offset1 = head_base + i + half_dim;
+        float x0 = to_float(data[offset0]) + fb0;
+        float x1 = to_float(data[offset1]) + fb1;
+
+        float r0 = (x0 * cos_v - x1 * sin_v) * scale;
+        float r1 = (x0 * sin_v + x1 * cos_v) * scale;
+        data[offset0] = (T)r0;
+        data[offset1] = (T)r1;
+    }
+}
+
+void rope_bias_devpos(void *data, size_t head_dim, size_t seq_len, size_t n_heads, float base,
+                      const int *pos_dev, const void *bias, float scale, DType dtype,
+                      cudaStream_t stream)
+{
+    if (!data || !pos_dev || head_dim == 0 || seq_len == 0 || n_heads == 0) return;
+
+    dim3 grid((unsigned int)n_heads, (unsigned int)seq_len);
+    int threads = (int)((head_dim / 2 + 31) / 32 * 32);
+    if (threads > 1024) threads = 1024;
+
+    if (dtype == DType::Float16) {
+        rope_bias_devpos_kernel<<<grid, threads, 0, stream>>>(
+            (__half *)data, (int)head_dim, (int)n_heads, base, pos_dev,
+            (const __half *)bias, scale);
+    } else if (dtype == DType::BFloat16) {
+        rope_bias_devpos_kernel<<<grid, threads, 0, stream>>>(
+            (__nv_bfloat16 *)data, (int)head_dim, (int)n_heads, base, pos_dev,
+            (const __nv_bfloat16 *)bias, scale);
+    } else {
+        rope_bias_devpos_kernel<<<grid, threads, 0, stream>>>(
+            (float *)data, (int)head_dim, (int)n_heads, base, pos_dev,
+            (const float *)bias, scale);
     }
 }
 
@@ -1516,7 +1759,42 @@ __global__ void kv_write_devpos_kernel(char *dst_base, const char *src, size_t n
     }
 }
 
+template <typename T>
+__global__ void kv_write_bias_devpos_kernel(T *dst_base, const T *src, const T *bias,
+                                            size_t n, const int *pos_dev, size_t row_stride)
+{
+    const size_t pos = (size_t)(*pos_dev);
+    T *dst = dst_base + pos * row_stride;
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int stride = blockDim.x * gridDim.x;
+    for (size_t i = (size_t)tid; i < n; i += (size_t)stride) {
+        dst[i] = bias ? (T)(to_float(src[i]) + to_float(bias[i])) : src[i];
+    }
+}
+
 }  // namespace
+
+void kv_write_bias_devpos(void *dst_base, const void *src, const void *bias, size_t n_elems,
+                          const int *pos_dev, size_t row_stride_elems, DType dtype,
+                          cudaStream_t stream)
+{
+    if (!dst_base || !src || !pos_dev || n_elems == 0 || row_stride_elems == 0) return;
+    const int nthreads = 256;
+    const int blocks = (int)((n_elems + nthreads - 1) / nthreads);
+    if (dtype == DType::Float16) {
+        kv_write_bias_devpos_kernel<__half><<<blocks, nthreads, 0, stream>>>(
+            (__half *)dst_base, (const __half *)src, (const __half *)bias, n_elems, pos_dev,
+            row_stride_elems);
+    } else if (dtype == DType::BFloat16) {
+        kv_write_bias_devpos_kernel<__nv_bfloat16><<<blocks, nthreads, 0, stream>>>(
+            (__nv_bfloat16 *)dst_base, (const __nv_bfloat16 *)src, (const __nv_bfloat16 *)bias,
+            n_elems, pos_dev, row_stride_elems);
+    } else {
+        kv_write_bias_devpos_kernel<float><<<blocks, nthreads, 0, stream>>>(
+            (float *)dst_base, (const float *)src, (const float *)bias, n_elems, pos_dev,
+            row_stride_elems);
+    }
+}
 
 void gqa_decode_attention_f16(const void *q, const void *K, const void *V, void *out,
                               int pos, int n_heads, int n_kv, int head_dim, int kv_dim,

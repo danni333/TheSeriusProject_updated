@@ -161,6 +161,11 @@ class Tensor
     /// Fill with ones (in-place)
     void ones();
 
+    /// Non-owning view over a device buffer: no host allocation, no memset,
+    /// destructor does not free the GPU memory. For wrapping persistent
+    /// scratch buffers as Tensor arguments to BLAS/dispatch calls.
+    static Tensor gpu_view(void *gpu_data, const std::vector<size_t> &shape, hal::DType dtype);
+
     /// Create a new tensor filled with zeros
     static Tensor zeros(const std::vector<size_t> &shape, memory::MemoryPool *pool = nullptr);
 
@@ -232,6 +237,11 @@ class Tensor
     /// that will be fully overwritten by device kernels (avoids a draining
     /// H2D copy of uninitialized data).
     void alloc_gpu();
+
+    /// Create a tensor that lives only on the GPU: no host allocation, no
+    /// memset. Falls back to a normal (zero-initialized) tensor when no GPU
+    /// backend is available. Use for large scratch/KV buffers.
+    static Tensor gpu_only(const std::vector<size_t> &shape, hal::DType dtype);
 
    private:
     void *data_ = nullptr;          // Host pointer

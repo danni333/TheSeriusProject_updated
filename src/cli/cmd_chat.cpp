@@ -11,6 +11,10 @@
 #include "io/hf_llama_loader.h"
 #include "infer/llama_inference.h"
 #include "hal/fused_kernels.h"
+#include "../blas/blas.h"
+#ifdef SERIUS_USE_CUDA
+#include "../blas/matmul_cuda.h"
+#endif
 
 #ifdef _WIN32
 #include <windows.h>
@@ -260,6 +264,56 @@ int cmd_chat(int argc, char **argv)
                 upload_qw(model.lm_head_q());
             }
             std::cout << "[Serius] Model moved to GPU (FP16)\n";
+
+            // cuBLAS warmup: the first GemmEx/GemmStridedBatchedEx per kernel
+            // variant lazily loads driver modules (cuLibraryLoadData, ~300 ms
+            // total) — pay it here during weight upload instead of inside the
+            // first prompt's prefill. Shapes mirror the real prefill GEMMs.
+            {
+                hal::IBackend *gbe = hal::get_gpu_backend();
+                const size_t hidden = model.config().hidden_size;
+                const size_t inter = model.config().intermediate_size;
+                const size_t heads = model.config().num_attention_heads;
+                const size_t head_dim = hidden / heads;
+                const size_t wm = 256;  // representative M (seq_len)
+                const size_t max_k = (std::max)(hidden, inter);
+                void *buf = gbe->malloc(wm * max_k * 2 + 4 * 1024 * 1024);
+                auto f16_view = [&](size_t m, size_t k) {
+                    return core::Tensor::gpu_view(buf, {m, k}, hal::DType::Float16);
+                };
+                const auto &l0 = model.layers()[0];
+                struct WP { core::autograd::Node *w; } wps[] = {
+                    {l0->q_proj.get()}, {l0->k_proj.get()}, {l0->v_proj.get()},
+                    {l0->o_proj.get()}, {l0->gate_proj.get()}, {l0->up_proj.get()},
+                    {l0->down_proj.get()},
+                };
+                for (auto &wp : wps) {
+                    if (wp.w == nullptr) continue;
+                    const auto &ws = wp.w->data.shape();
+                    const size_t K = ws[0], N = ws.size() > 1 ? ws[1] : ws[0];
+                    core::Tensor A = f16_view(wm, K);
+                    core::Tensor C = core::Tensor::gpu_view(buf, {wm, N}, hal::DType::Float16);
+                    core::blas::matmul(A, wp.w->data, C);
+                }
+                // Batched attention shapes: {heads, seq, head_dim} variants.
+                {
+                    core::Tensor A = core::Tensor::gpu_view(buf, {heads, wm, head_dim}, hal::DType::Float16);
+                    core::Tensor B = core::Tensor::gpu_view(buf, {heads, head_dim, wm}, hal::DType::Float16);
+                    core::Tensor C = core::Tensor::gpu_view(buf, {heads, wm, wm}, hal::DType::Float16);
+                    core::blas::batched_matmul(A, B, C);
+                    core::Tensor D = core::Tensor::gpu_view(buf, {heads, wm, head_dim}, hal::DType::Float16);
+                    core::blas::batched_matmul(C, A, D);
+                }
+                // Logits GEMV (M=1 path used by llama_forward_inference_last).
+                if (model.lm_head_fp16_t().data_gpu() != nullptr) {
+                    core::Tensor x = f16_view(1, hidden);
+                    core::Tensor out = core::Tensor::gpu_view(buf, {1, model.config().vocab_size}, hal::DType::Float32);
+                    core::blas::logits_gemv_mixed_cublas(x.raw_data_gpu(), model.lm_head_fp16_t().raw_data_gpu(),
+                                                         out.raw_data_gpu(), 1, model.config().vocab_size, hidden);
+                }
+                cudaDeviceSynchronize();
+                gbe->free(buf);
+            }
         }
 #endif
 
@@ -293,7 +347,7 @@ int cmd_chat(int argc, char **argv)
             for (TokenId tid : ids) recent_ids.push_back(static_cast<int>(tid));
 
             auto gen_start = std::chrono::steady_clock::now();
-            core::Tensor logits = infer::llama_forward_inference(model, prompt_input, &cache);
+            core::Tensor logits = infer::llama_forward_inference_last(model, prompt_input, &cache);
             const double t_prefill = std::chrono::duration<double>(std::chrono::steady_clock::now() - gen_start).count();
 
             // GPU top-k preselection + CPU candidate sampling: identical

@@ -512,6 +512,45 @@ Tensor Tensor::expand(const std::vector<size_t> &new_shape) const
     return res;
 }
 
+Tensor Tensor::gpu_only(const std::vector<size_t> &shape, hal::DType dtype)
+{
+    hal::IBackend *be = hal::get_gpu_backend();
+    if (be == nullptr || !be->is_available()) {
+        return Tensor(shape, dtype);  // CPU fallback: normal zeroed tensor
+    }
+    Tensor t;
+    t.shape_ = shape;
+    t.strides_ = compute_strides(shape);
+    t.size_ = shape.empty() ? 0
+                            : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    t.dtype_ = dtype;
+    t.data_ = nullptr;
+    if (t.size_ > 0) {
+        t.data_gpu_ = be->malloc(t.size_ * t.element_size());
+        if (t.data_gpu_ == nullptr) throw std::runtime_error("CUDA malloc failed in gpu_only");
+        t.location_ = DataLocation::GPU;
+    } else {
+        t.location_ = DataLocation::CPU;
+    }
+    t.owns_data_ = true;
+    return t;
+}
+
+Tensor Tensor::gpu_view(void *gpu_data, const std::vector<size_t> &shape, hal::DType dtype)
+{
+    Tensor t;
+    t.shape_ = shape;
+    t.strides_ = compute_strides(shape);
+    t.size_ = shape.empty() ? 0
+                            : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    t.dtype_ = dtype;
+    t.data_ = nullptr;
+    t.data_gpu_ = gpu_data;
+    t.location_ = DataLocation::GPU;
+    t.owns_data_ = false;
+    return t;
+}
+
 Tensor Tensor::reshape(const std::vector<size_t> &new_shape) const
 {
     size_t new_size = new_shape.empty()

@@ -270,9 +270,16 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
         (total_flops > 1000000 || mat_a.dtype() != hal::DType::Float32 || any_on_gpu)) {
         
         // CUDA kernels for matmul currently assume row-major layout with inner stride 1.
-        // We ensure contiguity here. Our improved contiguous() handles device pointers correctly.
-        const Tensor &a_cont = mat_a.is_contiguous() ? mat_a : mat_a.contiguous();
-        const Tensor &b_cont = mat_b.is_contiguous() ? mat_b : mat_b.contiguous();
+        // We ensure contiguity here. NOTE: `cond ? mat_a : mat_a.contiguous()`
+        // yields a prvalue and would deep-copy the tensor (cudaMalloc + sync
+        // D2D memcpy) on every call — use storage + pointer instead.
+        Tensor a_storage, b_storage;
+        const Tensor *a_ptr = &mat_a;
+        const Tensor *b_ptr = &mat_b;
+        if (!mat_a.is_contiguous()) { a_storage = mat_a.contiguous(); a_ptr = &a_storage; }
+        if (!mat_b.is_contiguous()) { b_storage = mat_b.contiguous(); b_ptr = &b_storage; }
+        const Tensor &a_cont = *a_ptr;
+        const Tensor &b_cont = *b_ptr;
 
         a_cont.syncToDevice();
         b_cont.syncToDevice();
