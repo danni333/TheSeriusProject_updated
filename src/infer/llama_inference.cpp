@@ -1462,6 +1462,7 @@ struct GraphDecodeCtx {
     Tensor qf32_normed, qf32_attn, qf32_gu, qf32_sx, qkv_buf, gu_buf, qacc, logits_dev;
     int *tid_gpu = nullptr;
     int *pos_gpu = nullptr;
+    uint64_t cache_inst = 0;    // KVCache::instance_id the graph was captured for
     cudaGraph_t graph = nullptr;
     cudaGraphExec_t exec = nullptr;
     cudaStream_t cap_stream = nullptr;
@@ -1472,11 +1473,12 @@ GraphDecodeCtx &graph_ctx() {
     return c;
 }
 
-// (model, cache) pairs whose graph capture already failed — don't retry every
-// token; the eager path handles them.
-struct GraphDisabledKey { const void *model; const void *cache; };
+// (model, cache-instance) pairs whose graph capture already failed — don't
+// retry every token; the eager path handles them. Uses instance_id because
+// stack addresses are reused across turns.
+struct GraphDisabledKey { const void *model; uint64_t cache_inst; };
 GraphDisabledKey &graph_disabled() {
-    static GraphDisabledKey k{nullptr, nullptr};
+    static GraphDisabledKey k{nullptr, 0};
     return k;
 }
 
@@ -1490,6 +1492,7 @@ void graph_ctx_destroy(GraphDecodeCtx &c) {
     c.captured = false;
     c.model = nullptr;
     c.cache = nullptr;
+    c.cache_inst = 0;
 }
 
 // Issues the full decode step on stream `s`. All pos/token dependence goes
@@ -1634,7 +1637,7 @@ bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int t
     if (cache == nullptr || pos + 1 > 4096) return false;
     {
         const GraphDisabledKey &dk = graph_disabled();
-        if (dk.model == &model && dk.cache == cache) return false;
+        if (dk.model == &model && dk.cache_inst == cache->instance_id) return false;
     }
     const auto &cfg = model.config();
     const size_t hidden = cfg.hidden_size, inter = cfg.intermediate_size;
@@ -1661,12 +1664,14 @@ bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int t
 
     GraphDecodeCtx &ctx = graph_ctx();
     const bool stale = !ctx.ready || ctx.model != &model || ctx.cache != cache ||
+                       ctx.cache_inst != cache->instance_id ||
                        ctx.hidden != hidden || ctx.inter != inter || ctx.kv_dim != kv_dim ||
                        ctx.n_layers != n_layers || ctx.vocab != cfg.vocab_size || ctx.dtype != dtype;
     if (stale) {
         graph_ctx_destroy(ctx);
         ctx.model = &model;
         ctx.cache = cache;
+        ctx.cache_inst = cache->instance_id;
         ctx.hidden = hidden; ctx.inter = inter; ctx.kv_dim = kv_dim;
         ctx.qkv_total = qkv_total; ctx.n_layers = n_layers; ctx.vocab = cfg.vocab_size;
         ctx.dtype = dtype;
@@ -1713,14 +1718,14 @@ bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int t
             cudaStreamEndCapture(ctx.cap_stream, &ctx.graph);
             cudaGetLastError();
             graph_ctx_destroy(ctx);
-            graph_disabled() = {&model, cache};
+            graph_disabled() = {&model, cache->instance_id};
             return false;
         }
         if (cap_err != cudaSuccess || ctx.graph == nullptr ||
             cudaGraphInstantiateWithFlags(&ctx.exec, ctx.graph, 0ULL) != cudaSuccess) {
             cudaGetLastError();
             graph_ctx_destroy(ctx);
-            graph_disabled() = {&model, cache};
+            graph_disabled() = {&model, cache->instance_id};
             return false;
         }
         ctx.captured = true;

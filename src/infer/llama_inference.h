@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <vector>
 
@@ -19,10 +20,21 @@ struct KVCacheLayer {
 };
 
 struct KVCache {
-    KVCache() 
-        : scratch_h({0, 0}), scratch_normed({0, 0}), scratch_q({0, 0}), 
+    KVCache()
+        : scratch_h({0, 0}), scratch_normed({0, 0}), scratch_q({0, 0}),
           scratch_k({0, 0}), scratch_v({0, 0}), scratch_attn_concat({0, 0}),
-          scratch_mlp_gate({0, 0}), scratch_mlp_up({0, 0}), scratch_mlp_down({0, 0}) {}
+          scratch_mlp_gate({0, 0}), scratch_mlp_up({0, 0}), scratch_mlp_down({0, 0}),
+          instance_id(next_instance_id()) {}
+
+    /// Unique per-instance id: stack/heap addresses get reused across turns,
+    /// so pointer comparison alone can't detect a destroyed+recreated cache
+    /// (the CUDA decode graph embeds raw KV pointers — a stale graph writes
+    /// into freed/reused GPU memory and produces garbage tokens).
+    static uint64_t next_instance_id() {
+        static std::atomic<uint64_t> counter{0};
+        return ++counter;
+    }
+    uint64_t instance_id = 0;
 
     std::vector<KVCacheLayer> layers;
 
