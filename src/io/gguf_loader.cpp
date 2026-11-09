@@ -126,6 +126,26 @@ void dequantize_q8_0(const uint8_t *data, size_t n, float *out)
     }
 }
 
+// ggml block_q5_0: 32 weights per 22-byte block { fp16 d, uint32 qh, uint8 qs[16] }.
+// qs[j] low nibble = weight j, high nibble = weight j+16; qh bit j / j+16 is the
+// 5th bit. w = d * (q5 - 16).
+void dequantize_q5_0(const uint8_t *data, size_t n, float *out)
+{
+    for (size_t i = 0; i < n; i += 32) {
+        const float d_f = half_to_float(static_cast<uint16_t>(data[0] | (data[1] << 8)));
+        uint32_t qh;
+        std::memcpy(&qh, data + 2, sizeof(qh));
+        const uint8_t *qs = data + 6;
+        for (size_t j = 0; j < 16; ++j) {
+            const int v0 = (qs[j] & 0x0F) | (static_cast<int>((qh >> j) & 1) << 4);
+            const int v1 = (qs[j] >> 4) | (static_cast<int>((qh >> (j + 16)) & 1) << 4);
+            if (i + j < n) { out[i + j] = (v0 - 16) * d_f; }
+            if (i + j + 16 < n) { out[i + j + 16] = (v1 - 16) * d_f; }
+        }
+        data += 22;
+    }
+}
+
 // ggml block_q4_K: 256 weights per 144-byte superblock.
 // { fp16 d, fp16 dmin, uint8 scales[12], uint8 qs[128] }
 // 8 sub-blocks of 32: w = d*sc[j]*nibble - dmin*m[j].
@@ -745,10 +765,19 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
                 std::memcpy(&fv, &bits, sizeof(fv));
                 values[i] = fv;
             }
+        } else if (info.dtype == GGMLType::Q5_0) {
+            if (numel % 32 != 0) { continue; }
+            const size_t block_count = numel / 32;
+            std::vector<uint8_t> packed(block_count * 22);
+            f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
+            dequantize_q5_0(packed.data(), numel, values.data());
+            // No Q5_0 quant kernel yet — dense FP16 path only.
         } else {
             // Unsupported quantization (K-quants, etc.): skip the tensor
             // entirely so callers can fall back (e.g. tied-embedding lm_head)
             // instead of silently loading an all-zero matrix.
+            std::fprintf(stderr, "[GGUF] unsupported dtype %u for tensor %s — skipped\n",
+                         static_cast<unsigned>(info.dtype), info.name.c_str());
             continue;
         }
 
