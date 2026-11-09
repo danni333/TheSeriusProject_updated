@@ -41,6 +41,10 @@ class IBackend
 
     // Initialization check
     virtual bool is_available() const = 0;
+
+    /// Release any internally cached freed allocations back to the device.
+    /// No-op for backends without a free-list cache.
+    virtual void flush_cache() {}
 };
 
 // Global accessor to get backends by specific type

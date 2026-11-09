@@ -39,6 +39,10 @@ class CudaBackend : public IBackend
     void memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream) override;
     void memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream) override;
 
+    /// cudaFree every block sitting in the free-list cache (used after large
+    /// one-time reallocations so VRAM is actually returned to the driver).
+    void flush_cache() override;
+
 
     bool is_available() const override;
 

@@ -26,6 +26,22 @@ CudaBackend::~CudaBackend()
     cached_bytes_ = 0;
 }
 
+void CudaBackend::flush_cache()
+{
+    std::vector<void *> to_free;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        for (auto &kv : free_lists_) {
+            for (void *p : kv.second) to_free.push_back(p);
+        }
+        free_lists_.clear();
+        cached_bytes_ = 0;
+    }
+    for (void *p : to_free) {
+        cudaFree(p);
+    }
+}
+
 void *CudaBackend::malloc(size_t size)
 {
     if (size == 0) return nullptr;

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 #include <cstring>
 #include <immintrin.h>
@@ -1195,6 +1196,101 @@ Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, 
 // last_only: compute logits for the final position only ({1, vocab} instead of
 // {seq_len, vocab}) — chat/server callers only ever read the last row, and the
 // full logits tensor is seq_len*vocab*4 bytes of host memset + D2H copy.
+#ifdef SERIUS_USE_CUDA
+// Fused dense QKV / gate|up weights for batched prefill: 4 GEMMs per layer
+// instead of 7 (better cuBLAS efficiency at M=seq_len). Built once per model
+// on GPU; the separate dense q/k/v/gate/up tensors are then released — decode
+// uses the quantized weights whenever all four quant tensors are resident
+// (same gate as the decode `use_quant` path), so the dense copies are dead.
+struct FusedPrefillW {
+    std::vector<core::Tensor> qkv;    // {hidden, hidden + 2*kv_dim} per layer
+    std::vector<core::Tensor> gu;     // {hidden, 2*inter} per layer
+    std::vector<char> fused;          // per-layer flag
+    size_t hidden = 0, kv_dim = 0, inter = 0;
+    const void *fingerprint = nullptr;
+};
+
+static const FusedPrefillW *fused_prefill_weights(const model::LLaMAModel &model,
+                                                  hal::DType dtype) {
+    static const bool no_quant = [] {
+        size_t n = 0;
+        return getenv_s(&n, nullptr, 0, "SERIUS_NO_QUANT") == 0 && n > 0;
+    }();
+    static const bool no_fuse = [] {
+        size_t n = 0;
+        return getenv_s(&n, nullptr, 0, "SERIUS_NO_FUSE") == 0 && n > 0;
+    }();
+    if (no_quant || no_fuse || dtype != hal::DType::Float16) return nullptr;
+
+    const auto &cfg = model.config();
+    const size_t hidden = cfg.hidden_size, n_heads = cfg.num_attention_heads;
+    const size_t kv_dim = cfg.num_key_value_heads * (hidden / n_heads);
+    const size_t inter = cfg.intermediate_size;
+    const void *fp = model.embed_tokens()->data.raw_data_gpu();
+    if (!fp) return nullptr;
+
+    static std::unordered_map<const model::LLaMAModel *, FusedPrefillW> cache;
+    if (cache.size() > 2) cache.clear();  // bound VRAM (~1.7 GB fused per model)
+    auto it = cache.find(&model);
+    if (it != cache.end() && it->second.fingerprint == fp &&
+        it->second.hidden == hidden && it->second.kv_dim == kv_dim &&
+        it->second.inter == inter && it->second.qkv.size() == model.layers().size()) {
+        return &it->second;
+    }
+    cache.erase(&model);
+
+    auto ok_shape = [](const core::Tensor &t, size_t r, size_t c) {
+        return t.dtype() == hal::DType::Float16 && t.shape().size() == 2 &&
+               t.shape()[0] == r && t.shape()[1] == c && t.raw_data_gpu() != nullptr;
+    };
+
+    FusedPrefillW w;
+    w.hidden = hidden; w.kv_dim = kv_dim; w.inter = inter; w.fingerprint = fp;
+    const auto &layers = model.layers();
+    w.qkv.resize(layers.size()); w.gu.resize(layers.size());
+    w.fused.assign(layers.size(), 0);
+
+    size_t built = 0;
+    for (size_t i = 0; i < layers.size(); ++i) {
+        auto *blk = layers[i].get();  // mutable: unique_ptr yields LLaMABlock*
+        // Decode must be able to run fully quantized before we drop the dense
+        // originals (mirrors the use_quant gate in llama_forward_single_token_cuda).
+        const bool quant_resident = blk->qkv_w.gpu_data && blk->gate_up_w.gpu_data &&
+                                    blk->o_w.gpu_data && blk->down_w.gpu_data;
+        if (!quant_resident) continue;
+        if (!ok_shape(blk->q_proj->data, hidden, hidden) ||
+            !ok_shape(blk->k_proj->data, hidden, kv_dim) ||
+            !ok_shape(blk->v_proj->data, hidden, kv_dim) ||
+            !ok_shape(blk->gate_proj->data, hidden, inter) ||
+            !ok_shape(blk->up_proj->data, hidden, inter)) continue;
+
+        auto qkv_t = core::Tensor::gpu_only({hidden, hidden + 2 * kv_dim}, dtype);
+        hal::concat_rows_f16(qkv_t.raw_data_gpu(), blk->q_proj->data.raw_data_gpu(),
+                             blk->k_proj->data.raw_data_gpu(), blk->v_proj->data.raw_data_gpu(),
+                             hidden, hidden, kv_dim, kv_dim, 0);
+        auto gu_t = core::Tensor::gpu_only({hidden, 2 * inter}, dtype);
+        hal::concat_rows_f16(gu_t.raw_data_gpu(), blk->gate_proj->data.raw_data_gpu(),
+                             blk->up_proj->data.raw_data_gpu(), nullptr,
+                             hidden, inter, inter, 0, 0);
+        w.qkv[i] = std::move(qkv_t);
+        w.gu[i] = std::move(gu_t);
+        w.fused[i] = 1;
+        ++built;
+        blk->q_proj->data = core::Tensor();
+        blk->k_proj->data = core::Tensor();
+        blk->v_proj->data = core::Tensor();
+        blk->gate_proj->data = core::Tensor();
+        blk->up_proj->data = core::Tensor();
+    }
+    if (built == 0) { cache.erase(&model); return nullptr; }
+    // The dense tensors freed above land in the backend's 1 GiB free-list
+    // cache instead of returning to the driver — flush it so fused weights
+    // don't stack on top of them and overcommit VRAM.
+    if (hal::IBackend *be = hal::get_gpu_backend()) be->flush_cache();
+    return &cache.emplace(&model, std::move(w)).first->second;
+}
+#endif
+
 static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tensor &token_ids,
                                       KVCache *cache, bool last_only) {
     const auto &cfg = model.config();
@@ -1230,6 +1326,10 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
     Tensor mlp_gate = Tensor::gpu_only({seq_len, inter}, dtype);
     Tensor mlp_up = Tensor::gpu_only({seq_len, inter}, dtype);
     Tensor mlp_down = Tensor::gpu_only({seq_len, hidden}, dtype);
+    // Fused-GEMM outputs (only used when fused_prefill_weights is available).
+    Tensor qkv_buf = Tensor::gpu_only({seq_len, hidden + 2 * kv_dim}, dtype);
+    Tensor gu_buf = Tensor::gpu_only({seq_len, 2 * inter}, dtype);
+    const FusedPrefillW *fpw = fused_prefill_weights(model, dtype);
 
     // Persistent attention scratch: allocated once instead of ~10 tensors per
     // layer (each Tensor ctor memsets its host buffer — hundreds of MB of
@@ -1272,9 +1372,21 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         const auto *blk = layers[layer_idx].get();
         hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), blk->input_layernorm_weight->data.raw_data_gpu(), hidden, seq_len, eps, dtype);
         normed_buf.mark_dirty(Tensor::DataLocation::GPU);
-        core::blas::matmul(normed_buf, blk->q_proj->data, query_buf);
-        core::blas::matmul(normed_buf, blk->k_proj->data, key_buf);
-        core::blas::matmul(normed_buf, blk->v_proj->data, value_buf);
+        if (fpw && fpw->fused[layer_idx]) {
+            // One fused GEMM {seq,in}x{in,hidden+2kv} then split q|k|v columns.
+            core::blas::matmul(normed_buf, fpw->qkv[layer_idx], qkv_buf);
+            const size_t qkv_total = hidden + 2 * kv_dim;
+            hal::extract_cols_f16(query_buf.raw_data_gpu(), qkv_buf.raw_data_gpu(),
+                                  seq_len, qkv_total, 0, hidden);
+            hal::extract_cols_f16(key_buf.raw_data_gpu(), qkv_buf.raw_data_gpu(),
+                                  seq_len, qkv_total, hidden, kv_dim);
+            hal::extract_cols_f16(value_buf.raw_data_gpu(), qkv_buf.raw_data_gpu(),
+                                  seq_len, qkv_total, hidden + kv_dim, kv_dim);
+        } else {
+            core::blas::matmul(normed_buf, blk->q_proj->data, query_buf);
+            core::blas::matmul(normed_buf, blk->k_proj->data, key_buf);
+            core::blas::matmul(normed_buf, blk->v_proj->data, value_buf);
+        }
         if (blk->q_bias) { hal::add_row_bias(query_buf.raw_data_gpu(), blk->q_bias->data.raw_data_gpu(), seq_len, hidden, dtype); }
         if (blk->k_bias) { hal::add_row_bias(key_buf.raw_data_gpu(), blk->k_bias->data.raw_data_gpu(), seq_len, kv_dim, dtype); }
         if (blk->v_bias) { hal::add_row_bias(value_buf.raw_data_gpu(), blk->v_bias->data.raw_data_gpu(), seq_len, kv_dim, dtype); }
@@ -1359,8 +1471,16 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
         hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), blk->post_attention_layernorm_weight->data.raw_data_gpu(), hidden, seq_len, eps, dtype);
         normed_buf.mark_dirty(Tensor::DataLocation::GPU);
-        core::blas::matmul(normed_buf, blk->gate_proj->data, mlp_gate);
-        core::blas::matmul(normed_buf, blk->up_proj->data, mlp_up);
+        if (fpw && fpw->fused[layer_idx]) {
+            core::blas::matmul(normed_buf, fpw->gu[layer_idx], gu_buf);
+            hal::extract_cols_f16(mlp_gate.raw_data_gpu(), gu_buf.raw_data_gpu(),
+                                  seq_len, 2 * inter, 0, inter);
+            hal::extract_cols_f16(mlp_up.raw_data_gpu(), gu_buf.raw_data_gpu(),
+                                  seq_len, 2 * inter, inter, inter);
+        } else {
+            core::blas::matmul(normed_buf, blk->gate_proj->data, mlp_gate);
+            core::blas::matmul(normed_buf, blk->up_proj->data, mlp_up);
+        }
         hal::swiglu(mlp_gate.raw_data_gpu(), mlp_gate.raw_data_gpu(), mlp_up.raw_data_gpu(), seq_len * inter, dtype);
         mlp_gate.mark_dirty(Tensor::DataLocation::GPU);
         core::blas::matmul(mlp_gate, blk->down_proj->data, mlp_down);

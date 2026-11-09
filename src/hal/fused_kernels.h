@@ -212,5 +212,20 @@ void kv_write_bias_devpos(void *dst_base, const void *src, const void *bias, siz
 void copy_layout(void *dst, const void *src, const size_t *shape, const size_t *src_strides, size_t dims,
                  DType dtype, cudaStream_t stream = 0);
 
+/// Row-wise FP16 concat: dst[r, c] picks from a/b/c column blocks.
+/// dst is {rows, ca+cb+cc} row-major; srcs are {rows, ca|cb|cc} row-major.
+/// `c` may be nullptr (2-source concat). Used to build fused QKV / gate|up
+/// prefill weights once per model.
+void concat_rows_f16(void *dst, const void *a, const void *b, const void *c,
+                     size_t rows, size_t ca, size_t cb, size_t cc,
+                     cudaStream_t stream = 0);
+
+/// Extract a column block from a row-major FP16 matrix into a contiguous
+/// {rows, ncols} buffer: dst[r,c] = src[r*src_stride + col_off + c].
+/// Used to split fused QKV / gate|up GEMM outputs without copy_layout's
+/// per-call H2D metadata copies.
+void extract_cols_f16(void *dst, const void *src, size_t rows, size_t src_stride,
+                      size_t col_off, size_t ncols, cudaStream_t stream = 0);
+
 }  // namespace hal
 }  // namespace serius

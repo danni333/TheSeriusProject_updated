@@ -2094,5 +2094,63 @@ void kv_write_devpos(void *dst_base, const void *src, size_t nbytes,
         (char *)dst_base, (const char *)src, nbytes, pos_dev, row_stride_bytes);
 }
 
+// Row-wise FP16 concat for fused prefill weights: dst[r, c] reads from the
+// matching source column block. One thread per output element; consecutive
+// threads read consecutive src elements (coalesced).
+__global__ void concat_rows_f16_kernel(const __half *a, const __half *b, const __half *c,
+                                       __half *dst, size_t rows, size_t ca, size_t cb,
+                                       size_t cc, size_t total)
+{
+    const size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= rows * total) return;
+    const size_t r = idx / total;
+    const size_t col = idx - r * total;
+    __half v;
+    if (col < ca) {
+        v = a[r * ca + col];
+    } else if (col < ca + cb) {
+        v = b[r * cb + (col - ca)];
+    } else {
+        v = c[r * cc + (col - ca - cb)];
+    }
+    dst[idx] = v;
+}
+
+void concat_rows_f16(void *dst, const void *a, const void *b, const void *c,
+                     size_t rows, size_t ca, size_t cb, size_t cc,
+                     cudaStream_t stream)
+{
+    if (!dst || !a || !b || rows == 0) return;
+    const size_t total = ca + cb + (c ? cc : 0);
+    if (total == 0) return;
+    const size_t n = rows * total;
+    const int threads = 256;
+    const unsigned blocks = (unsigned)((n + threads - 1) / threads);
+    concat_rows_f16_kernel<<<blocks, threads, 0, stream>>>(
+        (const __half *)a, (const __half *)b, (const __half *)c, (__half *)dst,
+        rows, ca, cb, cc, total);
+}
+
+__global__ void extract_cols_f16_kernel(const __half *src, __half *dst, size_t rows,
+                                        size_t src_stride, size_t col_off, size_t ncols)
+{
+    const size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= rows * ncols) return;
+    const size_t r = idx / ncols;
+    const size_t c = idx - r * ncols;
+    dst[idx] = src[r * src_stride + col_off + c];
+}
+
+void extract_cols_f16(void *dst, const void *src, size_t rows, size_t src_stride,
+                      size_t col_off, size_t ncols, cudaStream_t stream)
+{
+    if (!dst || !src || rows == 0 || ncols == 0) return;
+    const size_t n = rows * ncols;
+    const int threads = 256;
+    const unsigned blocks = (unsigned)((n + threads - 1) / threads);
+    extract_cols_f16_kernel<<<blocks, threads, 0, stream>>>(
+        (const __half *)src, (__half *)dst, rows, src_stride, col_off, ncols);
+}
+
 }  // namespace hal
 }  // namespace serius
