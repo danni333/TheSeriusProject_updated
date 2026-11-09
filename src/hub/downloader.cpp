@@ -1,5 +1,7 @@
 #include "downloader.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -51,15 +53,20 @@ std::string ModelDownloader::fetch_model_info(const std::string &repo_id, const 
     return response;
 }
 
-bool ModelDownloader::download_file(const std::string &url, const std::string &path, ProgressFn progress)
+bool ModelDownloader::download_file(const std::string &url, const std::string &path, ProgressFn progress,
+                                    const std::string &token)
 {
     // Create output directory if needed
     std::filesystem::path output_path(path);
     std::filesystem::create_directories(output_path.parent_path());
 
-    // Use curl for download with progress
+    // Use curl for download: -L follows redirects (HF resolve → CDN),
+    // --retry covers transient failures, -C - resumes partial downloads.
     std::ostringstream cmd;
-    cmd << "curl -L -o \"" << path << "\" \"" << url << "\"";
+    cmd << "curl -sSL --retry 3 -C - -o \"" << path << "\" \"" << url << "\"";
+    if (!token.empty()) {
+        cmd << " -H \"Authorization: Bearer " << token << "\"";
+    }
 
     if (progress) {
         // Without libcurl, we can't get real-time progress easily
@@ -113,6 +120,55 @@ bool ModelDownloader::download_hf(const std::string &repo_id,
     }
 
     return all_success;
+}
+
+std::vector<HubFile> ModelDownloader::list_hf_files(const std::string &repo_id,
+                                                    const std::string &token)
+{
+    // GET /api/models/{repo}/tree/main?recursive=true → [{type,path,size,...}]
+    std::string url = "https://huggingface.co/api/models/" + repo_id + "/tree/main?recursive=true";
+
+    std::ostringstream cmd;
+    cmd << "curl -s -X GET \"" << url << "\"";
+    if (!token.empty()) {
+        cmd << " -H \"Authorization: Bearer " << token << "\"";
+    }
+
+    FILE *pipe = popen(cmd.str().c_str(), "r");
+    if (!pipe) return {};
+
+    std::string response;
+    char buffer[8192];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        response += buffer;
+    }
+    pclose(pipe);
+    if (response.empty()) return {};
+
+    std::vector<HubFile> files;
+    try {
+        auto j = nlohmann::json::parse(response);
+        if (!j.is_array()) return {};
+        for (const auto &entry : j) {
+            if (!entry.is_object()) continue;
+            if (entry.value("type", "") != "file") continue;
+            HubFile f;
+            f.path = entry.value("path", "");
+            f.size = entry.value("size", (size_t)0);
+            if (!f.path.empty()) files.push_back(std::move(f));
+        }
+    } catch (...) {
+        return {};
+    }
+    return files;
+}
+
+bool ModelDownloader::download_hf_file(const std::string &repo_id, const std::string &filename,
+                                       const std::string &output_path, const std::string &token,
+                                       ProgressFn progress)
+{
+    std::string url = build_hf_url(repo_id, filename);
+    return download_file(url, output_path, progress, token);
 }
 
 bool ModelDownloader::download_url(const std::string &url,

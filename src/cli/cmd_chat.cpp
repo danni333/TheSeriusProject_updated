@@ -12,6 +12,7 @@
 #include "infer/llama_inference.h"
 #include "hal/fused_kernels.h"
 #include "../blas/blas.h"
+#include "../hub/downloader.h"
 #ifdef SERIUS_USE_CUDA
 #include "../blas/matmul_cuda.h"
 #endif
@@ -20,6 +21,8 @@
 #include <windows.h>
 #endif
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -41,14 +44,15 @@ int cmd_chat(int argc, char **argv)
 
     ArgsParser parser("serius chat", "Interactive chat with the model");
 
-    parser.add_flag({"model", "m", "Path to model directory or config", true, "models/smollm2-135m"});
+    parser.add_flag({"model", "m", "Path to model directory/config, or hf://repo_id", true, "models/smollm2-135m"});
+    parser.add_flag({"quant", "", "GGUF quant tag for hf:// models (e.g. q4_k_m); default: auto", true, ""});
     parser.add_flag({"type", "", "Model type: 'llama', 'qwen', or 'transformer'", true, "llama"});
     parser.add_flag({"temperature", "", "Sampling temperature", true, "0.7"});
     parser.add_flag({"max-tokens", "", "Maximum tokens to generate", true, "128"});
     parser.add_flag({"seed", "", "Random seed for sampling (0 = random)", true, "0"});
     parser.add_flag({"repeat-penalty", "", "Repetition penalty", true, "1.15"});
     parser.add_flag({"prompt", "p", "Single prompt to evaluate non-interactively", true, ""});
-    parser.add_flag({"system", "s", "System prompt", true, "You are a helpful AI assistant named SmolLM, trained by Hugging Face."});
+    parser.add_flag({"system", "s", "System prompt", true, "You are a helpful AI assistant."});
     parser.add_flag({"raw", "", "Do not format prompt with ChatML template", false, ""});
 
     if (!parser.parse(argc, argv)) {
@@ -69,13 +73,88 @@ int cmd_chat(int argc, char **argv)
     uint64_t seed = parser.get_int("seed", 0);
     float repeat_penalty = parser.get_float("repeat-penalty", 1.15f);
     std::string single_prompt = parser.get("prompt");
-    std::string system_prompt = parser.get("system", "You are a helpful AI assistant named SmolLM, trained by Hugging Face.");
+    std::string system_prompt = parser.get("system", "You are a helpful AI assistant.");
     bool raw_mode = parser.has("raw");
 
     // If seed is 0, use random seed
     if (seed == 0) {
         std::random_device rd;
         seed = rd();
+    }
+
+    // hf://repo_id → resolve the best GGUF on HuggingFace Hub, download it to
+    // models/<repo>/ if missing, then load the local file like any other path.
+    if (model_path.rfind("hf://", 0) == 0) {
+        const std::string repo_id = model_path.substr(5);
+        const std::string quant_want = parser.get("quant");
+        auto norm = [](std::string s) {
+            for (auto &c : s) {
+                c = (char)std::tolower((unsigned char)c);
+                if (c == '-') c = '_';
+            }
+            return s;
+        };
+        const std::string qn = norm(quant_want);
+
+        hub::ModelDownloader dl;
+        std::cout << "[Serius] Resolving hf://" << repo_id << " ...\n";
+        std::vector<hub::HubFile> ggufs;
+        for (const auto &f : dl.list_hf_files(repo_id)) {
+            const std::string lp = norm(f.path);
+            if (lp.size() >= 5 && lp.compare(lp.size() - 5, 5, ".gguf") == 0) {
+                ggufs.push_back(f);
+            }
+        }
+        if (ggufs.empty()) {
+            std::cerr << "[Serius] No .gguf files in hf://" << repo_id
+                      << " — use a '-GGUF' repo, or 'serius import' for safetensors.\n";
+            return 1;
+        }
+
+        const hub::HubFile *pick = nullptr;
+        if (!qn.empty()) {
+            for (const auto &f : ggufs) {
+                if (norm(f.path).find(qn) != std::string::npos) { pick = &f; break; }
+            }
+            if (!pick) {
+                std::cerr << "[Serius] No GGUF matching --quant=" << quant_want
+                          << ". Available:\n";
+                for (const auto &f : ggufs) std::cerr << "  " << f.path << "\n";
+                return 1;
+            }
+        } else {
+            static const char *kPrefs[] = {"q4_k_m", "q4_0", "q4_1", "q8_0"};
+            for (const char *p : kPrefs) {
+                for (const auto &f : ggufs) {
+                    if (norm(f.path).find(p) != std::string::npos) { pick = &f; break; }
+                }
+                if (pick) break;
+            }
+            if (!pick) {
+                pick = &*std::min_element(ggufs.begin(), ggufs.end(),
+                                          [](const hub::HubFile &a, const hub::HubFile &b) {
+                                              return a.size < b.size;
+                                          });
+            }
+        }
+
+        const size_t slash = repo_id.find_last_of('/');
+        const std::string base = (slash == std::string::npos) ? repo_id : repo_id.substr(slash + 1);
+        const std::string local = "models/" + base + "/" + pick->path;
+        const bool complete = std::filesystem::exists(local) &&
+                              (pick->size == 0 ||
+                               std::filesystem::file_size(local) == pick->size);
+        if (!complete) {
+            std::cout << "[Serius] Downloading " << pick->path;
+            if (pick->size) std::cout << " (" << pick->size / (1024 * 1024) << " MB)";
+            std::cout << " ...\n";
+            if (!dl.download_hf_file(repo_id, pick->path, local)) {
+                std::cerr << "[Serius] Download failed for " << pick->path << "\n";
+                return 1;
+            }
+        }
+        model_path = local;
+        std::cout << "[Serius] Model: " << model_path << "\n";
     }
 
     // Load Tokenizer
