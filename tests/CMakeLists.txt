@@ -17,6 +17,12 @@ target_link_libraries(test_hal PRIVATE serius_core gtest_main)
 add_executable(test_server test_server.cpp)
 target_link_libraries(test_server PRIVATE serius_server gtest_main)
 
+add_executable(test_e2e test_e2e.cpp)
+target_link_libraries(test_e2e PRIVATE serius_server gtest_main)
+target_compile_definitions(test_e2e PRIVATE
+    SERIUS_EXE_PATH="$<TARGET_FILE:serius>"
+    SERIOUS_REPO_ROOT="${CMAKE_SOURCE_DIR}")
+
 if(SERIUS_USE_CUDA)
     add_executable(test_cuda test_cuda.cpp)
     target_link_libraries(test_cuda PRIVATE serius_core gtest_main)
@@ -253,6 +259,7 @@ gtest_discover_tests(test_tensor)
 gtest_discover_tests(test_autograd)
 gtest_discover_tests(test_hal)
 gtest_discover_tests(test_server)
+gtest_discover_tests(test_e2e)
 if(SERIUS_USE_CUDA)
     gtest_discover_tests(test_fused_cuda)
     gtest_discover_tests(test_llama_inference_cuda)

@@ -140,3 +140,48 @@ public:
 | `test_e2e_streaming` | SSE chunks tutti validi, termina con [DONE] |
 | `test_e2e_safety` | Prompt pericoloso bloccato, prompt normale ok |
 | `test_e2e_import_pipeline` | Import → quant → infer produce output sensato |
+
+---
+
+## Stato avanzamento
+
+**Fatto e verificato** (`tests/test_e2e.cpp`, 6 test verdi, ~21s):
+
+- `E2EServer.*` — fixture che carica il GGUF reale
+  `models/smollm2-q4/SmolLM2-135M-Instruct-Q4_0.gguf` in un `Server`
+  in-process (CPU, deterministico) e lo serve su porta effimera:
+  - `FullPipelineChatCompletion` — prompt → risposta: oggetto
+    `chat.completion`, `finish_reason`, `usage` coerenti (1.1)
+  - `MultiTurnChat` — history a 3 turni accettata, output valido (1.2,
+    asserzione solo strutturale: un 135M non garantisce recall)
+  - `AllEndpoints` — `/health` (con `model_loaded`), `/v1/models`,
+    `/v1/models/{id}`, `/v1/completions`, `/v1/embeddings`, `/metrics` (1.3)
+  - `StreamingSSE` — parse riga-per-riga degli eventi `data:`, ogni chunk
+    JSON valido con `choices[0].delta`, `[DONE`] finale, contenuto
+    accumulato non vuoto
+  - `ErrorHandling` — JSON malformato → 400, rotta sconosciuta → 404
+- `E2ECli.ServeBinaryLifecycle` — spawn reale di `serius.exe serve
+  --model models/smollm2-q4 --gpu cpu` via `CreateProcess`, attesa
+  `/health` (fino a 90s per il load CPU), una chat completion, poi
+  `TerminateProcess` (1.3 completo, inclusa la parte CLI che il design
+  POSIX del piano non copriva)
+- Registrazione in `tests/CMakeLists.txt` (`test_e2e`,
+  `gtest_discover_tests`, define `SERIUS_EXE_PATH`/`SERIOUS_REPO_ROOT`).
+
+**Note di design:**
+
+- Il piano originale prevedeva `fork`/`SIGTERM`/`waitpid`: su Windows si
+  usa `CreateProcessA` + `TerminateProcess` (il test è `#ifdef _WIN32`,
+  skip altrove).
+- Skip pulito (`GTEST_SKIP`) se `models/smollm2-q4` non è presente.
+
+**Rimasto:**
+
+- 1.4 `import → convert → infer`: `serius convert` e `serius generate`
+  non esistono ancora come CLI — scenario bloccato fino a quando non
+  vengono implementati.
+- 1.5 Safety pipeline E2E: i guardrails non sono cablati nel path HTTP
+  del server.
+- Recall semantico multi-turno ("Marco") e verifica "output contiene 4"
+  per "2+2": asserzioni troppo fragili su un 135M Q4 — da rivalutare con
+  un modello più capace o mock deterministici.
