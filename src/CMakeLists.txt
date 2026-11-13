@@ -59,6 +59,7 @@ add_library(serius_core
     debug/tensor_logger.cpp
     io/config_loader.cpp
     io/gguf_loader.cpp
+    io/gguf_export.cpp
     io/simple_weights_loader.cpp
     io/safetensors_loader.cpp
     io/hf_llama_loader.cpp
@@ -250,6 +251,7 @@ add_executable(serius cli/serius_cli.cpp
     cli/cmd_serve.cpp
     cli/cmd_doctor.cpp
     cli/cmd_import.cpp
+    cli/cmd_convert.cpp
     cli/cmd_bench.cpp
     cli/cmd_stress.cpp)
 target_link_libraries(serius PRIVATE serius_core serius_server hub)

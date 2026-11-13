@@ -3,6 +3,7 @@
 #include "cli/cmd_serve.h"
 #include "cli/cmd_doctor.h"
 #include "cli/cmd_import.h"
+#include "cli/cmd_convert.h"
 #include "cli/cmd_bench.h"
 #include "cli/cmd_stress.h"
 
@@ -24,6 +25,7 @@ int main_cli(int argc, char **argv)
     cli.register_command({"serve", "Start HTTP API server", cmd_serve});
     cli.register_command({"doctor", "System diagnostics", cmd_doctor});
     cli.register_command({"import", "Import model from HuggingFace Hub or URL", cmd_import});
+    cli.register_command({"convert", "Convert a GGUF model to a safetensors directory", cmd_convert});
     cli.register_command({"bench", "Run performance benchmarks", cmd_bench});
     cli.register_command({"stress", "Run stress tests on the server", cmd_stress});
 

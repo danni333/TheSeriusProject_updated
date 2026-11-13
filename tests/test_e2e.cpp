@@ -339,4 +339,91 @@ TEST(E2ECli, ServeBinaryLifecycle)
 #endif
 }
 
+// 1.4 Import -> Convert -> Infer: run the real `serius convert` binary on the
+// GGUF, then serve the resulting safetensors directory and generate.
+TEST(E2ECli, ConvertThenInfer)
+{
+#ifdef _WIN32
+    const auto model_dir = find_model_dir("models/smollm2-q4");
+    if (model_dir.empty()) {
+        GTEST_SKIP() << "models/smollm2-q4 not found";
+    }
+    const auto gguf = model_dir / "SmolLM2-135M-Instruct-Q4_0.gguf";
+    if (!std::filesystem::exists(gguf)) {
+        GTEST_SKIP() << "GGUF file not found";
+    }
+#ifndef SERIUS_EXE_PATH
+#error "SERIUS_EXE_PATH compile definition required"
+#endif
+
+    const auto out_dir = std::filesystem::temp_directory_path() /
+                         ("serius_e2e_convert_" + std::to_string(::GetCurrentProcessId()));
+    std::filesystem::remove_all(out_dir);
+
+    std::string gguf_str = gguf.string();
+    std::replace(gguf_str.begin(), gguf_str.end(), '/', '\\');
+    std::string out_str = out_dir.string();
+    std::replace(out_str.begin(), out_str.end(), '/', '\\');
+
+    const std::string cmd = "\"" + std::string(SERIUS_EXE_PATH) + "\" convert"
+                            " --input \"" + gguf_str + "\""
+                            " --output \"" + out_str + "\"";
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    ASSERT_TRUE(CreateProcessA(nullptr, const_cast<LPSTR>(cmd.c_str()), nullptr, nullptr,
+                               FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi));
+    WaitForSingleObject(pi.hProcess, 120000);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(pi.hProcess, &exit_code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    ASSERT_EQ(exit_code, 0u);
+
+    // Converted directory must contain the HF-layout artifacts.
+    EXPECT_TRUE(std::filesystem::exists(out_dir / "model.safetensors"));
+    EXPECT_TRUE(std::filesystem::exists(out_dir / "config.json"));
+    EXPECT_TRUE(std::filesystem::exists(out_dir / "tokenizer.json"));
+
+    // Infer: serve the converted directory and run a chat completion.
+    const int port = find_free_port();
+    ASSERT_GT(port, 0);
+
+    serius::server::ServerConfig config;
+    config.port = static_cast<uint16_t>(port);
+    config.host = "127.0.0.1";
+    config.gpu_mode = serius::server::ServerConfig::GpuMode::kCpu;
+
+    auto server = std::make_unique<serius::server::Server>(config);
+    ASSERT_TRUE(server->load_model(out_dir.string(), "llama"));
+    ASSERT_TRUE(server->has_model());
+
+    std::thread server_thread([&] { server->run(); });
+    httplib::Client client("127.0.0.1", port);
+    wait_for_server(client, 30);
+
+    nlohmann::json body = {
+        {"model", "smollm2-q4-converted"},
+        {"messages", {{{"role", "user"}, {"content", "Say hello."}}}},
+        {"max_tokens", 16},
+        {"temperature", 0.0},
+    };
+    auto res = client.Post("/v1/chat/completions", body.dump(), "application/json");
+    ASSERT_TRUE(static_cast<bool>(res));
+    EXPECT_EQ(res->status, 200);
+    auto res_json = nlohmann::json::parse(res->body);
+    EXPECT_EQ(res_json["object"], "chat.completion");
+    ASSERT_FALSE(res_json["choices"].empty());
+    EXPECT_TRUE(res_json["choices"][0]["message"]["content"].is_string());
+    EXPECT_FALSE(res_json["choices"][0]["message"]["content"].get<std::string>().empty());
+
+    server->stop();
+    server_thread.join();
+    std::filesystem::remove_all(out_dir);
+#else
+    GTEST_SKIP() << "convert pipeline test is Windows-only";
+#endif
+}
+
 }  // namespace

@@ -175,11 +175,28 @@ public:
   skip altrove).
 - Skip pulito (`GTEST_SKIP`) se `models/smollm2-q4` non è presente.
 
-**Rimasto:**
+**Fatto — scenario 1.4 (Convert → Infer):**
 
-- 1.4 `import → convert → infer`: `serius convert` e `serius generate`
-  non esistono ancora come CLI — scenario bloccato fino a quando non
-  vengono implementati.
+- `serius convert` implementato (`src/cli/cmd_convert.cpp` +
+  `src/io/gguf_export.cpp`): esporta un GGUF come directory HF —
+  `model.safetensors` FP32 dequantizzato (tensor rinominati
+  `blk.N.*` → `model.layers.N.*`, shape `{in,out}` → `{out,in}`,
+  unpermute RoPE Q/K per arch `llama`), `config.json` generato dai
+  metadati GGUF, copia `tokenizer.json` e affini dalla directory
+  sorgente.
+- `E2ECli.ConvertThenInfer` in `tests/test_e2e.cpp`: spawn reale di
+  `serius.exe convert` → verifica artefatti → `Server` carica la
+  directory convertita → chat completion 200 con contenuto non vuoto.
+  7/7 test E2E verdi.
+- `serius generate` non esiste come comando a parte: `serius chat
+  --prompt "..." --max-tokens N` è il equivalente non interattivo
+  (usato anche nel test manuale di verifica).
+- Scenario "import" coperto a livello di asset locali: `serius import`
+  esiste ed è limitato al download HF/URL (la parte "convert" e
+  "infer" è ora reale); un E2E di download richiede rete e non è
+  nel test.
+
+**Rimasto:**
 - 1.5 Safety pipeline E2E: i guardrails non sono cablati nel path HTTP
   del server.
 - Recall semantico multi-turno ("Marco") e verifica "output contiene 4"
