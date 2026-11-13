@@ -25,7 +25,7 @@
 
 - [x] **Fase 11** — [Flash Attention](fase11_flash_attention.md) (Integrazione kernel CUDA FlashAttention-2, online softmax e tiling completati; fallback CPU e dispatch dinamico pendenti)
 - [x] **Fase 12** — [Profiling](fase12_profiling.md) (Tensor Logger completo con rilevamento anomalie NaN/Inf; profiling Nsight/Tracy pendente)
-- [ ] **Fase 13** — [Deployment](fase13_deployment.md) (Parziale: Server HTTP cpp-httplib presente con rotte /health, /metrics e endpoint OpenAI; risposte attualmente stub, collegamento al forward del modello pendente)
+- [ ] **Fase 13** — [Deployment](fase13_deployment.md) (Parziale: `serius serve` funziona end-to-end con modelli GGUF/safetensors/hf://, endpoint OpenAI + streaming SSE, GPU sampling, KVCache persistente, adaptive GPU planning auto/cpu/cuda e decode graph slim (−22% kernel/token); restano WebSocket, continuous batching, tipo qwen e partial offload)
 - [x] **Fase 14** — [Speculative Decoding](fase14_speculative_decoding.md) (DraftModel, SpeculativeDecoder Leviathan, campionamento accettazione/rifiuto, gamma configurabile, metriche; integrazione CLI/server pendente)
 - [x] **Fase 15** — [Model Checkpoints](fase15_checkpoint_sharding.md) (Sharded Safetensors con indice manifest JSON e loader HF LLaMA completi; GGUF parser raw tensors implementato, loader pesi GGUF su modello pendente)
 

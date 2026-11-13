@@ -5,6 +5,8 @@
 #include <mutex>
 #include <vector>
 
+#include "../common/defaults.h"
+
 namespace serius {
 namespace stress {
 
@@ -15,7 +17,11 @@ class StressWorker {
 public:
     StressWorker(const std::string& server_url,
                  const std::string& prompt,
-                 int max_tokens);
+                 int max_tokens,
+                 const std::string& model_name = defaults::kModelName,
+                 const std::string& endpoint = "/v1/chat/completions",
+                 int timeout_seconds = 30,
+                 int interval_ms = 100);
 
     /// Run the worker until stopped
     void run(std::atomic<bool>& running, StressResult& result, std::mutex& mtx);
@@ -24,6 +30,10 @@ private:
     std::string server_url_;
     std::string prompt_;
     int max_tokens_;
+    std::string model_name_;
+    std::string endpoint_;
+    int timeout_seconds_;
+    int interval_ms_;
 
     /// Send a single HTTP request to the server
     bool send_request(float& latency_ms);

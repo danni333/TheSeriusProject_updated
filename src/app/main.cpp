@@ -9,6 +9,7 @@
 #include "../transformer/model.h"
 #include "../io/hf_llama_loader.h"
 #include "../infer/llama_inference.h"
+#include "../common/defaults.h"
 #include <spdlog/spdlog.h>
 #include <chrono>
 #include <filesystem>
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -25,7 +27,8 @@ namespace {
 void print_usage(const char *prog)
 {
     std::cerr << "Usage: " << prog << " <command> [options]\n"
-              << "  serve [--port PORT]        Start API server (default 8080)\n"
+              << "  serve [--port PORT]        Start API server (default "
+              << serius::defaults::kHttpPort << ")\n"
               << "        [--model PATH]       Model directory or config JSON\n"
               << "        [--config PATH]      Alias for --model\n"
               << "        [--type TYPE]        Model type: 'llama', 'qwen', or 'transformer'\n"
@@ -38,7 +41,7 @@ void print_usage(const char *prog)
 
 int cmd_serve(int argc, char **argv)
 {
-    uint16_t port = 8080;
+    uint16_t port = serius::defaults::kHttpPort;
     std::string model_path;
     std::string model_type = "llama";
 
@@ -95,7 +98,9 @@ int cmd_chat(int argc, char **argv)
     }
 
     serius::BPETokenizer tokenizer;
-    serius::infer::Sampler sampler(0.7f, 40, 0.9f, 42u);
+    std::random_device rd;
+    serius::infer::Sampler sampler(0.7f, 40, 0.9f,
+                                  static_cast<uint64_t>(rd()));
 
     if (model_type == "llama") {
         serius::model::LLamaConfig config;

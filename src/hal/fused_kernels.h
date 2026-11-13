@@ -59,6 +59,14 @@ void gather_mixed(void *out, const void *table, const int *indices, size_t n, si
 void add_inplace_mixed(void *out, const void *other, size_t n, DType acc_dtype, DType in_dtype,
                        cudaStream_t stream = nullptr);
 
+/// Fused residual-add + RMSNorm for the decode path: residual[i] += delta[i]
+/// (FP32 accumulator, reduced-precision delta) then out = rmsnorm(residual) *
+/// weight. Replaces add_inplace_mixed + rmsnorm_mixed with one launch.
+/// `residual` is FP32 [batch_seq, n]; `weight` is [n] shared across rows.
+void rmsnorm_residual_mixed(void *norm_out, void *residual, const void *delta,
+                            const void *weight, size_t n, size_t batch_seq, float eps,
+                            DType delta_dtype, DType out_dtype, cudaStream_t stream = nullptr);
+
 /// GEMV for the M==1 decode path: y[1,N] = x[1,K] @ W[K,N] where W is the
 /// row-major {in_features, out_features} projection weight. Streams W once.
 void gemv_kn(void *x, const void *w, void *y, size_t K, size_t N, DType dtype,
@@ -156,6 +164,13 @@ void rope_bias_devpos(void *data, size_t head_dim, size_t seq_len, size_t n_head
                       const int *pos_dev, const void *bias, float scale, DType dtype,
                       cudaStream_t stream = 0);
 
+/// Fused Q+K variant of rope_bias_devpos for single-token decode: one launch
+/// covers both the Q projection (n_heads, q_bias, q_scale) and the K projection
+/// (n_kv_heads, k_bias, k_scale). seq_len must be 1 (decode only).
+void rope_bias_devpos_qk(void *q, void *k, size_t head_dim, size_t n_heads, size_t n_kv_heads,
+                         float base, const int *pos_dev, const void *q_bias, const void *k_bias,
+                         float q_scale, float k_scale, DType dtype, cudaStream_t stream = 0);
+
 // Softmax (row-wise)
 void softmax(void *x, size_t rows, size_t cols, DType dtype, cudaStream_t stream = nullptr);
 
@@ -206,6 +221,14 @@ void kv_write_devpos(void *dst_base, const void *src, size_t nbytes,
 void kv_write_bias_devpos(void *dst_base, const void *src, const void *bias, size_t n_elems,
                           const int *pos_dev, size_t row_stride_elems, DType dtype,
                           cudaStream_t stream = 0);
+
+/// Fused K+V cache write for single-token decode: one launch writes the new K
+/// row (plain copy) and V row (copy + optional per-column bias) at *pos_dev.
+/// k_dst/v_dst are the cache base pointers; k_src/v_src the projected rows
+/// ([n_elems] each); row_stride_elems is the cache row stride in elements.
+void kv_write_kv_devpos(void *k_dst, void *v_dst, const void *k_src, const void *v_src,
+                        const void *v_bias, size_t n_elems, const int *pos_dev,
+                        size_t row_stride_elems, DType dtype, cudaStream_t stream = 0);
 
 /// Copy from src to dst with a layout transformation defined by src_strides and shape.
 /// Used for GPU-native contiguous() and transpose() operations.

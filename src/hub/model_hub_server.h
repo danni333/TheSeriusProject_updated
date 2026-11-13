@@ -9,13 +9,14 @@
 #include <vector>
 
 #include "hub_types.h"
+#include "../common/defaults.h"
 
 namespace serius::hub {
 
 class ModelHubServer
 {
    public:
-    ModelHubServer(int port = 8080);
+    ModelHubServer(int port = defaults::kHttpPort);
     ~ModelHubServer();
 
     void start();

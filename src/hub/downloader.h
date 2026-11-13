@@ -56,6 +56,15 @@ class ModelDownloader
                           const std::string &output_path, const std::string &token = "",
                           ProgressFn progress = nullptr);
 
+    /// Resolve an hf:// repo to a local GGUF file.
+    /// Picks the GGUF matching `quant_tag` (substring, case-insensitive) or the
+    /// best default quant, downloads it to models/<repo>/<path> when missing or
+    /// incomplete, and returns the local path via `local_path` plus the chosen
+    /// remote filename via `chosen_name`. Returns false on failure.
+    bool resolve_hf_gguf(const std::string &repo_id, const std::string &quant_tag,
+                         std::string &local_path, std::string &chosen_name,
+                         const std::string &token = "");
+
    private:
     int timeout_seconds_ = 300;
 

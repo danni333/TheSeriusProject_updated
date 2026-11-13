@@ -958,8 +958,8 @@ static void llama_mlp_layer_cpu(
 Tensor llama_forward_cuda(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache);
 Tensor llama_forward_cuda_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache);
 Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache);
-bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos,
-                                           KVCache *cache, Tensor &out_logits);
+Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos,
+                                             KVCache *cache);
 #endif
 
 // --- Public Interface ---
@@ -1102,8 +1102,8 @@ Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, 
     enable_ftz_daz_once();
 #ifdef SERIUS_USE_CUDA
     if (model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
-        Tensor graph_logits;
-        if (llama_forward_single_token_cuda_graph(model, token_id, pos, cache, graph_logits)) {
+        Tensor graph_logits = llama_forward_single_token_cuda_graph(model, token_id, pos, cache);
+        if (graph_logits.size() > 0) {
             return graph_logits;
         }
         return llama_forward_single_token_cuda(model, token_id, pos, cache);
@@ -1580,7 +1580,9 @@ struct GraphDecodeCtx {
     Tensor hidden_states_gpu, normed_buf, query_buf, key_buf, value_buf;
     Tensor attention_out, mlp_down;
     Tensor qf32_normed, qf32_attn, qf32_gu, qf32_sx, qkv_buf, gu_buf, qacc, logits_dev;
-    int *tid_gpu = nullptr;
+    Tensor logits_host;       // persistent D2H target for the logits view
+    int *io_gpu = nullptr;    // single 2-int device buffer: [token_id, pos]
+    int *tid_gpu = nullptr;   // aliases into io_gpu
     int *pos_gpu = nullptr;
     uint64_t cache_inst = 0;    // KVCache::instance_id the graph was captured for
     cudaGraph_t graph = nullptr;
@@ -1605,8 +1607,9 @@ GraphDisabledKey &graph_disabled() {
 void graph_ctx_destroy(GraphDecodeCtx &c) {
     if (c.exec) { cudaGraphExecDestroy(c.exec); c.exec = nullptr; }
     if (c.graph) { cudaGraphDestroy(c.graph); c.graph = nullptr; }
-    if (c.tid_gpu) { cudaFree(c.tid_gpu); c.tid_gpu = nullptr; }
-    if (c.pos_gpu) { cudaFree(c.pos_gpu); c.pos_gpu = nullptr; }
+    if (c.io_gpu) { cudaFree(c.io_gpu); c.io_gpu = nullptr; }
+    c.tid_gpu = nullptr;
+    c.pos_gpu = nullptr;
     if (c.cap_stream) { cudaStreamDestroy(c.cap_stream); c.cap_stream = nullptr; }
     c.ready = false;
     c.captured = false;
@@ -1669,11 +1672,22 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
     };
 
     const size_t esz = get_dtype_size(dtype);
+    // The MLP down-projection delta is kept pending and folded into the next
+    // RMSNorm (this layer's input norm, or the final norm after the loop), so
+    // each residual add costs zero extra launches.
+    const void *pending_delta = nullptr;
     for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
         const auto *blk = layers[layer_idx].get();
-        hal::rmsnorm_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(),
-                           blk->input_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps,
-                           dtype, s);
+        if (pending_delta != nullptr) {
+            hal::rmsnorm_residual_mixed(ctx.normed_buf.raw_data_gpu(),
+                                        ctx.hidden_states_gpu.raw_data_gpu(), pending_delta,
+                                        blk->input_layernorm_weight->data.raw_data_gpu(),
+                                        hidden, 1, eps, dtype, dtype, s);
+        } else {
+            hal::rmsnorm_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(),
+                               blk->input_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps,
+                               dtype, s);
+        }
         ctx.normed_buf.mark_dirty(Tensor::DataLocation::GPU);
 
         // Fused QKV GEMV -> q/k/v are contiguous slices of qkv_buf
@@ -1684,23 +1698,20 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
         char *kptr = qptr + hidden * esz;
         char *vptr = kptr + kv_dim * esz;
 
-        // Fused bias+RoPE(+scale) for Q/K; V bias is folded into the cache write.
-        hal::rope_bias_devpos(qptr, head_dim, 1, n_heads, rope_base,
-                              ctx.pos_gpu,
-                              blk->q_bias ? blk->q_bias->data.raw_data_gpu() : nullptr,
-                              (dtype != hal::DType::Float32) ? q_scale : 1.0F, dtype, s);
-        hal::rope_bias_devpos(kptr, head_dim, 1, n_kv_heads, rope_base,
-                              ctx.pos_gpu,
-                              blk->k_bias ? blk->k_bias->data.raw_data_gpu() : nullptr,
-                              1.0F, dtype, s);
+        // Fused bias+RoPE(+scale) for Q and K in a single launch; V bias is
+        // folded into the cache write.
+        hal::rope_bias_devpos_qk(qptr, kptr, head_dim, n_heads, n_kv_heads, rope_base,
+                                 ctx.pos_gpu,
+                                 blk->q_bias ? blk->q_bias->data.raw_data_gpu() : nullptr,
+                                 blk->k_bias ? blk->k_bias->data.raw_data_gpu() : nullptr,
+                                 (dtype != hal::DType::Float32) ? q_scale : 1.0F, 1.0F,
+                                 dtype, s);
 
-        // Write the new K/V row into the cache at the device-side position.
+        // Fused K+V cache write at the device-side position.
         KVCacheLayer &cl = cache->layers[layer_idx];
-        hal::kv_write_devpos(cl.k.raw_data_gpu(), kptr,
-                             kv_dim * esz, ctx.pos_gpu, kv_dim * esz, s);
-        hal::kv_write_bias_devpos(cl.v.raw_data_gpu(), vptr,
-                                  blk->v_bias ? blk->v_bias->data.raw_data_gpu() : nullptr,
-                                  kv_dim, ctx.pos_gpu, kv_dim, dtype, s);
+        hal::kv_write_kv_devpos(cl.k.raw_data_gpu(), cl.v.raw_data_gpu(), kptr, vptr,
+                                blk->v_bias ? blk->v_bias->data.raw_data_gpu() : nullptr,
+                                kv_dim, ctx.pos_gpu, kv_dim, dtype, s);
         cl.k.mark_dirty(Tensor::DataLocation::GPU);
         cl.v.mark_dirty(Tensor::DataLocation::GPU);
 
@@ -1712,12 +1723,12 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
         ctx.attention_out.mark_dirty(Tensor::DataLocation::GPU);
 
         qproj(blk->o_w, ctx.attention_out, ctx.mlp_down, ctx.qf32_attn);
-        hal::add_inplace_mixed(ctx.hidden_states_gpu.raw_data_gpu(), ctx.mlp_down.raw_data_gpu(),
-                               hidden, stream_dtype, dtype, s);
+        hal::rmsnorm_residual_mixed(ctx.normed_buf.raw_data_gpu(),
+                                    ctx.hidden_states_gpu.raw_data_gpu(),
+                                    ctx.mlp_down.raw_data_gpu(),
+                                    blk->post_attention_layernorm_weight->data.raw_data_gpu(),
+                                    hidden, 1, eps, dtype, dtype, s);
         ctx.hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
-        hal::rmsnorm_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(),
-                           blk->post_attention_layernorm_weight->data.raw_data_gpu(), hidden, 1,
-                           eps, dtype, s);
         ctx.normed_buf.mark_dirty(Tensor::DataLocation::GPU);
 
         // Fused gate|up + SwiGLU + down.
@@ -1726,14 +1737,19 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
                     (char *)ctx.gu_buf.raw_data_gpu() + inter * esz, inter, dtype, s);
         ctx.gu_buf.mark_dirty(Tensor::DataLocation::GPU);
         qproj(blk->down_w, ctx.gu_buf, ctx.mlp_down, ctx.qf32_gu);
-        hal::add_inplace_mixed(ctx.hidden_states_gpu.raw_data_gpu(), ctx.mlp_down.raw_data_gpu(),
-                               hidden, stream_dtype, dtype, s);
-        ctx.hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
+        pending_delta = ctx.mlp_down.raw_data_gpu();
     }
 
     // Final norm + quantized lm_head straight into ctx.logits_dev (FP32).
-    hal::rmsnorm_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(),
-                       model.norm_weight()->data.raw_data_gpu(), hidden, 1, eps, dtype, s);
+    if (pending_delta != nullptr) {
+        hal::rmsnorm_residual_mixed(ctx.normed_buf.raw_data_gpu(),
+                                    ctx.hidden_states_gpu.raw_data_gpu(), pending_delta,
+                                    model.norm_weight()->data.raw_data_gpu(),
+                                    hidden, 1, eps, dtype, dtype, s);
+    } else {
+        hal::rmsnorm_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(),
+                           model.norm_weight()->data.raw_data_gpu(), hidden, 1, eps, dtype, s);
+    }
     ctx.normed_buf.mark_dirty(Tensor::DataLocation::GPU);
     const quant::QuantWeight *lq = model.lm_head_q();
     // FP16 x in, FP32 logits out — still skips the input convert_dtype.
@@ -1752,16 +1768,21 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
 
 }  // namespace
 
-bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id,
-                                           size_t pos, KVCache *cache, Tensor &out_logits) {
-    if (cache == nullptr || pos + 1 > 4096) return false;
+// Returns a non-owning host+device view over the persistent graph buffers
+// (empty Tensor when the graph path is unavailable — caller falls back to the
+// eager CUDA path). The view aliases ctx.logits_dev / ctx.logits_host: valid
+// until the next decode call or graph_ctx rebuild, so callers must consume it
+// immediately (sample, don't store).
+Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id,
+                                             size_t pos, KVCache *cache) {
+    if (cache == nullptr || pos + 1 > 4096) return Tensor();
     {
         size_t n = 0;
-        if (getenv_s(&n, nullptr, 0, "SERIUS_NO_GRAPH") == 0 && n > 0) return false;
+        if (getenv_s(&n, nullptr, 0, "SERIUS_NO_GRAPH") == 0 && n > 0) return Tensor();
     }
     {
         const GraphDisabledKey &dk = graph_disabled();
-        if (dk.model == &model && dk.cache_inst == cache->instance_id) return false;
+        if (dk.model == &model && dk.cache_inst == cache->instance_id) return Tensor();
     }
     const auto &cfg = model.config();
     const size_t hidden = cfg.hidden_size, inter = cfg.intermediate_size;
@@ -1775,14 +1796,14 @@ bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int t
     if (dtype != hal::DType::Float16 || model.embed_tokens()->data.raw_data_gpu() == nullptr ||
         model.lm_head_q() == nullptr || model.lm_head_q()->gpu_data == nullptr ||
         model.lm_head_q()->dev_stride == 0 || model.lm_head_q()->out != cfg.vocab_size) {
-        return false;
+        return Tensor();
     }
     for (const auto &blk : model.layers()) {
         const auto *b = blk.get();
         if (!b->qkv_w.gpu_data || !b->gate_up_w.gpu_data || !b->o_w.gpu_data || !b->down_w.gpu_data ||
             b->qkv_w.dev_stride == 0 || b->gate_up_w.dev_stride == 0 || b->o_w.dev_stride == 0 ||
             b->down_w.dev_stride == 0) {
-            return false;
+            return Tensor();
         }
     }
 
@@ -1818,17 +1839,20 @@ bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int t
         ctx.qacc = Tensor({qacc_cap}, hal::DType::Float32); ctx.qacc.alloc_gpu();
         ctx.logits_dev = Tensor({1, cfg.vocab_size}, hal::DType::Float32);
         ctx.logits_dev.alloc_gpu();
+        ctx.logits_host = Tensor({1, cfg.vocab_size}, hal::DType::Float32);
 
-        CHECK_CUDA(cudaMalloc(&ctx.tid_gpu, sizeof(int)));
-        CHECK_CUDA(cudaMalloc(&ctx.pos_gpu, sizeof(int)));
+        CHECK_CUDA(cudaMalloc(&ctx.io_gpu, 2 * sizeof(int)));
+        ctx.tid_gpu = ctx.io_gpu;
+        ctx.pos_gpu = ctx.io_gpu + 1;
         CHECK_CUDA(cudaStreamCreateWithFlags(&ctx.cap_stream, cudaStreamNonBlocking));
         ctx.ready = true;
     }
 
-    // Device inputs updated before every launch (outside the graph).
-    const int pos_i = static_cast<int>(pos);
-    CHECK_CUDA(cudaMemcpyAsync(ctx.tid_gpu, &token_id, sizeof(int), cudaMemcpyHostToDevice, 0));
-    CHECK_CUDA(cudaMemcpyAsync(ctx.pos_gpu, &pos_i, sizeof(int), cudaMemcpyHostToDevice, 0));
+    // Device inputs updated before every launch (outside the graph): one
+    // 8-byte H2D copy fills both [token_id, pos].
+    const int io_host[2] = {token_id, static_cast<int>(pos)};
+    CHECK_CUDA(cudaMemcpyAsync(ctx.io_gpu, io_host, sizeof(io_host),
+                               cudaMemcpyHostToDevice, 0));
 
     if (!ctx.captured) {
         // Capture on a side stream; any failure falls back to the eager path.
@@ -1843,14 +1867,14 @@ bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int t
             cudaGetLastError();
             graph_ctx_destroy(ctx);
             graph_disabled() = {&model, cache->instance_id};
-            return false;
+            return Tensor();
         }
         if (cap_err != cudaSuccess || ctx.graph == nullptr ||
             cudaGraphInstantiateWithFlags(&ctx.exec, ctx.graph, 0ULL) != cudaSuccess) {
             cudaGetLastError();
             graph_ctx_destroy(ctx);
             graph_disabled() = {&model, cache->instance_id};
-            return false;
+            return Tensor();
         }
         ctx.captured = true;
     }
@@ -1859,18 +1883,13 @@ bool llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int t
     for (size_t i = 0; i < cache->layers.size(); ++i) {
         cache->layers[i].current_len = pos + 1;
     }
-    CHECK_CUDA(cudaStreamSynchronize(0));
 
-    out_logits = Tensor({1, cfg.vocab_size}, hal::DType::Float32);
-    out_logits.alloc_gpu();
-    // Host copy for the CPU fallback sampler; device copy so the GPU top-k
-    // preselection (raw_data_gpu) keeps working on the returned tensor.
-    CHECK_CUDA(cudaMemcpy(out_logits.data(), ctx.logits_dev.raw_data_gpu(),
+    // The blocking D2H copy is ordered after the graph on stream 0, so it
+    // doubles as the completion wait — no separate stream sync needed.
+    CHECK_CUDA(cudaMemcpy(ctx.logits_host.data(), ctx.logits_dev.raw_data_gpu(),
                           cfg.vocab_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(out_logits.raw_data_gpu(), ctx.logits_dev.raw_data_gpu(),
-                          cfg.vocab_size * sizeof(float), cudaMemcpyDeviceToDevice));
-    out_logits.mark_dirty(Tensor::DataLocation::GPU);
-    return true;
+    return Tensor::host_gpu_view(ctx.logits_host.data(), ctx.logits_dev.raw_data_gpu(),
+                                 {1, cfg.vocab_size}, hal::DType::Float32);
 }
 #endif
 

@@ -18,6 +18,7 @@ std::string generate_report(const StressResult& result,
             {"duration_seconds", config.duration_seconds},
             {"prompt", config.prompt},
             {"max_tokens", config.max_tokens},
+            {"model_name", config.model_name},
             {"server_url", config.server_url}
         };
         j["result"] = {

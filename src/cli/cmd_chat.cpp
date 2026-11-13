@@ -48,12 +48,15 @@ int cmd_chat(int argc, char **argv)
     parser.add_flag({"quant", "", "GGUF quant tag for hf:// models (e.g. q4_k_m); default: auto", true, ""});
     parser.add_flag({"type", "", "Model type: 'llama', 'qwen', or 'transformer'", true, "llama"});
     parser.add_flag({"temperature", "", "Sampling temperature", true, "0.7"});
+    parser.add_flag({"top-k", "", "Top-k sampling (0 = disabled)", true, "40"});
+    parser.add_flag({"top-p", "", "Top-p (nucleus) sampling", true, "0.9"});
     parser.add_flag({"max-tokens", "", "Maximum tokens to generate", true, "128"});
     parser.add_flag({"seed", "", "Random seed for sampling (0 = random)", true, "0"});
     parser.add_flag({"repeat-penalty", "", "Repetition penalty", true, "1.15"});
     parser.add_flag({"prompt", "p", "Single prompt to evaluate non-interactively", true, ""});
     parser.add_flag({"system", "s", "System prompt", true, "You are a helpful AI assistant."});
     parser.add_flag({"raw", "", "Do not format prompt with ChatML template", false, ""});
+    parser.add_flag({"gpu", "", "GPU backend (auto/cpu/cuda)", true, "auto"});
 
     if (!parser.parse(argc, argv)) {
         std::cerr << "Error: " << parser.error() << "\n";
@@ -69,12 +72,15 @@ int cmd_chat(int argc, char **argv)
     std::string model_path = parser.get("model");
     std::string model_type = parser.get("type", "llama");
     float temperature = parser.get_float("temperature", 0.7f);
+    int top_k = parser.get_int("top-k", 40);
+    float top_p = parser.get_float("top-p", 0.9f);
     int max_new_tokens = parser.get_int("max-tokens", 128);
     uint64_t seed = parser.get_int("seed", 0);
     float repeat_penalty = parser.get_float("repeat-penalty", 1.15f);
     std::string single_prompt = parser.get("prompt");
     std::string system_prompt = parser.get("system", "You are a helpful AI assistant.");
     bool raw_mode = parser.has("raw");
+    const std::string gpu_mode = parser.get("gpu", "auto");
 
     // If seed is 0, use random seed
     if (seed == 0) {
@@ -87,72 +93,21 @@ int cmd_chat(int argc, char **argv)
     if (model_path.rfind("hf://", 0) == 0) {
         const std::string repo_id = model_path.substr(5);
         const std::string quant_want = parser.get("quant");
-        auto norm = [](std::string s) {
-            for (auto &c : s) {
-                c = (char)std::tolower((unsigned char)c);
-                if (c == '-') c = '_';
-            }
-            return s;
-        };
-        const std::string qn = norm(quant_want);
 
         hub::ModelDownloader dl;
         std::cout << "[Serius] Resolving hf://" << repo_id << " ...\n";
-        std::vector<hub::HubFile> ggufs;
-        for (const auto &f : dl.list_hf_files(repo_id)) {
-            const std::string lp = norm(f.path);
-            if (lp.size() >= 5 && lp.compare(lp.size() - 5, 5, ".gguf") == 0) {
-                ggufs.push_back(f);
+        std::string chosen, local;
+        if (!dl.resolve_hf_gguf(repo_id, quant_want, local, chosen)) {
+            if (!quant_want.empty()) {
+                std::cerr << "[Serius] No GGUF matching --quant=" << quant_want
+                          << " in hf://" << repo_id << ".\n";
+            } else {
+                std::cerr << "[Serius] No .gguf files in hf://" << repo_id
+                          << " — use a '-GGUF' repo, or 'serius import' for safetensors.\n";
             }
-        }
-        if (ggufs.empty()) {
-            std::cerr << "[Serius] No .gguf files in hf://" << repo_id
-                      << " — use a '-GGUF' repo, or 'serius import' for safetensors.\n";
             return 1;
         }
 
-        const hub::HubFile *pick = nullptr;
-        if (!qn.empty()) {
-            for (const auto &f : ggufs) {
-                if (norm(f.path).find(qn) != std::string::npos) { pick = &f; break; }
-            }
-            if (!pick) {
-                std::cerr << "[Serius] No GGUF matching --quant=" << quant_want
-                          << ". Available:\n";
-                for (const auto &f : ggufs) std::cerr << "  " << f.path << "\n";
-                return 1;
-            }
-        } else {
-            static const char *kPrefs[] = {"q4_k_m", "q4_0", "q4_1", "q8_0"};
-            for (const char *p : kPrefs) {
-                for (const auto &f : ggufs) {
-                    if (norm(f.path).find(p) != std::string::npos) { pick = &f; break; }
-                }
-                if (pick) break;
-            }
-            if (!pick) {
-                pick = &*std::min_element(ggufs.begin(), ggufs.end(),
-                                          [](const hub::HubFile &a, const hub::HubFile &b) {
-                                              return a.size < b.size;
-                                          });
-            }
-        }
-
-        const size_t slash = repo_id.find_last_of('/');
-        const std::string base = (slash == std::string::npos) ? repo_id : repo_id.substr(slash + 1);
-        const std::string local = "models/" + base + "/" + pick->path;
-        const bool complete = std::filesystem::exists(local) &&
-                              (pick->size == 0 ||
-                               std::filesystem::file_size(local) == pick->size);
-        if (!complete) {
-            std::cout << "[Serius] Downloading " << pick->path;
-            if (pick->size) std::cout << " (" << pick->size / (1024 * 1024) << " MB)";
-            std::cout << " ...\n";
-            if (!dl.download_hf_file(repo_id, pick->path, local)) {
-                std::cerr << "[Serius] Download failed for " << pick->path << "\n";
-                return 1;
-            }
-        }
         model_path = local;
         std::cout << "[Serius] Model: " << model_path << "\n";
     }
@@ -203,7 +158,7 @@ int cmd_chat(int argc, char **argv)
         }
     }
 
-    infer::Sampler sampler(temperature, 40, 0.9f, seed);
+    infer::Sampler sampler(temperature, top_k, top_p, seed);
 
     if (model_type == "llama") {
         model::LLamaConfig config;
@@ -281,134 +236,33 @@ int cmd_chat(int argc, char **argv)
             }
         }
 
-#ifdef SERIUS_USE_CUDA
-        if (std::getenv("SERIUS_NO_GPU") == nullptr) {
-            // Keep an FP32 transposed lm_head [vocab, hidden] on the GPU:
-            // the dedicated logits GEMV kernel reads it coalesced, and FP32
-            // preserves the fine-grained ranking over the 150k+ vocabulary.
-            // The FP32 transposed lm_head (~933 MB VRAM) is only read by the
-            // non-quantized logits fallback; skip it when a packed lm_head
-            // exists. The FP16 copy is still needed by the prefill logits GEMV.
-            const bool need_fp32_lm_head = !model.lm_head_q().valid();
-            if (model.lm_head() != nullptr) {
-                core::Tensor w_t = model.lm_head()->data.transpose(0, 1).contiguous();
-                if (need_fp32_lm_head) {
-                    model.lm_head_fp32() = w_t;
-                    model.lm_head_fp32().set_device(hal::DeviceType::CUDA);
-                }
-                // FP16 copy for the cuBLAS mixed-precision logits GEMV (half the
-                // memory traffic of the FP32 path; FP32 accumulation preserved).
-                model.lm_head_fp16_t() = w_t.cast(hal::DType::Float16);
-                model.lm_head_fp16_t().set_device(hal::DeviceType::CUDA);
+        const auto gpu_mode_enum = (gpu_mode == "cpu")   ? infer::LlamaGpuMode::kCpu
+                                 : (gpu_mode == "cuda") ? infer::LlamaGpuMode::kCuda
+                                                        : infer::LlamaGpuMode::kAuto;
+        const auto gpu_dec = infer::resolve_llama_gpu(model, gpu_mode_enum);
+        if (gpu_dec.use_gpu) {
+            if (gpu_dec.fit == infer::LlamaGpuFit::kInsufficientVram) {
+                std::cerr << "[Serius] Warning: GPU forced but estimate needs ~"
+                          << gpu_dec.need_bytes / 1073741824.0 << " GiB vs "
+                          << gpu_dec.free_bytes / 1073741824.0 << " GiB free\n";
             }
-            auto move_param = [](core::autograd::Node *p) {
-                if (p == nullptr) { return; }
-                p->data = p->data.cast(hal::DType::Float16);
-                p->data.set_device(hal::DeviceType::CUDA);
-            };
-            move_param(model.embed_tokens_raw());
-            for (auto &blk : model.layers()) {
-                move_param(blk->input_layernorm_weight.get());
-                move_param(blk->q_proj.get());
-                move_param(blk->k_proj.get());
-                move_param(blk->v_proj.get());
-                move_param(blk->q_bias.get());
-                move_param(blk->k_bias.get());
-                move_param(blk->v_bias.get());
-                move_param(blk->o_proj.get());
-                move_param(blk->post_attention_layernorm_weight.get());
-                move_param(blk->gate_proj.get());
-                move_param(blk->up_proj.get());
-                move_param(blk->down_proj.get());
+            try {
+                if (infer::offload_llama_model_to_gpu(model)) {
+                    std::cout << "[Serius] Model ~" << gpu_dec.est_params / 1e9
+                              << "B params moved to GPU (~" << gpu_dec.need_bytes / 1073741824.0
+                              << " GiB, " << gpu_dec.reason << ")\n";
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "[Serius] GPU offload failed: " << e.what() << " — CPU fallback\n";
             }
-            move_param(model.norm_weight());
-            // Upload packed GGUF quantized weights (Q4_0/Q4_1/Q8_0) for the
-            // CUDA decode GEMV kernels; no-op for non-quantized models.
-            if (std::getenv("SERIUS_NO_QUANT") == nullptr) {
-                hal::IBackend *be = hal::get_gpu_backend();
-                auto upload_qw = [be](quant::QuantWeight &qw) {
-                    if (!qw.valid() || qw.gpu_data != nullptr) { return; }
-                    // Repack into the aligned layout the vectorized kernel reads.
-                    quant::repack_quant_for_gpu(qw);
-                    const std::vector<uint8_t> &src = qw.dev_stride ? qw.dev_bytes : qw.bytes;
-                    qw.gpu_data = be->malloc(src.size());
-                    be->memcpy_h2d(qw.gpu_data, src.data(), src.size());
-                };
-                for (auto &blk : model.layers()) {
-                    upload_qw(blk->qkv_w);
-                    upload_qw(blk->gate_up_w);
-                    upload_qw(blk->o_w);
-                    upload_qw(blk->down_w);
-                }
-                upload_qw(model.lm_head_q());
-            }
-            std::cout << "[Serius] Model moved to GPU (FP16)\n";
-
-            // cuBLAS warmup: the first GemmEx/GemmStridedBatchedEx per kernel
-            // variant lazily loads driver modules (cuLibraryLoadData, ~300 ms
-            // total) — pay it here during weight upload instead of inside the
-            // first prompt's prefill. Shapes mirror the real prefill GEMMs.
-            {
-                hal::IBackend *gbe = hal::get_gpu_backend();
-                const size_t hidden = model.config().hidden_size;
-                const size_t inter = model.config().intermediate_size;
-                const size_t heads = model.config().num_attention_heads;
-                const size_t head_dim = hidden / heads;
-                const size_t wm = 256;  // representative M (seq_len)
-                const size_t max_k = (std::max)(hidden, inter);
-                void *buf = gbe->malloc(wm * max_k * 2 + 4 * 1024 * 1024);
-                auto f16_view = [&](size_t m, size_t k) {
-                    return core::Tensor::gpu_view(buf, {m, k}, hal::DType::Float16);
-                };
-                const auto &l0 = model.layers()[0];
-                struct WP { core::autograd::Node *w; } wps[] = {
-                    {l0->q_proj.get()}, {l0->k_proj.get()}, {l0->v_proj.get()},
-                    {l0->o_proj.get()}, {l0->gate_proj.get()}, {l0->up_proj.get()},
-                    {l0->down_proj.get()},
-                };
-                for (auto &wp : wps) {
-                    if (wp.w == nullptr) continue;
-                    const auto &ws = wp.w->data.shape();
-                    const size_t K = ws[0], N = ws.size() > 1 ? ws[1] : ws[0];
-                    core::Tensor A = f16_view(wm, K);
-                    core::Tensor C = core::Tensor::gpu_view(buf, {wm, N}, hal::DType::Float16);
-                    core::blas::matmul(A, wp.w->data, C);
-                }
-                // Batched attention shapes: {heads, seq, head_dim} variants.
-                {
-                    core::Tensor A = core::Tensor::gpu_view(buf, {heads, wm, head_dim}, hal::DType::Float16);
-                    core::Tensor B = core::Tensor::gpu_view(buf, {heads, head_dim, wm}, hal::DType::Float16);
-                    core::Tensor C = core::Tensor::gpu_view(buf, {heads, wm, wm}, hal::DType::Float16);
-                    core::blas::batched_matmul(A, B, C);
-                    core::Tensor D = core::Tensor::gpu_view(buf, {heads, wm, head_dim}, hal::DType::Float16);
-                    core::blas::batched_matmul(C, A, D);
-                }
-                // Logits GEMV (M=1 path used by llama_forward_inference_last).
-                if (model.lm_head_fp16_t().data_gpu() != nullptr) {
-                    core::Tensor x = f16_view(1, hidden);
-                    core::Tensor out = core::Tensor::gpu_view(buf, {1, model.config().vocab_size}, hal::DType::Float32);
-                    core::blas::logits_gemv_mixed_cublas(x.raw_data_gpu(), model.lm_head_fp16_t().raw_data_gpu(),
-                                                         out.raw_data_gpu(), 1, model.config().vocab_size, hidden);
-                }
-                cudaDeviceSynchronize();
-                gbe->free(buf);
-            }
-
-            // Real-path prefill warmup: pays the one-time costs the shape
-            // warmup above can't — first-touch page faults on the prefill
-            // scratch arena, custom kernel module loads, and cuBLASLt
-            // heuristic selection for the actual projection shapes.
-            {
-                infer::KVCache warm_cache;
-                const size_t wn = 128;
-                core::Tensor warm_in({wn});
-                for (size_t i = 0; i < wn; ++i) {
-                    warm_in[i] = static_cast<float>(1000 + (i % 1000));
-                }
-                (void)infer::llama_forward_inference_last(model, warm_in, &warm_cache);
-            }
+        } else if (gpu_dec.fit == infer::LlamaGpuFit::kInsufficientVram) {
+            std::cerr << "[Serius] Model ~" << gpu_dec.est_params / 1e9
+                      << "B params needs ~" << gpu_dec.need_bytes / 1073741824.0
+                      << " GiB VRAM but only " << gpu_dec.free_bytes / 1073741824.0
+                      << " GiB free — staying on CPU (" << gpu_dec.reason << ")\n";
+        } else if (gpu_mode == "cpu") {
+            std::cout << "[Serius] CPU inference (--gpu cpu)\n";
         }
-#endif
 
         bool is_chatml = (tokenizer.get_id("<|im_start|>") != BPETokenizer::UNK_ID);
 
@@ -418,7 +272,8 @@ int cmd_chat(int argc, char **argv)
         infer::KVCache cache;
 
 #ifdef SERIUS_USE_CUDA
-        if (std::getenv("SERIUS_NO_GPU") == nullptr) {
+        if (std::getenv("SERIUS_NO_GPU") == nullptr &&
+            model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
             // Decode-graph warmup on the persistent cache: captures the CUDA
             // graph once here so the first real turn doesn't pay capture
             // cost inside its first decode step.
@@ -488,8 +343,9 @@ int cmd_chat(int argc, char **argv)
                 const float *lgp = static_cast<const float *>(gp) + row0 * vs;
                 thread_local std::vector<int> cidx;
                 thread_local std::vector<float> cval;
-                cidx.assign(16384, 0);
-                cval.assign(16384, 0.0f);
+                // Kernels overwrite the first `cnt` entries only — resize once.
+                if (cidx.size() < 16384) { cidx.resize(16384); }
+                if (cval.size() < 16384) { cval.resize(16384); }
                 int cnt = hal::gpu_topk_raw_candidates(lgp, static_cast<int>(vs), 16384, 2048,
                                                        cidx.data(), cval.data());
                 if (cnt <= 0) {

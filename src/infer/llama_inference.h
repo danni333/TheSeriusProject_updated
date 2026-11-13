@@ -88,5 +88,60 @@ core::Tensor llama_forward_single_token(const model::LLaMAModel &model,
                                         int token_id, size_t pos,
                                         KVCache *cache = nullptr);
 
+/// Offload a LLaMA model to the GPU: FP16 weights, transposed lm_head copies,
+/// packed quantized weights upload, and cuBLAS/prefill warmup.
+/// Returns true when the model was moved; false when CUDA is unavailable at
+/// compile time or SERIUS_NO_GPU is set. Safe to call unconditionally.
+bool offload_llama_model_to_gpu(model::LLaMAModel &model);
+
+/// Whether a LLaMA model should be offloaded to the GPU.
+enum class LlamaGpuFit {
+    kFits,               ///< estimated footprint fits in free VRAM
+    kNoCuda,             ///< CUDA unavailable (compile-time or runtime)
+    kInsufficientVram,   ///< model needs more VRAM than is currently free
+};
+
+/// Plan for offloading `model` to the GPU: estimated footprint vs free VRAM.
+struct LlamaGpuPlan {
+    LlamaGpuFit fit = LlamaGpuFit::kNoCuda;
+    size_t need_bytes = 0;   ///< estimated GPU memory the offload will use
+    size_t free_bytes = 0;   ///< currently free VRAM (0 when unknown)
+};
+
+/// Estimate the GPU memory needed to offload this model (FP16 dense weights,
+/// packed quantized weights, lm_head copies, KV cache at max context,
+/// workspace margin) and compare it against currently free VRAM.
+/// `need_bytes`/`free_bytes` are filled whenever they can be determined.
+LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model);
+
+/// Rough dense-equivalent parameter count from the model config — used for
+/// logging/tiering ("~7B params"), not for exact memory accounting.
+size_t estimate_llama_params(const model::LLaMAModel &model);
+
+/// User-facing GPU preference, shared by `serius serve` and `serius chat`.
+enum class LlamaGpuMode {
+    kAuto,   ///< plan from model size vs free VRAM (default)
+    kCpu,    ///< never touch the GPU
+    kCuda,   ///< require the GPU; warn and stay on CPU only if it cannot fit
+};
+
+/// Outcome of resolve_llama_gpu: whether to offload plus a human-readable
+/// reason (logged by callers so the per-model decision is visible).
+struct LlamaGpuDecision {
+    bool use_gpu = false;
+    LlamaGpuFit fit = LlamaGpuFit::kNoCuda;
+    size_t need_bytes = 0;
+    size_t free_bytes = 0;
+    size_t est_params = 0;
+    const char *reason = "";
+};
+
+/// Decide GPU vs CPU for `model` under `mode`:
+/// - kCpu   → never offload.
+/// - kCuda  → offload when the plan says it fits (or CUDA is the only
+///            option); stays on CPU with a warning when VRAM is insufficient.
+/// - kAuto  → offload iff the estimated footprint fits in free VRAM.
+LlamaGpuDecision resolve_llama_gpu(const model::LLaMAModel &model, LlamaGpuMode mode);
+
 }  // namespace infer
 }  // namespace serius

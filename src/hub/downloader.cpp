@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -169,6 +171,68 @@ bool ModelDownloader::download_hf_file(const std::string &repo_id, const std::st
 {
     std::string url = build_hf_url(repo_id, filename);
     return download_file(url, output_path, progress, token);
+}
+
+bool ModelDownloader::resolve_hf_gguf(const std::string &repo_id, const std::string &quant_tag,
+                                      std::string &local_path, std::string &chosen_name,
+                                      const std::string &token)
+{
+    auto norm = [](std::string s) {
+        for (auto &c : s) {
+            c = (char)std::tolower((unsigned char)c);
+            if (c == '-') c = '_';
+        }
+        return s;
+    };
+    const std::string qn = norm(quant_tag);
+
+    std::vector<HubFile> ggufs;
+    for (const auto &f : list_hf_files(repo_id, token)) {
+        const std::string lp = norm(f.path);
+        if (lp.size() >= 5 && lp.compare(lp.size() - 5, 5, ".gguf") == 0) {
+            ggufs.push_back(f);
+        }
+    }
+    if (ggufs.empty()) {
+        return false;
+    }
+
+    const HubFile *pick = nullptr;
+    if (!qn.empty()) {
+        for (const auto &f : ggufs) {
+            if (norm(f.path).find(qn) != std::string::npos) { pick = &f; break; }
+        }
+        if (!pick) {
+            return false;
+        }
+    } else {
+        static const char *kPrefs[] = {"q4_k_m", "q4_0", "q4_1", "q8_0"};
+        for (const char *p : kPrefs) {
+            for (const auto &f : ggufs) {
+                if (norm(f.path).find(p) != std::string::npos) { pick = &f; break; }
+            }
+            if (pick) break;
+        }
+        if (!pick) {
+            pick = &*std::min_element(ggufs.begin(), ggufs.end(),
+                                      [](const HubFile &a, const HubFile &b) {
+                                          return a.size < b.size;
+                                      });
+        }
+    }
+
+    const size_t slash = repo_id.find_last_of('/');
+    const std::string base = (slash == std::string::npos) ? repo_id : repo_id.substr(slash + 1);
+    local_path = "models/" + base + "/" + pick->path;
+    chosen_name = pick->path;
+
+    const bool complete = std::filesystem::exists(local_path) &&
+                          (pick->size == 0 ||
+                           std::filesystem::file_size(local_path) == pick->size);
+    if (!complete && !download_hf_file(repo_id, pick->path, local_path, token)) {
+        return false;
+    }
+    return true;
 }
 
 bool ModelDownloader::download_url(const std::string &url,

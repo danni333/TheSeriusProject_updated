@@ -6,6 +6,8 @@
 #include <mutex>
 #include <chrono>
 
+#include "../common/defaults.h"
+
 namespace serius {
 namespace stress {
 
@@ -15,11 +17,19 @@ struct StressConfig {
     int ramp_step_seconds = 60;
     std::string prompt = "Explain quantum computing in detail...";
     int max_tokens = 256;
-    std::string server_url = "http://localhost:8080";
+    std::string server_url = defaults::kServerUrl;
+    std::string model_name = defaults::kModelName;
+    std::string endpoint = "/v1/chat/completions";
+    int http_timeout_seconds = 30;
+    int request_interval_ms = 100;  // delay between requests issued by each worker
     int ramp_max_users = 128;
     int spike_users = 64;
     int spike_duration_seconds = 60;
-    int request_interval_ms = 5000;  // 5 seconds between requests for soak test
+    int spike_baseline_users = 4;
+    int spike_phase_seconds = 30;   // duration of baseline and recovery phases
+    int soak_sample_interval_seconds = 60;
+    int chaos_max_tokens = 10;
+    size_t chaos_long_prompt_chars = 100000;
 };
 
 struct StressResult {
@@ -50,25 +60,20 @@ public:
     StressResult run_spike(const StressConfig& cfg);
 
     /// Run chaos test: malformed inputs and error scenarios
-    void run_chaos(const std::string& server_url);
+    void run_chaos(const StressConfig& cfg);
 
     /// Calculate percentile from latency values
     float calculate_percentile(std::vector<float>& values, float percentile);
 
 private:
-    /// Worker thread that simulates a single user
-    void worker(const std::string& url, const std::string& prompt,
-                int max_tokens, std::atomic<bool>& running,
-                StressResult& result, std::mutex& mtx);
+    /// Compute final metrics (percentiles, error rate, avg TPS) under the result mutex.
+    void finalize_metrics(StressResult& result, std::mutex& mtx,
+                          std::chrono::steady_clock::time_point start_time);
 
-    /// Send HTTP request to server
-    bool send_request(const std::string& url, const std::string& prompt,
-                      int max_tokens, float& latency_ms);
-
-    /// Get current VRAM usage (in bytes)
+    /// Get current VRAM usage (in bytes); 0 when no CUDA device is available.
     size_t get_vram_usage();
 
-    /// Get current RAM usage (in bytes)
+    /// Get current process RAM usage (in bytes); 0 when unsupported.
     size_t get_ram_usage();
 };
 

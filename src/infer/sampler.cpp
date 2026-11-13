@@ -6,6 +6,10 @@
 #include <numeric>
 #include <unordered_map>
 
+#ifdef SERIUS_USE_CUDA
+#include "../hal/fused_kernels.h"
+#endif
+
 namespace serius {
 namespace infer {
 
@@ -273,6 +277,51 @@ int Sampler::sample_greedy(const core::Tensor &logits) const
         ptr += (seq_len - 1) * vocab_size;
     }
     return static_cast<int>(std::max_element(ptr, ptr + vocab_size) - ptr);
+}
+
+bool sample_gpu_candidates(const core::Tensor &logits, size_t row,
+                           const Sampler &sampler, int &out_id)
+{
+#ifdef SERIUS_USE_CUDA
+    const void *gp = logits.raw_data_gpu();
+    if (gp == nullptr) {
+        return false;
+    }
+    const size_t vs = logits.shape().back();
+    const float *lgp = static_cast<const float *>(gp) + row * vs;
+
+    thread_local std::vector<int> cidx;
+    thread_local std::vector<float> cval;
+    // Kernels overwrite the first `cnt` entries only — resize once, no memset.
+    if (cidx.size() < 16384) { cidx.resize(16384); }
+    if (cval.size() < 16384) { cval.resize(16384); }
+    int cnt = hal::gpu_topk_raw_candidates(lgp, static_cast<int>(vs), 16384, 2048,
+                                           cidx.data(), cval.data());
+    if (cnt <= 0) {
+        // Cooperative path unavailable/failed — iterative fallback.
+        cnt = hal::topk_logits_f32(lgp, static_cast<int>(vs), 384, 16384,
+                                   cidx.data(), cval.data());
+        if (cnt <= 0) {
+            return false;
+        }
+    }
+    cidx.resize(static_cast<size_t>(cnt));
+    cval.resize(static_cast<size_t>(cnt));
+
+    static const std::vector<int> no_recent;
+    const int t = sampler.sample_from_candidates(cidx, cval, no_recent, 1.0f);
+    if (t < 0) {
+        return false;
+    }
+    out_id = t;
+    return true;
+#else
+    (void)logits;
+    (void)row;
+    (void)sampler;
+    (void)out_id;
+    return false;
+#endif
 }
 
 }  // namespace infer

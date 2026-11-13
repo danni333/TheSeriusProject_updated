@@ -87,6 +87,7 @@ transformer/llama_model.cpp
     model/moe.cpp
     infer/sampler.cpp
     infer/llama_inference.cpp
+    infer/llama_gpu_offload.cpp
     infer/speculative.cpp
     safety/guardrails.cpp
     safety/toxicity.cpp

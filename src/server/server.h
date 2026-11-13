@@ -8,12 +8,17 @@
 
 #include <httplib.h>
 
+#include "../common/defaults.h"
+
 namespace serius {
 namespace model {
 class LLaMAModel;
 class QwenModel;
 class TransformerModel;
 }  // namespace model
+namespace infer {
+struct KVCache;
+}
 class BPETokenizer;
 
 namespace server {
@@ -22,7 +27,7 @@ class InferenceMetrics;
 
 struct ServerConfig
 {
-    uint16_t port = 8080;
+    uint16_t port = defaults::kHttpPort;
     std::string host = "0.0.0.0";
     std::string model_path = "";
     std::string model_type = "llama";  // "llama", "qwen", "transformer"
@@ -32,6 +37,9 @@ struct ServerConfig
     int default_top_k = 40;
     float default_top_p = 0.9f;
     std::string ui_dir = "ui";  // Directory for web UI static files
+    /// GPU backend for the loaded LLaMA model: auto = plan from model size vs
+    /// free VRAM, cpu = never offload, cuda = require GPU (warn if it can't fit).
+    enum class GpuMode { kAuto, kCpu, kCuda } gpu_mode = GpuMode::kAuto;
 };
 
 /// HTTP server for inference API (OpenAI-compatible endpoints).
@@ -39,7 +47,7 @@ struct ServerConfig
 class Server
 {
 public:
-    explicit Server(uint16_t port = 8080);
+    explicit Server(uint16_t port = defaults::kHttpPort);
     explicit Server(const ServerConfig &config);
     ~Server();
 
@@ -70,6 +78,14 @@ public:
 private:
     void setup_routes();
 
+    /// Load a LLaMA model directly from a .gguf file (config, tokenizer and
+    /// weights all come from the GGUF container).
+    bool load_llama_from_gguf(const std::string &gguf_path);
+
+    /// Offload the loaded LLaMA model to GPU when it fits in free VRAM;
+    /// logs a warning and stays on CPU otherwise. No-op without a model.
+    void maybe_offload_to_gpu();
+
     uint16_t port_;
     std::string host_;
     ServerConfig config_;
@@ -82,6 +98,10 @@ private:
     std::unique_ptr<model::TransformerModel> transformer_model_;
     std::unique_ptr<BPETokenizer> tokenizer_;
     std::unique_ptr<InferenceMetrics> metrics_;
+    /// Persistent KV cache for LLaMA decode: keeping the same instance across
+    /// requests preserves the GPU arena and the captured CUDA decode graph
+    /// (keyed by cache instance_id) instead of recapturing per request.
+    std::unique_ptr<infer::KVCache> llama_cache_;
     mutable std::mutex inference_mutex_;
 };
 

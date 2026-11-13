@@ -1,11 +1,76 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
+#include <httplib.h>
+#include <atomic>
+#include <thread>
 #include "stress/stress_runner.h"
 #include "stress/report.h"
 #include "stress/leak_detector.h"
 
 namespace serius {
 namespace stress {
+
+namespace {
+
+/// Minimal mock of the Serius HTTP server for stress-runner tests.
+/// Returns 200 with a chat-completion body for valid requests,
+/// 400 for malformed JSON or empty messages.
+class MockStressServer {
+public:
+    MockStressServer() {
+        server_.Post("/v1/chat/completions",
+                     [this](const httplib::Request& req, httplib::Response& res) {
+            request_count_.fetch_add(1);
+            nlohmann::json body;
+            try {
+                body = nlohmann::json::parse(req.body);
+            } catch (...) {
+                res.status = 400;
+                return;
+            }
+            auto it = body.find("messages");
+            if (it == body.end() || !it->is_array() || it->empty()) {
+                res.status = 400;
+                return;
+            }
+            res.set_content(
+                R"({"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})",
+                "application/json");
+        });
+    }
+
+    bool start() {
+        port_ = server_.bind_to_any_port("127.0.0.1");
+        if (port_ < 0) return false;
+        thread_ = std::thread([this] { server_.listen_after_bind(); });
+        return true;
+    }
+
+    void stop() {
+        server_.stop();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    std::string url() const { return "http://127.0.0.1:" + std::to_string(port_); }
+    int request_count() const { return request_count_.load(); }
+
+private:
+    httplib::Server server_;
+    std::thread thread_;
+    int port_ = -1;
+    std::atomic<int> request_count_{0};
+};
+
+StressConfig test_config(const std::string& url) {
+    StressConfig cfg;
+    cfg.server_url = url;
+    cfg.request_interval_ms = 5;
+    cfg.http_timeout_seconds = 5;
+    cfg.max_tokens = 4;
+    return cfg;
+}
+
+}  // namespace
 
 TEST(StressTest, StressConfigDefaults) {
     StressConfig config;
@@ -228,6 +293,84 @@ TEST(LeakDetectorTest, CalculateSlopeLinear) {
     };
     float slope = detector.calculate_slope(data);
     EXPECT_NEAR(slope, 100.0f, 1.0f);
+}
+
+TEST(StressRunnerTest, RampBasic) {
+    MockStressServer mock;
+    ASSERT_TRUE(mock.start());
+
+    StressRunner runner;
+    StressConfig cfg = test_config(mock.url());
+    cfg.ramp_step_seconds = 1;
+    cfg.ramp_max_users = 2;
+
+    StressResult result = runner.run_ramp(cfg);
+    mock.stop();
+
+    EXPECT_GT(result.total_requests, 0);
+    EXPECT_EQ(result.total_errors, 0);
+    EXPECT_FLOAT_EQ(result.error_rate, 0.0f);
+    // One timeline entry per ramp step (users 1 and 2)
+    EXPECT_EQ(result.tps_timeline.size(), 2u);
+    EXPECT_GT(mock.request_count(), 0);
+}
+
+TEST(StressRunnerTest, SoakNoLeakStable) {
+    MockStressServer mock;
+    ASSERT_TRUE(mock.start());
+
+    StressRunner runner;
+    StressConfig cfg = test_config(mock.url());
+    cfg.concurrent_users = 2;
+    cfg.duration_seconds = 2;
+    cfg.soak_sample_interval_seconds = 1;
+
+    StressResult result = runner.run_soak(cfg);
+    mock.stop();
+
+    EXPECT_GT(result.total_requests, 0);
+    EXPECT_EQ(result.total_errors, 0);
+    EXPECT_FLOAT_EQ(result.error_rate, 0.0f);
+    EXPECT_GT(result.avg_tps, 0.0f);
+    EXPECT_FALSE(result.tps_timeline.empty());
+}
+
+TEST(StressRunnerTest, SpikeRecovery) {
+    MockStressServer mock;
+    ASSERT_TRUE(mock.start());
+
+    StressRunner runner;
+    StressConfig cfg = test_config(mock.url());
+    cfg.spike_baseline_users = 1;
+    cfg.spike_users = 2;
+    cfg.spike_phase_seconds = 1;
+    cfg.spike_duration_seconds = 1;
+
+    StressResult result = runner.run_spike(cfg);
+    mock.stop();
+
+    EXPECT_GT(result.total_requests, 0);
+    // Mock server never fails: recovery phase must produce zero errors
+    EXPECT_EQ(result.total_errors, 0);
+    EXPECT_FLOAT_EQ(result.error_rate, 0.0f);
+    EXPECT_GT(result.avg_tps, 0.0f);
+}
+
+TEST(StressRunnerTest, ChaosNoCrash) {
+    MockStressServer mock;
+    ASSERT_TRUE(mock.start());
+
+    StressRunner runner;
+    StressConfig cfg = test_config(mock.url());
+    cfg.chaos_max_tokens = 2;
+    cfg.chaos_long_prompt_chars = 1000;
+
+    int before = mock.request_count();
+    EXPECT_NO_THROW(runner.run_chaos(cfg));
+    mock.stop();
+
+    // Chaos sends 3 probes: empty messages, long context, malformed JSON
+    EXPECT_EQ(mock.request_count() - before, 3);
 }
 
 }  // namespace stress

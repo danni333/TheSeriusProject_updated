@@ -166,6 +166,12 @@ class Tensor
     /// scratch buffers as Tensor arguments to BLAS/dispatch calls.
     static Tensor gpu_view(void *gpu_data, const std::vector<size_t> &shape, hal::DType dtype);
 
+    /// Non-owning view over BOTH a host and a device buffer (e.g. logits that
+    /// were copied D2H but are also consumed by GPU kernels). Neither pointer
+    /// is freed by the Tensor.
+    static Tensor host_gpu_view(void *host_data, void *gpu_data,
+                                const std::vector<size_t> &shape, hal::DType dtype);
+
     /// Create a new tensor filled with zeros
     static Tensor zeros(const std::vector<size_t> &shape, memory::MemoryPool *pool = nullptr);
 

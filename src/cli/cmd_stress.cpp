@@ -3,6 +3,7 @@
 #include "stress/stress_runner.h"
 #include "stress/report.h"
 #include "stress/leak_detector.h"
+#include "../common/defaults.h"
 
 #include <iostream>
 #include <fstream>
@@ -15,7 +16,8 @@ int cmd_stress(int argc, char **argv)
     ArgsParser parser("serius stress", "Run stress tests on the server");
 
     parser.add_flag({"type", "t", "Test type (ramp, soak, spike, chaos)", true, "ramp"});
-    parser.add_flag({"server", "s", "Server URL", true, "http://localhost:8080"});
+    parser.add_flag({"server", "s", "Server URL", true, defaults::kServerUrl});
+    parser.add_flag({"model", "m", "Model name sent in requests", true, defaults::kModelName});
     parser.add_flag({"users", "u", "Concurrent users", true, "8"});
     parser.add_flag({"duration", "d", "Test duration in seconds", true, "60"});
     parser.add_flag({"max-users", "", "Maximum users for ramp test", true, "128"});
@@ -38,7 +40,8 @@ int cmd_stress(int argc, char **argv)
     }
 
     std::string test_type = parser.get("type", "ramp");
-    std::string server_url = parser.get("server", "http://localhost:8080");
+    std::string server_url = parser.get("server", defaults::kServerUrl);
+    std::string model_name = parser.get("model", defaults::kModelName);
     int users = parser.get_int("users", 8);
     int duration = parser.get_int("duration", 60);
     int max_users = parser.get_int("max-users", 128);
@@ -63,6 +66,7 @@ int cmd_stress(int argc, char **argv)
     config.spike_duration_seconds = spike_duration;
     config.prompt = prompt;
     config.max_tokens = max_tokens;
+    config.model_name = model_name;
 
     std::cout << "Serius Stress Testing\n";
     std::cout << "=====================\n";
@@ -88,7 +92,7 @@ int cmd_stress(int argc, char **argv)
         result = runner.run_spike(config);
     } else if (test_type == "chaos") {
         std::cout << "Running chaos test...\n";
-        runner.run_chaos(server_url);
+        runner.run_chaos(config);
         std::cout << "Chaos test complete!\n";
         return 0;
     } else {

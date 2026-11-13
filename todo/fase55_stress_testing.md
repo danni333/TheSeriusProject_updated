@@ -188,3 +188,25 @@ serius stress --type chaos --server http://localhost:8080
 | `test_spike_recovery` | TPS torna a baseline dopo spike |
 | `test_chaos_no_crash` | Input malformati → errori graceful, no crash |
 | `test_report_format` | Report JSON e ASCII table validi |
+
+---
+
+## Stato avanzamento
+
+**Fatto e verificato:**
+
+- `src/stress/`: `StressRunner` (ramp/soak/spike/chaos), `StressWorker`
+  (richieste HTTP via cpp-httplib), `report` (ASCII + JSON),
+  `leak_detector` (drift/slope VRAM+RAM).
+- CLI `serius stress` (`src/cli/cmd_stress.cpp`) con `--type`, `--users`,
+  `--duration`, `--output`, `--format json`.
+- `tests/test_stress.cpp`: 24 test verdi, inclusi test di integrazione con
+  mock server httplib locale (`StressRunnerTest.*`) che coprono i 5 scenari
+  del piano di verifica: ramp, soak, spike recovery, chaos, report.
+
+**Rimasto:**
+
+- Esecuzione reale contro `serius serve` con modello caricato (richiede
+  Fase 13 completata: le risposte HTTP sono ancora stub).
+- Soak test lungo (≥1h) per drift memoria reale; `test_soak_no_leak` attuale
+  verifica solo stabilità su mock della durata di 2s.

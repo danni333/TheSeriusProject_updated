@@ -58,5 +58,13 @@ private:
     mutable std::mt19937 rng_;
 };
 
+/// GPU-accelerated sampling: top-k preselection on device + CPU candidate
+/// sampling, avoiding the full-vocab scan on the host. `logits` must be the
+/// raw logits tensor (row `row` is used when 2-D). Returns false when the
+/// tensor isn't GPU-resident or CUDA is unavailable — callers should fall
+/// back to Sampler::sample(). No repetition penalty is applied.
+bool sample_gpu_candidates(const core::Tensor &logits, size_t row,
+                           const Sampler &sampler, int &out_id);
+
 }  // namespace infer
 }  // namespace serius

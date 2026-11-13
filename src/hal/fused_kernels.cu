@@ -471,6 +471,65 @@ void add_inplace_mixed(void *out, const void *other, size_t n, DType acc_dtype, 
     }
 }
 
+// Fused residual-add + RMSNorm: residual[i] += delta[i] then
+// out[i] = residual[i] * inv_rms * weight[i]. `residual` stays FP32; delta,
+// weight and out share reduced precision in practice but are dispatched
+// independently.
+template <typename TDelta, typename TOut, typename TW>
+__global__ void rmsnorm_residual_mixed_kernel(TOut *out, float *residual, const TDelta *delta,
+                                              const TW *weight, int n, float eps)
+{
+    int tid = threadIdx.x;
+    int row = blockIdx.y;
+    float *res_row = residual + (size_t)row * n;
+    const TDelta *d_row = delta + (size_t)row * n;
+    TOut *out_row = out + (size_t)row * n;
+
+    float sum_sq = 0.0f;
+    for (int i = tid; i < n; i += blockDim.x) {
+        float v = res_row[i] + to_float(d_row[i]);
+        res_row[i] = v;
+        sum_sq += v * v;
+    }
+    float block_sum_sq = reduce_block<float, false>(sum_sq);
+    float inv_rms = rsqrtf(block_sum_sq / (float)n + eps);
+
+    for (int i = tid; i < n; i += blockDim.x) {
+        float v = res_row[i] * inv_rms;
+        float w = to_float(weight[i]);
+        out_row[i] = (TOut)(v * w);
+    }
+}
+
+void rmsnorm_residual_mixed(void *norm_out, void *residual, const void *delta,
+                            const void *weight, size_t n, size_t batch_seq, float eps,
+                            DType delta_dtype, DType out_dtype, cudaStream_t stream)
+{
+    if (!norm_out || !residual || !delta || !weight || n == 0 || batch_seq == 0) return;
+    dim3 grid(1, (unsigned int)batch_seq);
+    int threads = 256;
+
+    // Dispatch table: delta_dtype x out_dtype (weight shares out_dtype).
+    #define SERIUS_RMSRES_DISPATCH(DD, OD) \
+        rmsnorm_residual_mixed_kernel<DD, OD, OD><<<grid, threads, 0, stream>>>( \
+            (OD *)norm_out, (float *)residual, (const DD *)delta, (const OD *)weight, \
+            (int)n, eps)
+    if (delta_dtype == DType::Float16) {
+        if (out_dtype == DType::Float16)      SERIUS_RMSRES_DISPATCH(__half, __half);
+        else if (out_dtype == DType::BFloat16) SERIUS_RMSRES_DISPATCH(__half, __nv_bfloat16);
+        else                                  SERIUS_RMSRES_DISPATCH(__half, float);
+    } else if (delta_dtype == DType::BFloat16) {
+        if (out_dtype == DType::Float16)      SERIUS_RMSRES_DISPATCH(__nv_bfloat16, __half);
+        else if (out_dtype == DType::BFloat16) SERIUS_RMSRES_DISPATCH(__nv_bfloat16, __nv_bfloat16);
+        else                                  SERIUS_RMSRES_DISPATCH(__nv_bfloat16, float);
+    } else {
+        if (out_dtype == DType::Float16)      SERIUS_RMSRES_DISPATCH(float, __half);
+        else if (out_dtype == DType::BFloat16) SERIUS_RMSRES_DISPATCH(float, __nv_bfloat16);
+        else                                  SERIUS_RMSRES_DISPATCH(float, float);
+    }
+    #undef SERIUS_RMSRES_DISPATCH
+}
+
 // --- Device-side dtype conversion (avoids host round-trips) ---
 
 template <typename TOut>
@@ -1667,6 +1726,80 @@ void rope_bias_devpos(void *data, size_t head_dim, size_t seq_len, size_t n_head
     }
 }
 
+// Fused Q+K rope_bias for decode: blockIdx.x spans n_heads + n_kv_heads; the
+// first n_heads blocks handle Q (q_bias, q_scale), the rest handle K
+// (k_bias, k_scale). seq_len is always 1 (blockIdx.y unused -> kept for layout
+// parity with rope_bias_devpos_kernel).
+template <typename T>
+__global__ void rope_bias_devpos_qk_kernel(T *q, T *k, int head_dim, int n_heads, int n_kv_heads,
+                                           float base, const int *pos_dev,
+                                           const T *q_bias, const T *k_bias,
+                                           float q_scale, float k_scale)
+{
+    const int half_dim = head_dim / 2;
+    const int seq_idx = blockIdx.y;
+    const int h = blockIdx.x;
+    const int i = threadIdx.x;
+    const int pos_offset = *pos_dev;
+
+    if (i >= half_dim) return;
+
+    const bool is_q = h < n_heads;
+    const int head_idx = is_q ? h : h - n_heads;
+    const int n_h = is_q ? n_heads : n_kv_heads;
+    T *data = is_q ? q : k;
+    const T *bias = is_q ? q_bias : k_bias;
+    const float scale = is_q ? q_scale : k_scale;
+
+    const int b0 = head_idx * head_dim + i;
+    const int b1 = b0 + half_dim;
+    const float fb0 = bias ? to_float(bias[b0]) : 0.0f;
+    const float fb1 = bias ? to_float(bias[b1]) : 0.0f;
+
+    float pos = (float)(seq_idx + pos_offset);
+    float freq = 1.0f / powf(base, (float)(2 * i) / (float)head_dim);
+    float theta = pos * freq;
+    float cos_v = cosf(theta);
+    float sin_v = sinf(theta);
+
+    int head_base = (seq_idx * n_h * head_dim) + (head_idx * head_dim);
+    int offset0 = head_base + i;
+    int offset1 = head_base + i + half_dim;
+    float x0 = to_float(data[offset0]) + fb0;
+    float x1 = to_float(data[offset1]) + fb1;
+
+    float r0 = (x0 * cos_v - x1 * sin_v) * scale;
+    float r1 = (x0 * sin_v + x1 * cos_v) * scale;
+    data[offset0] = (T)r0;
+    data[offset1] = (T)r1;
+}
+
+void rope_bias_devpos_qk(void *q, void *k, size_t head_dim, size_t n_heads, size_t n_kv_heads,
+                         float base, const int *pos_dev, const void *q_bias, const void *k_bias,
+                         float q_scale, float k_scale, DType dtype, cudaStream_t stream)
+{
+    if (!q || !k || !pos_dev || head_dim == 0 || n_heads == 0 || n_kv_heads == 0) return;
+
+    dim3 grid((unsigned int)(n_heads + n_kv_heads), 1u);
+    int threads = (int)((head_dim / 2 + 31) / 32 * 32);
+    if (threads > 1024) threads = 1024;
+
+    if (dtype == DType::Float16) {
+        rope_bias_devpos_qk_kernel<<<grid, threads, 0, stream>>>(
+            (__half *)q, (__half *)k, (int)head_dim, (int)n_heads, (int)n_kv_heads, base,
+            pos_dev, (const __half *)q_bias, (const __half *)k_bias, q_scale, k_scale);
+    } else if (dtype == DType::BFloat16) {
+        rope_bias_devpos_qk_kernel<<<grid, threads, 0, stream>>>(
+            (__nv_bfloat16 *)q, (__nv_bfloat16 *)k, (int)head_dim, (int)n_heads, (int)n_kv_heads,
+            base, pos_dev, (const __nv_bfloat16 *)q_bias, (const __nv_bfloat16 *)k_bias,
+            q_scale, k_scale);
+    } else {
+        rope_bias_devpos_qk_kernel<<<grid, threads, 0, stream>>>(
+            (float *)q, (float *)k, (int)head_dim, (int)n_heads, (int)n_kv_heads, base,
+            pos_dev, (const float *)q_bias, (const float *)k_bias, q_scale, k_scale);
+    }
+}
+
 void rope(void *data, size_t head_dim, size_t seq_len, size_t n_heads, float base, int pos_offset, DType dtype,
           cudaStream_t stream)
 {
@@ -2092,6 +2225,48 @@ void kv_write_devpos(void *dst_base, const void *src, size_t nbytes,
     const int blocks = (int)((nbytes / 16 + nthreads - 1) / nthreads);
     kv_write_devpos_kernel<<<blocks, nthreads, 0, stream>>>(
         (char *)dst_base, (const char *)src, nbytes, pos_dev, row_stride_bytes);
+}
+
+template <typename T>
+__global__ void kv_write_kv_devpos_kernel(T *k_dst_base, T *v_dst_base,
+                                          const T *k_src, const T *v_src, const T *v_bias,
+                                          size_t n, const int *pos_dev, size_t row_stride)
+{
+    const size_t pos = (size_t)(*pos_dev);
+    T *kd = k_dst_base + pos * row_stride;
+    T *vd = v_dst_base + pos * row_stride;
+    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    const int stride = blockDim.x * gridDim.x;
+    for (size_t i = (size_t)tid; i < n; i += (size_t)stride) {
+        kd[i] = k_src[i];
+        vd[i] = v_bias ? (T)(to_float(v_src[i]) + to_float(v_bias[i])) : v_src[i];
+    }
+}
+
+void kv_write_kv_devpos(void *k_dst, void *v_dst, const void *k_src, const void *v_src,
+                        const void *v_bias, size_t n_elems, const int *pos_dev,
+                        size_t row_stride_elems, DType dtype, cudaStream_t stream)
+{
+    if (!k_dst || !v_dst || !k_src || !v_src || !pos_dev || n_elems == 0 ||
+        row_stride_elems == 0) {
+        return;
+    }
+    const int nthreads = 256;
+    const int blocks = (int)((n_elems + nthreads - 1) / nthreads);
+    if (dtype == DType::Float16) {
+        kv_write_kv_devpos_kernel<__half><<<blocks, nthreads, 0, stream>>>(
+            (__half *)k_dst, (__half *)v_dst, (const __half *)k_src, (const __half *)v_src,
+            (const __half *)v_bias, n_elems, pos_dev, row_stride_elems);
+    } else if (dtype == DType::BFloat16) {
+        kv_write_kv_devpos_kernel<__nv_bfloat16><<<blocks, nthreads, 0, stream>>>(
+            (__nv_bfloat16 *)k_dst, (__nv_bfloat16 *)v_dst, (const __nv_bfloat16 *)k_src,
+            (const __nv_bfloat16 *)v_src, (const __nv_bfloat16 *)v_bias, n_elems, pos_dev,
+            row_stride_elems);
+    } else {
+        kv_write_kv_devpos_kernel<float><<<blocks, nthreads, 0, stream>>>(
+            (float *)k_dst, (float *)v_dst, (const float *)k_src, (const float *)v_src,
+            (const float *)v_bias, n_elems, pos_dev, row_stride_elems);
+    }
 }
 
 // Row-wise FP16 concat for fused prefill weights: dst[r, c] reads from the

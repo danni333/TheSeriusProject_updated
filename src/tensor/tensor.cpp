@@ -551,6 +551,22 @@ Tensor Tensor::gpu_view(void *gpu_data, const std::vector<size_t> &shape, hal::D
     return t;
 }
 
+Tensor Tensor::host_gpu_view(void *host_data, void *gpu_data,
+                             const std::vector<size_t> &shape, hal::DType dtype)
+{
+    Tensor t;
+    t.shape_ = shape;
+    t.strides_ = compute_strides(shape);
+    t.size_ = shape.empty() ? 0
+                            : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    t.dtype_ = dtype;
+    t.data_ = host_data;
+    t.data_gpu_ = gpu_data;
+    t.location_ = DataLocation::SYNCED;
+    t.owns_data_ = false;
+    return t;
+}
+
 Tensor Tensor::reshape(const std::vector<size_t> &new_shape) const
 {
     size_t new_size = new_shape.empty()
