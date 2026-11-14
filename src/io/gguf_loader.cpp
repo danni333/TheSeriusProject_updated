@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
@@ -369,10 +370,44 @@ int64_t read_i64_le(std::ifstream &f)
     return static_cast<int64_t>(raw);
 }
 
+// Bytes remaining in the stream from the current position. Every length read
+// from the file is checked against this before it is used for an allocation,
+// so a crafted GGUF cannot turn a header field into a multi-GB allocation.
+uint64_t stream_remaining(std::ifstream &f)
+{
+    f.clear();
+    const std::streampos cur = f.tellg();
+    if (cur == std::streampos(-1)) {
+        return 0;
+    }
+    f.seekg(0, std::ios::end);
+    const std::streampos end = f.tellg();
+    f.clear();
+    f.seekg(cur);
+    if (end == std::streampos(-1)) {
+        return 0;
+    }
+    const auto span = static_cast<std::streamoff>(end) - static_cast<std::streamoff>(cur);
+    return span > 0 ? static_cast<uint64_t>(span) : 0;
+}
+
+bool checked_mul_u64(uint64_t a, uint64_t b, uint64_t *out)
+{
+    if (a != 0 && b > std::numeric_limits<uint64_t>::max() / a) {
+        return false;
+    }
+    *out = a * b;
+    return true;
+}
+
+// Upper bound for a single string value in the KV section. Legit GGUF
+// strings (arch names, chat templates, individual tokens) are far smaller.
+constexpr uint64_t kMaxStringBytes = 256ull * 1024 * 1024;
+
 bool read_string_kv_value(std::ifstream &f, std::string *out)
 {
     uint64_t len = read_u64_le(f);
-    if (!f) return false;
+    if (!f || len > kMaxStringBytes || len > stream_remaining(f)) return false;
     std::string value(static_cast<size_t>(len), '\0');
     f.read(&value[0], static_cast<std::streamsize>(len));
     if (!f) return false;
@@ -395,6 +430,11 @@ bool skip_gguf_value(std::ifstream &f, uint32_t type)
         case 9: {
             uint32_t elem_type = read_u32_le(f);
             uint64_t n = read_u64_le(f);
+            if (!f) return false;
+            // Every element consumes at least 1 byte on disk (elem_type 0
+            // consumes none and would spin forever), so n can never exceed
+            // the remaining file size in a valid file.
+            if (elem_type == 0 || n > stream_remaining(f)) return false;
             for (uint64_t i = 0; i < n && f.good(); ++i) {
                 if (!skip_gguf_value(f, elem_type)) return false;
             }
@@ -414,7 +454,7 @@ bool skip_gguf_value(std::ifstream &f, uint32_t type)
 bool read_gguf_kv_entry(std::ifstream &f, std::string *key, uint32_t *type, uint64_t *value_length)
 {
     uint64_t key_len = read_u64_le(f);
-    if (!f) return false;
+    if (!f || key_len > kMaxStringBytes || key_len > stream_remaining(f)) return false;
     std::string key_value(static_cast<size_t>(key_len), '\0');
     f.read(&key_value[0], static_cast<std::streamsize>(key_len));
     if (!f) return false;
@@ -495,14 +535,22 @@ GGUFTensorInfo read_tensor_info(std::ifstream &f)
 {
     GGUFTensorInfo info;
     uint64_t name_len = read_u64_le(f);
-    if (!f) return info;
+    if (!f || name_len > kMaxStringBytes || name_len > stream_remaining(f)) {
+        f.setstate(std::ios::failbit);
+        return info;
+    }
     std::string name(static_cast<size_t>(name_len), '\0');
     f.read(&name[0], static_cast<std::streamsize>(name_len));
     if (!f) return info;
     info.name = std::move(name);
 
     uint32_t n_dims = read_u32_le(f);
-    if (!f) return info;
+    // GGUF tensors have at most a handful of dims; also each dim costs 8
+    // bytes on disk, so the remaining-size check bounds the allocation.
+    if (!f || n_dims > 16 || static_cast<uint64_t>(n_dims) * 8 > stream_remaining(f)) {
+        f.setstate(std::ios::failbit);
+        return info;
+    }
     info.shape.resize(n_dims);
     for (uint32_t i = 0; i < n_dims; ++i) {
         info.shape[i] = read_u64_le(f);
@@ -515,6 +563,62 @@ GGUFTensorInfo read_tensor_info(std::ifstream &f)
 
     info.offset = read_u64_le(f);
     return info;
+}
+
+// True for every dtype the loader's dispatch below knows how to read.
+bool gguf_dtype_supported(GGMLType dtype)
+{
+    switch (dtype) {
+        case GGMLType::F32:
+        case GGMLType::F16:
+        case GGMLType::BF16:
+        case GGMLType::Q4_0:
+        case GGMLType::Q4_1:
+        case GGMLType::Q8_0:
+        case GGMLType::Q5_0:
+        case GGMLType::Q4_K:
+        case GGMLType::Q6_K:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Bytes a tensor of `numel` elements occupies in the GGUF data section for
+// the given dtype. Returns std::nullopt for unsupported dtypes, for shapes
+// that violate the dtype's block divisibility, or on arithmetic overflow —
+// callers must check the result before allocating anything.
+std::optional<uint64_t> gguf_payload_bytes(GGMLType dtype, uint64_t numel)
+{
+    uint64_t block_elems = 0;
+    uint64_t block_bytes = 0;
+    bool exact = false;  // require numel % block_elems == 0 (matches dispatch)
+    switch (dtype) {
+        case GGMLType::F32:   block_elems = 1;   block_bytes = 4;   break;
+        case GGMLType::F16:   block_elems = 1;   block_bytes = 2;   break;
+        case GGMLType::BF16:  block_elems = 1;   block_bytes = 2;   break;
+        case GGMLType::Q4_0:  block_elems = 32;  block_bytes = 18;  break;
+        case GGMLType::Q4_1:  block_elems = 32;  block_bytes = 20;  break;
+        case GGMLType::Q8_0:  block_elems = 32;  block_bytes = 34;  break;
+        case GGMLType::Q5_0:  block_elems = 32;  block_bytes = 22;  exact = true; break;
+        case GGMLType::Q4_K:  block_elems = 256; block_bytes = 144; exact = true; break;
+        case GGMLType::Q6_K:  block_elems = 256; block_bytes = 210; exact = true; break;
+        default: return std::nullopt;
+    }
+    uint64_t blocks;
+    if (exact) {
+        if (numel % block_elems != 0) {
+            return std::nullopt;
+        }
+        blocks = numel / block_elems;
+    } else {
+        blocks = (numel + block_elems - 1) / block_elems;
+    }
+    uint64_t bytes = 0;
+    if (!checked_mul_u64(blocks, block_bytes, &bytes)) {
+        return std::nullopt;
+    }
+    return bytes;
 }
 
 }  // namespace
@@ -663,14 +767,57 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
     const uint64_t rem = cur_u64 % GGUF_DEFAULT_ALIGNMENT;
     const uint64_t data_base_u64 = (rem == 0) ? cur_u64 : (cur_u64 + (GGUF_DEFAULT_ALIGNMENT - rem));
     const std::streampos data_base = static_cast<std::streampos>(data_base_u64);
+
+    // Total file size and bytes available for tensor payloads. Every tensor's
+    // declared shape/dtype/offset is validated against this BEFORE any
+    // allocation, so a crafted GGUF cannot force huge allocations or reads
+    // past end-of-file.
+    f.clear();
+    f.seekg(0, std::ios::end);
+    const auto file_end = f.tellg();
+    f.clear();
+    f.seekg(cur_pos);
+    if (file_end == std::streampos(-1)) {
+        return result;
+    }
+    const uint64_t file_size = static_cast<uint64_t>(static_cast<std::streamoff>(file_end));
+    const uint64_t data_avail = file_size > data_base_u64 ? file_size - data_base_u64 : 0;
+
     for (const auto &info : tensor_infos) {
+        // Checked product of dims — crafted shapes must not overflow.
+        uint64_t numel64 = 1;
+        bool dims_bad = false;
+        for (uint64_t dim : info.shape) {
+            if (dim != 0 && numel64 > std::numeric_limits<uint64_t>::max() / dim) {
+                dims_bad = true;
+                break;
+            }
+            numel64 *= dim;
+        }
+        if (dims_bad || numel64 == 0 || numel64 > std::numeric_limits<size_t>::max()) {
+            continue;
+        }
+
+        const auto payload = gguf_payload_bytes(info.dtype, numel64);
+        if (payload.has_value()) {
+            if (info.offset > data_avail || *payload > data_avail - info.offset) {
+                continue;  // declared payload doesn't fit in the file
+            }
+        } else if (gguf_dtype_supported(info.dtype)) {
+            continue;  // known dtype but malformed shape/divisibility
+        } else {
+            std::fprintf(stderr, "[GGUF] unsupported dtype %u for tensor %s — skipped\n",
+                         static_cast<unsigned>(info.dtype), info.name.c_str());
+            continue;
+        }
+
         std::vector<size_t> shape;
         shape.reserve(info.shape.size());
         for (uint64_t dim : info.shape) {
             shape.push_back(static_cast<size_t>(dim));
         }
 
-        const size_t numel = std::accumulate(shape.begin(), shape.end(), size_t{1}, std::multiplies<size_t>());
+        const size_t numel = static_cast<size_t>(numel64);
         std::vector<float> values(numel, 0.0f);
         f.seekg(data_base + static_cast<std::streamoff>(info.offset));
 
@@ -889,6 +1036,11 @@ GGUFTokenizerData load_gguf_tokenizer(const std::string &path)
     std::ifstream f(path, std::ios::binary);
     if (!f) { return out; }
 
+    // Every array count below is attacker-controlled; cap it and bail on the
+    // first failed read so a corrupt file can't spin the loop or OOM the
+    // process via reserve()/push_back().
+    constexpr uint64_t kMaxTokenizerEntries = 8ull * 1024 * 1024;
+
     f.seekg(sizeof(GGUFHeader));
     for (uint64_t i = 0; i < meta.n_kv; ++i) {
         std::string key;
@@ -900,10 +1052,11 @@ GGUFTokenizerData load_gguf_tokenizer(const std::string &path)
             uint32_t n_elem_type = read_u32_le(f);
             (void)n_elem_type;  // should be 8 (string)
             uint64_t n_tokens   = read_u64_le(f);
+            if (!f || n_tokens > kMaxTokenizerEntries) { break; }
             out.tokens.reserve(static_cast<size_t>(n_tokens));
             for (uint64_t t = 0; t < n_tokens; ++t) {
                 std::string tok;
-                read_string_kv_value(f, &tok);
+                if (!read_string_kv_value(f, &tok)) { break; }
                 out.tokens.push_back(std::move(tok));
             }
         }
@@ -912,9 +1065,11 @@ GGUFTokenizerData load_gguf_tokenizer(const std::string &path)
             uint32_t n_elem_type = read_u32_le(f);
             (void)n_elem_type;
             uint64_t n_types = read_u64_le(f);
+            if (!f || n_types > kMaxTokenizerEntries) { break; }
             out.token_types.reserve(static_cast<size_t>(n_types));
             for (uint64_t t = 0; t < n_types; ++t) {
                 int32_t tt = read_i32_le(f);
+                if (!f) { break; }
                 out.token_types.push_back(tt);
             }
         }
@@ -923,10 +1078,12 @@ GGUFTokenizerData load_gguf_tokenizer(const std::string &path)
             uint32_t n_elem_type = read_u32_le(f);
             (void)n_elem_type;
             uint64_t n_scores = read_u64_le(f);
+            if (!f || n_scores > kMaxTokenizerEntries) { break; }
             out.scores.reserve(static_cast<size_t>(n_scores));
             for (uint64_t t = 0; t < n_scores; ++t) {
                 float sc = 0.0f;
                 f.read(reinterpret_cast<char*>(&sc), sizeof(sc));
+                if (!f) { break; }
                 out.scores.push_back(sc);
             }
         }
@@ -935,10 +1092,11 @@ GGUFTokenizerData load_gguf_tokenizer(const std::string &path)
             uint32_t n_elem_type = read_u32_le(f);
             (void)n_elem_type;
             uint64_t n_merges = read_u64_le(f);
+            if (!f || n_merges > kMaxTokenizerEntries) { break; }
             out.merges.reserve(static_cast<size_t>(n_merges));
             for (uint64_t m = 0; m < n_merges; ++m) {
                 std::string merge;
-                read_string_kv_value(f, &merge);
+                if (!read_string_kv_value(f, &merge)) { break; }
                 out.merges.push_back(std::move(merge));
             }
         }

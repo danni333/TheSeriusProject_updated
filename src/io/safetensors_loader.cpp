@@ -30,10 +30,19 @@ bool parse_header(const std::string &json_str, std::unordered_map<std::string, S
             const auto &v = it.value();
             if (!v.is_object() || !v.contains("dtype") || !v.contains("shape") || !v.contains("data_offsets"))
                 continue;
+            const auto &shape_j = v["shape"];
+            const auto &off = v["data_offsets"];
+            if (!shape_j.is_array() || !off.is_array() || off.size() < 2)
+                continue;
             SafetensorTensorMeta m;
             m.dtype = v["dtype"].get<std::string>();
-            for (const auto &s : v["shape"]) m.shape.push_back(s.get<int64_t>());
-            const auto &off = v["data_offsets"];
+            bool bad_shape = false;
+            for (const auto &s : shape_j) {
+                const int64_t d = s.get<int64_t>();
+                if (d < 0) { bad_shape = true; break; }
+                m.shape.push_back(d);
+            }
+            if (bad_shape) continue;
             m.data_start = off[0].get<int64_t>();
             m.data_end = off[1].get<int64_t>();
             (*out)[it.key()] = std::move(m);
@@ -111,15 +120,23 @@ float *SafetensorsFile::tensor_data(const std::string &name)
     const auto &m = it->second;
     if (m.data_start < 0 || m.data_end > static_cast<int64_t>(data_.size()) || m.data_start >= m.data_end)
         return nullptr;
-    size_t n = static_cast<size_t>((m.data_end - m.data_start) / 2);  // F16
+    // The declared byte range must match numel * element_size, otherwise a
+    // crafted header could make callers read past the tensor's data.
+    size_t numel = 1;
+    for (int64_t d : m.shape) {
+        if (numel > std::numeric_limits<size_t>::max() / static_cast<size_t>(d)) return nullptr;
+        numel *= static_cast<size_t>(d);
+    }
+    const int64_t byte_len = m.data_end - m.data_start;
     if (m.dtype == "F32") {
-        n = static_cast<size_t>((m.data_end - m.data_start) / 4);
+        if (byte_len != static_cast<int64_t>(numel * sizeof(float))) return nullptr;
         return reinterpret_cast<float *>(data_.data() + m.data_start);
     }
     if (m.dtype == "F16") {
+        if (byte_len != static_cast<int64_t>(numel * 2)) return nullptr;
         static thread_local std::vector<float> convert_buf;
-        convert_buf.resize(n);
-        f16_to_f32(reinterpret_cast<const uint16_t *>(data_.data() + m.data_start), convert_buf.data(), n);
+        convert_buf.resize(numel);
+        f16_to_f32(reinterpret_cast<const uint16_t *>(data_.data() + m.data_start), convert_buf.data(), numel);
         return convert_buf.data();  // Invalid after next call to tensor_data for F16!
     }
     return nullptr;
@@ -131,7 +148,11 @@ bool SafetensorsFile::copy_tensor_to_float(const std::string &name, float *out, 
     if (it == tensors_.end()) return false;
     const auto &m = it->second;
     size_t num_elems = 1;
-    for (int64_t d : m.shape) num_elems *= static_cast<size_t>(d);
+    for (int64_t d : m.shape) {
+        if (d < 0 || num_elems > std::numeric_limits<size_t>::max() / static_cast<size_t>(d))
+            return false;
+        num_elems *= static_cast<size_t>(d);
+    }
     if (num_elems != out_size) return false;
 
     int64_t byte_len = m.data_end - m.data_start;
