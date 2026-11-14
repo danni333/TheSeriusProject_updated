@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -42,6 +43,28 @@ struct ServerConfig
     enum class GpuMode { kAuto, kCpu, kCuda } gpu_mode = GpuMode::kAuto;
 };
 
+/// A model loaded into the server's registry, keyed by name.
+/// Holds the weights, tokenizer and (for LLaMA) a dedicated KV cache —
+/// the CUDA decode graph is bound to the cache instance, so each model
+/// needs its own.
+struct LoadedModel
+{
+    std::string name;
+    std::string type;  // "llama" | "transformer" | "qwen"
+    int64_t created = 0;
+    std::unique_ptr<model::LLaMAModel> llama;
+    std::unique_ptr<model::QwenModel> qwen;
+    std::unique_ptr<model::TransformerModel> transformer;
+    std::unique_ptr<BPETokenizer> tokenizer;
+    std::unique_ptr<infer::KVCache> kv_cache;
+    LoadedModel() = default;
+    LoadedModel(LoadedModel &&) = default;
+    LoadedModel &operator=(LoadedModel &&) = default;
+    LoadedModel(const LoadedModel &) = delete;
+    LoadedModel &operator=(const LoadedModel &) = delete;
+    ~LoadedModel();
+};
+
 /// HTTP server for inference API (OpenAI-compatible endpoints).
 /// Uses cpp-httplib; run() blocks until shutdown.
 class Server
@@ -51,8 +74,16 @@ public:
     explicit Server(const ServerConfig &config);
     ~Server();
 
-    /// Load a model and tokenizer from directory or config file
-    bool load_model(const std::string &model_dir_or_config, const std::string &type = "llama");
+    /// Load a model and tokenizer from directory or config file.
+    /// `name` overrides the registry key; when empty the name is derived
+    /// from the path (file stem or directory name). Re-loading an existing
+    /// name fails; use a different name or unload first.
+    bool load_model(const std::string &model_dir_or_config, const std::string &type = "llama",
+                    const std::string &name = "");
+
+    /// Unload a model by registry name. Returns false if not found.
+    /// Blocks until any in-flight inference on that model finishes.
+    bool unload_model(const std::string &name);
 
     /// Direct setters for pre-constructed models (useful for testing or programmatic setup)
     void set_llama_model(std::unique_ptr<model::LLaMAModel> model, std::unique_ptr<BPETokenizer> tokenizer = nullptr);
@@ -78,13 +109,22 @@ public:
 private:
     void setup_routes();
 
-    /// Load a LLaMA model directly from a .gguf file (config, tokenizer and
-    /// weights all come from the GGUF container).
-    bool load_llama_from_gguf(const std::string &gguf_path);
+    /// Resolve a requested model name to a registry entry.
+    /// Empty/"default-ish" names fall back to model_name_ then the first
+    /// loaded model. Caller must hold inference_mutex_.
+    LoadedModel *find_model(const std::string &name);
 
-    /// Offload the loaded LLaMA model to GPU when it fits in free VRAM;
-    /// logs a warning and stays on CPU otherwise. No-op without a model.
-    void maybe_offload_to_gpu();
+    /// Load a GGUF file into a LoadedModel (no registry insert, no lock).
+    LoadedModel load_llama_gguf(const std::string &gguf_path);
+    /// Load a LLaMA model from a directory or config.json path.
+    LoadedModel load_llama_dir(const std::string &model_dir_or_config);
+    /// Load a TransformerModel from a directory or config.json path.
+    LoadedModel load_transformer_entry(const std::string &model_dir_or_config);
+    /// Pick a unique registry name: explicit > derived > model_name_.
+    std::string pick_model_name(const std::string &explicit_name, const std::string &derived);
+    /// Offload a LLaMA model to GPU when it fits; logs and stays on CPU
+    /// otherwise. No-op for non-LLaMA or when gpu_mode is kCpu.
+    void maybe_offload_to_gpu(model::LLaMAModel &model);
 
     uint16_t port_;
     std::string host_;
@@ -93,15 +133,17 @@ private:
 
     std::string model_name_ = "default";
     std::string model_type_ = "llama";
-    std::unique_ptr<model::LLaMAModel> llama_model_;
-    std::unique_ptr<model::QwenModel> qwen_model_;
-    std::unique_ptr<model::TransformerModel> transformer_model_;
-    std::unique_ptr<BPETokenizer> tokenizer_;
+    /// Registry of loaded models, keyed by name. model_name_ is the
+    /// default/primary name used when a request doesn't specify one.
+    std::map<std::string, LoadedModel> models_;
+    /// Registry name of the most recent successful load_model() call.
+    std::string last_loaded_name_;
     std::unique_ptr<InferenceMetrics> metrics_;
-    /// Persistent KV cache for LLaMA decode: keeping the same instance across
-    /// requests preserves the GPU arena and the captured CUDA decode graph
-    /// (keyed by cache instance_id) instead of recapturing per request.
-    std::unique_ptr<infer::KVCache> llama_cache_;
+    /// Serializes load_model() calls among themselves; the slow weight
+    /// loading runs WITHOUT inference_mutex_ so inference keeps serving
+    /// other models while a GGUF loads. Only the registry insert takes
+    /// inference_mutex_.
+    std::mutex load_mutex_;
     mutable std::mutex inference_mutex_;
 };
 

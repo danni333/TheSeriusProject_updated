@@ -27,6 +27,7 @@ int cmd_serve(int argc, char **argv)
     parser.add_flag({"top-k", "", "Default top-k sampling (0 = disabled)", true, "40"});
     parser.add_flag({"top-p", "", "Default top-p (nucleus) sampling", true, "0.9"});
     parser.add_flag({"gpu", "", "GPU backend (auto/cpu/cuda)", true, "auto"});
+    parser.add_flag({"ui", "", "Web UI directory (default 'ui')", true, ""});
 
     if (!parser.parse(argc, argv)) {
         std::cerr << "Error: " << parser.error() << "\n";
@@ -90,6 +91,10 @@ int cmd_serve(int argc, char **argv)
     config.default_temperature = parser.get_float("temperature", 0.7f);
     config.default_top_k = parser.get_int("top-k", 40);
     config.default_top_p = parser.get_float("top-p", 0.9f);
+    const std::string ui_dir = parser.get("ui");
+    if (!ui_dir.empty()) {
+        config.ui_dir = ui_dir;
+    }
     if (gpu == "cpu") {
         config.gpu_mode = server::ServerConfig::GpuMode::kCpu;
         std::cout << "[Serius] CPU inference (--gpu cpu)\n";

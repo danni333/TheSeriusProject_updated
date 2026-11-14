@@ -66,6 +66,7 @@ add_library(serius_core
     io/safetensors.cpp
     io/safetensors_writer.cpp
     io/sharding.cpp
+    hub/downloader.cpp
     init/weight_init.cpp
     stability/grad_clip.cpp
     stability/loss_scaler.cpp

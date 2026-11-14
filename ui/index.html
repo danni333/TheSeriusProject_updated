@@ -14,6 +14,7 @@
                 <select id="model-select">
                     <option value="default">Default Model</option>
                 </select>
+                <button id="models-btn" class="icon-btn" title="Manage models">🧠</button>
                 <button id="settings-btn" class="icon-btn">⚙️</button>
             </div>
         </header>
@@ -38,6 +39,10 @@
                 <input type="range" id="top_p" min="0" max="1" step="0.05" value="0.9">
             </div>
             <div class="setting">
+                <label>Top K: <span id="topk-value">40</span></label>
+                <input type="range" id="top_k" min="1" max="200" step="1" value="40">
+            </div>
+            <div class="setting">
                 <label>Max Tokens: <span id="maxtok-value">256</span></label>
                 <input type="range" id="max_tokens" min="1" max="2048" step="1" value="256">
             </div>
@@ -46,6 +51,34 @@
                 <textarea id="system-prompt" rows="3" placeholder="You are a helpful assistant."></textarea>
             </div>
             <button id="close-settings">Close</button>
+        </div>
+
+        <div id="models-panel" class="settings-panel hidden">
+            <h3>Loaded Models</h3>
+            <div id="models-list" class="models-list"></div>
+            <h3>Load Model</h3>
+            <div class="setting">
+                <label>Name (optional):</label>
+                <input type="text" id="load-name" placeholder="auto from path">
+            </div>
+            <div class="setting">
+                <label>Path or hf://repo_id:</label>
+                <input type="text" id="load-path" placeholder="C:\models\foo or hf://org/repo">
+            </div>
+            <div class="setting">
+                <label>Type:</label>
+                <select id="load-type">
+                    <option value="llama">llama (GGUF)</option>
+                    <option value="transformer">transformer</option>
+                </select>
+            </div>
+            <div class="setting">
+                <label>Quant (hf:// only, e.g. q4_k_m):</label>
+                <input type="text" id="load-quant">
+            </div>
+            <div id="load-status" class="load-status"></div>
+            <button id="load-model-btn">Load</button>
+            <button id="close-models">Close</button>
         </div>
     </div>
 

@@ -4,8 +4,10 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #include "server/metrics.h"
 #include "tokenizer/bpe.h"
@@ -250,6 +252,92 @@ TEST(ServerTest, LiveLLaMAEmbeddings)
     ASSERT_FALSE(res_json["data"].empty());
     auto embedding = res_json["data"][0]["embedding"];
     EXPECT_EQ(embedding.size(), 64u);
+
+    server.stop();
+    server_thread.join();
+}
+
+TEST(ServerTest, MultiModelRegistry)
+{
+    int port = find_free_port();
+    ASSERT_GT(port, 0);
+
+    auto make_tiny_llama = [] {
+        serius::model::LLamaConfig config;
+        config.vocab_size = 100;
+        config.hidden_size = 64;
+        config.num_attention_heads = 4;
+        config.num_key_value_heads = 4;
+        config.intermediate_size = 128;
+        config.num_hidden_layers = 1;
+        config.max_position_embeddings = 64;
+        return std::make_unique<serius::model::LLaMAModel>(config);
+    };
+
+    serius::server::Server server(static_cast<uint16_t>(port));
+    server.set_model_name("alpha");
+    server.set_llama_model(make_tiny_llama(), std::make_unique<serius::BPETokenizer>());
+    server.set_model_name("beta");
+    server.set_llama_model(make_tiny_llama(), std::make_unique<serius::BPETokenizer>());
+
+    std::thread server_thread([&] { server.run(); });
+
+    httplib::Client client("127.0.0.1", port);
+    wait_for_server(client);
+
+    // /v1/models lists both registered models.
+    auto models_res = client.Get("/v1/models");
+    ASSERT_TRUE(models_res);
+    ASSERT_EQ(models_res->status, 200);
+    auto models_json = nlohmann::json::parse(models_res->body);
+    std::vector<std::string> ids;
+    for (const auto &m : models_json["data"]) {
+        ids.push_back(m["id"].get<std::string>());
+    }
+    EXPECT_NE(std::find(ids.begin(), ids.end(), "alpha"), ids.end());
+    EXPECT_NE(std::find(ids.begin(), ids.end(), "beta"), ids.end());
+
+    auto chat = [&](const std::string &model) {
+        nlohmann::json body = {
+            {"model", model},
+            {"messages", {{{"role", "user"}, {"content", "Hi"}}}} ,
+            {"max_tokens", 4},
+            {"temperature", 0.0f}
+        };
+        return client.Post("/v1/chat/completions", body.dump(), "application/json");
+    };
+
+    // Both models answer; unknown name -> 404.
+    auto res_a = chat("alpha");
+    ASSERT_TRUE(res_a);
+    EXPECT_EQ(res_a->status, 200);
+    EXPECT_EQ(nlohmann::json::parse(res_a->body)["model"], "alpha");
+
+    auto res_b = chat("beta");
+    ASSERT_TRUE(res_b);
+    EXPECT_EQ(res_b->status, 200);
+
+    auto res_bad = chat("nope");
+    ASSERT_TRUE(res_bad);
+    EXPECT_EQ(res_bad->status, 404);
+
+    // Unload alpha: chat on it now 404s, beta still works.
+    auto del = client.Delete("/v1/models/alpha");
+    ASSERT_TRUE(del);
+    EXPECT_EQ(del->status, 200);
+
+    auto res_a2 = chat("alpha");
+    ASSERT_TRUE(res_a2);
+    EXPECT_EQ(res_a2->status, 404);
+
+    auto res_b2 = chat("beta");
+    ASSERT_TRUE(res_b2);
+    EXPECT_EQ(res_b2->status, 200);
+
+    // Unloading a missing model -> 404.
+    auto del2 = client.Delete("/v1/models/alpha");
+    ASSERT_TRUE(del2);
+    EXPECT_EQ(del2->status, 404);
 
     server.stop();
     server_thread.join();

@@ -57,18 +57,40 @@ void setup_static_routes(httplib::Server &server, const std::string &ui_dir)
     // Serve static files from ui/assets/
     server.Get(R"(/assets/(.*))", [ui_dir](const httplib::Request &req, httplib::Response &res) {
         std::string filename = req.matches[1];
-        std::string file_path = ui_dir + "/assets/" + filename;
 
-        if (!fs::exists(file_path)) {
+        // Reject traversal attempts, then verify the resolved path stays
+        // inside the assets root (defense in depth: httplib decodes %2e%2e
+        // and does not normalize dot segments).
+        if (filename.empty() || filename.find("..") != std::string::npos) {
             res.status = 404;
-            res.set_content("File not found: " + filename, "text/plain");
+            res.set_content("File not found", "text/plain");
             return;
         }
 
-        std::string content = read_file(file_path);
-        std::string mime_type = get_mime_type(file_path);
+        std::error_code ec;
+        const fs::path root = fs::weakly_canonical(fs::path(ui_dir) / "assets", ec);
+        if (ec) {
+            res.status = 404;
+            res.set_content("File not found", "text/plain");
+            return;
+        }
+        const fs::path target = fs::weakly_canonical(root / fs::path(filename), ec);
+        const std::string root_str = root.string() + static_cast<char>(fs::path::preferred_separator);
+        if (ec || target.string().compare(0, root_str.size(), root_str) != 0 ||
+            !fs::is_regular_file(target)) {
+            res.status = 404;
+            res.set_content("File not found", "text/plain");
+            return;
+        }
 
-        res.set_content(content, mime_type);
+        std::string content = read_file(target.string());
+        if (content.empty()) {
+            res.status = 404;
+            res.set_content("File not found", "text/plain");
+            return;
+        }
+
+        res.set_content(content, get_mime_type(target.string()));
     });
 }
 
