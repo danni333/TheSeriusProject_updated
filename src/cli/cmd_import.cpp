@@ -2,10 +2,69 @@
 #include "cli/args_parser.h"
 #include "../hub/downloader.h"
 
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+
+namespace fs = std::filesystem;
 
 namespace serius {
 namespace cli {
+
+namespace {
+
+/// Copy a local file or directory into the import output directory.
+/// Returns 0 on success, 1 on failure.
+int import_local_path(const std::string &source, const std::string &output)
+{
+    std::error_code ec;
+    const fs::path src(source);
+    if (!fs::exists(src, ec)) {
+        std::cerr << "Error: local path does not exist: " << source << "\n";
+        return 1;
+    }
+
+    const fs::path dst = fs::path(output) / src.filename();
+
+    // Already imported in place (e.g. source lives inside --output).
+    if (fs::exists(dst, ec) && fs::equivalent(src, dst, ec)) {
+        std::cout << "Already present at " << dst.string() << "\n";
+        return 0;
+    }
+
+    // Refuse to copy a directory into its own subtree.
+    if (fs::is_directory(src, ec)) {
+        const fs::path src_abs = fs::absolute(src, ec);
+        const fs::path dst_abs = fs::absolute(dst, ec);
+        const auto src_str = src_abs.generic_string();
+        const auto dst_str = dst_abs.generic_string();
+        if (dst_str.rfind(src_str + "/", 0) == 0) {
+            std::cerr << "Error: output directory is inside the source: " << dst.string() << "\n";
+            return 1;
+        }
+    }
+
+    fs::create_directories(output, ec);
+    if (ec) {
+        std::cerr << "Error: cannot create output directory: " << output << "\n";
+        return 1;
+    }
+
+    if (fs::is_directory(src, ec)) {
+        fs::copy(src, dst,
+                 fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+    } else {
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+    }
+    if (ec) {
+        std::cerr << "Error: copy failed: " << ec.message() << "\n";
+        return 1;
+    }
+    std::cout << "Imported " << source << " -> " << dst.string() << "\n";
+    return 0;
+}
+
+}  // namespace
 
 int cmd_import(int argc, char **argv)
 {
@@ -53,7 +112,7 @@ int cmd_import(int argc, char **argv)
             std::cerr << "Download failed\n";
             return 1;
         }
-    } else {
+    } else if (source.rfind("http://", 0) == 0 || source.rfind("https://", 0) == 0) {
         // Direct URL download
         std::cout << "Downloading from URL: " << source << "\n";
         std::cout << "Output path: " << output << "\n";
@@ -66,6 +125,9 @@ int cmd_import(int argc, char **argv)
             std::cerr << "Download failed\n";
             return 1;
         }
+    } else {
+        // Local path: directory or file -> copy into the output directory.
+        return import_local_path(source, output);
     }
 }
 

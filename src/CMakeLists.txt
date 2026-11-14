@@ -252,6 +252,7 @@ add_executable(serius cli/serius_cli.cpp
     cli/cmd_doctor.cpp
     cli/cmd_import.cpp
     cli/cmd_convert.cpp
+    cli/cmd_generate.cpp
     cli/cmd_bench.cpp
     cli/cmd_stress.cpp)
 target_link_libraries(serius PRIVATE serius_core serius_server hub)

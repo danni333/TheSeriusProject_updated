@@ -188,13 +188,19 @@ public:
   `serius.exe convert` → verifica artefatti → `Server` carica la
   directory convertita → chat completion 200 con contenuto non vuoto.
   7/7 test E2E verdi.
-- `serius generate` non esiste come comando a parte: `serius chat
-  --prompt "..." --max-tokens N` è il equivalente non interattivo
-  (usato anche nel test manuale di verifica).
-- Scenario "import" coperto a livello di asset locali: `serius import`
-  esiste ed è limitato al download HF/URL (la parte "convert" e
-  "infer" è ora reale); un E2E di download richiede rete e non è
-  nel test.
+- `serius generate` implementato (`src/cli/cmd_generate.cpp`): wrapper
+  sottile su `chat --prompt` con flag dedicati (`--model`, `--prompt`,
+  `--max-tokens`, `--temperature`, `--top-k`, `--top-p`, `--seed`,
+  `--type`, `--gpu`, `--raw`, `--system`) — stesso path di inferenza.
+- `serius import` esteso ai path locali (`src/cli/cmd_import.cpp`):
+  `--source` può essere una directory o un file locale, copiato in
+  `--output/<name>`; `hf://` e `http(s)://` restano download.
+  Guardie: skip se già presente, rifiuto se output dentro la sorgente.
+- `E2ECli.ImportConvertGeneratePipeline` in `tests/test_e2e.cpp`:
+  pipeline E2E completa offline tramite binario reale —
+  `serius import` (dir locale) → `serius convert` (GGUF → safetensors)
+  → `serius generate` (inferenza, stdout catturato, output non vuoto).
+  8/8 test E2E verdi.
 
 **Rimasto:**
 - 1.5 Safety pipeline E2E: i guardrails non sono cablati nel path HTTP

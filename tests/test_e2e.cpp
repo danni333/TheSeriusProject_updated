@@ -68,6 +68,57 @@ void wait_for_server(httplib::Client &client, int timeout_seconds = 30)
     }
 }
 
+#ifdef _WIN32
+/// Run a command line via CreateProcess, capturing stdout. Returns exit code;
+/// stdout is appended to `out`.
+DWORD run_capture(const std::string &cmd, std::string &out)
+{
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+
+    HANDLE read_pipe = nullptr, write_pipe = nullptr;
+    if (!CreatePipe(&read_pipe, &write_pipe, &sa, 0)) {
+        return STILL_ACTIVE;
+    }
+    SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = write_pipe;
+    si.hStdError = write_pipe;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION pi{};
+    std::string mutable_cmd = cmd;
+    if (!CreateProcessA(nullptr, mutable_cmd.data(), nullptr, nullptr, TRUE,
+                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+        CloseHandle(read_pipe);
+        CloseHandle(write_pipe);
+        return STILL_ACTIVE;
+    }
+    CloseHandle(write_pipe);
+
+    // Wait first so a hung child cannot block the pipe read forever.
+    if (WaitForSingleObject(pi.hProcess, 180000) == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, 1);
+    }
+
+    char buf[4096];
+    DWORD n = 0;
+    while (ReadFile(read_pipe, buf, sizeof(buf), &n, nullptr) && n > 0) {
+        out.append(buf, n);
+    }
+    CloseHandle(read_pipe);
+
+    DWORD code = STILL_ACTIVE;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code;
+}
+#endif
+
 /// Shared fixture: one Server with the real smollm2-q4 GGUF loaded.
 class E2EServer : public ::testing::Test
 {
@@ -423,6 +474,75 @@ TEST(E2ECli, ConvertThenInfer)
     std::filesystem::remove_all(out_dir);
 #else
     GTEST_SKIP() << "convert pipeline test is Windows-only";
+#endif
+}
+
+// 1.4 full pipeline via real binaries: import (local dir) -> convert ->
+// generate, all offline.
+TEST(E2ECli, ImportConvertGeneratePipeline)
+{
+#ifdef _WIN32
+    const auto model_dir = find_model_dir("models/smollm2-q4");
+    if (model_dir.empty()) {
+        GTEST_SKIP() << "models/smollm2-q4 not found";
+    }
+    const auto gguf_name = "SmolLM2-135M-Instruct-Q4_0.gguf";
+    const auto src_gguf = model_dir / gguf_name;
+    if (!std::filesystem::exists(src_gguf)) {
+        GTEST_SKIP() << "GGUF file not found";
+    }
+#ifndef SERIUS_EXE_PATH
+#error "SERIUS_EXE_PATH compile definition required"
+#endif
+
+    const auto tmp = std::filesystem::temp_directory_path() /
+                     ("serius_e2e_pipe_" + std::to_string(::GetCurrentProcessId()));
+    std::filesystem::remove_all(tmp);
+    const auto hub_dir = tmp / "hub";
+    const auto hf_dir = tmp / "hf";
+
+    auto win_path = [](std::filesystem::path p) {
+        std::string s = p.string();
+        std::replace(s.begin(), s.end(), '/', '\\');
+        return s;
+    };
+    const std::string exe = "\"" + std::string(SERIUS_EXE_PATH) + "\"";
+    std::string out;
+
+    // 1. Import: local directory -> hub/<name>/
+    DWORD code = run_capture(exe + " import --source \"" + win_path(model_dir) +
+                                 "\" --output \"" + win_path(hub_dir) + "\"",
+                             out);
+    ASSERT_EQ(code, 0u) << out;
+    const auto imported_gguf = hub_dir / model_dir.filename() / gguf_name;
+    EXPECT_TRUE(std::filesystem::exists(imported_gguf));
+    EXPECT_TRUE(std::filesystem::exists(hub_dir / model_dir.filename() / "tokenizer.json"));
+
+    // 2. Convert: GGUF -> safetensors dir
+    out.clear();
+    code = run_capture(exe + " convert --input \"" + win_path(imported_gguf) +
+                           "\" --output \"" + win_path(hf_dir) + "\"",
+                       out);
+    ASSERT_EQ(code, 0u) << out;
+    EXPECT_TRUE(std::filesystem::exists(hf_dir / "model.safetensors"));
+    EXPECT_TRUE(std::filesystem::exists(hf_dir / "config.json"));
+    EXPECT_TRUE(std::filesystem::exists(hf_dir / "tokenizer.json"));
+
+    // 3. Generate: non-interactive inference on the converted model.
+    out.clear();
+    code = run_capture(exe + " generate --model \"" + win_path(hf_dir) +
+                           "\" --prompt \"Say hello.\" --max-tokens 8"
+                           " --temperature 0 --gpu cpu",
+                       out);
+    ASSERT_EQ(code, 0u) << out;
+    EXPECT_NE(out.find("Assistant:"), std::string::npos);
+    const auto pos = out.find("Assistant:");
+    const auto rest = out.substr(pos + std::string("Assistant:").size());
+    EXPECT_NE(rest.find_first_not_of(" \t\r\n"), std::string::npos);
+
+    std::filesystem::remove_all(tmp);
+#else
+    GTEST_SKIP() << "pipeline test is Windows-only";
 #endif
 }
 

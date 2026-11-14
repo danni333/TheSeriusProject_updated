@@ -14,7 +14,7 @@ Riferimento: `fase56_e2e_tests.md`
 | E2E: streaming SSE | ✅ | `E2EServer.StreamingSSE` (chunk JSON + [DONE]) |
 | Dati e modelli di test (piccoli, in repo o CI) | ✅ | `models/smollm2-q4` (135M Q4_0), skip se assente |
 | Script e2e_*.sh o test_e2e.cpp | ✅ | `tests/test_e2e.cpp` — 6 test verdi |
-| E2E: import → convert → infer | ✅ | `serius convert` (GGUF→safetensors) + `E2ECli.ConvertThenInfer`; `chat --prompt` = generate |
+| E2E: import → convert → infer | ✅ | `serius import` (locale+HF) → `serius convert` (GGUF→safetensors) → `serius generate`; `E2ECli.ImportConvertGeneratePipeline` |
 | E2E: safety/guardrails | ❌ | non cablati nel path HTTP |
 
 ---
