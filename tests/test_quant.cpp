@@ -594,6 +594,64 @@ TEST(QuantFP8, TensorQuantizeDequantizeE4M3)
     EXPECT_LT(max_rel_error, 0.15f) << "Tensor FP8 E4M3 max relative error too large";
 }
 
+TEST(QuantFP8, DequantMatmulMatchesReference)
+{
+    const int M = 3, N = 5, K = 64;
+    const int block_size = 32;
+
+    std::vector<float> W(static_cast<size_t>(N) * K);
+    std::vector<float> X(static_cast<size_t>(M) * K);
+    for (size_t i = 0; i < W.size(); ++i)
+        W[i] = std::cos(static_cast<float>(i) * 0.13f) * 2.0f;
+    for (size_t i = 0; i < X.size(); ++i)
+        X[i] = std::sin(static_cast<float>(i) * 0.07f);
+
+    std::vector<float> scales;
+    std::vector<uint8_t> fp8_data;
+    fp8_quantize_tensor(W.data(), W.size(), block_size, /*use_e4m3=*/true, scales, fp8_data);
+
+    std::vector<float> Y(static_cast<size_t>(M) * N, -1.0f);
+    fp8_dequant_matmul(fp8_data.data(), scales.data(), X.data(), Y.data(), M, N, K, block_size,
+                       /*use_e4m3=*/true);
+
+    // Reference: dequantize W, then plain dot products.
+    std::vector<float> W_deq(W.size());
+    fp8_dequantize_tensor(fp8_data.data(), scales.data(), W.size(), block_size, true, W_deq.data());
+
+    for (int i = 0; i < M; ++i) {
+        for (int j = 0; j < N; ++j) {
+            float ref = 0.0f;
+            for (int k = 0; k < K; ++k)
+                ref += X[static_cast<size_t>(i) * K + k] * W_deq[static_cast<size_t>(j) * K + k];
+            EXPECT_NEAR(Y[static_cast<size_t>(i) * N + j], ref, 1e-4f)
+                << "mismatch at (" << i << "," << j << ")";
+        }
+    }
+}
+
+TEST(QuantFP8, DequantMatmulE5M2)
+{
+    const int M = 2, N = 4, K = 32;
+    const int block_size = 16;
+
+    std::vector<float> W(static_cast<size_t>(N) * K, 0.5f);
+    std::vector<float> X(static_cast<size_t>(M) * K, 1.0f);
+
+    std::vector<float> scales;
+    std::vector<uint8_t> fp8_data;
+    fp8_quantize_tensor(W.data(), W.size(), block_size, /*use_e4m3=*/false, scales, fp8_data);
+
+    std::vector<float> Y(static_cast<size_t>(M) * N, 0.0f);
+    fp8_dequant_matmul(fp8_data.data(), scales.data(), X.data(), Y.data(), M, N, K, block_size,
+                       /*use_e4m3=*/false);
+
+    // Constant weights: Y[i,j] ≈ K * dequant(0.5) — check it's finite and positive.
+    for (float v : Y) {
+        EXPECT_GT(v, 0.0f);
+        EXPECT_LT(v, static_cast<float>(K) * 2.0f);
+    }
+}
+
 // ============================================================
 // AWQ Tests
 // ============================================================

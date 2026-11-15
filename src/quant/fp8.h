@@ -79,5 +79,19 @@ void fp8_dequantize_tensor(const uint8_t *fp8_data, const float *scales,
                            size_t n, size_t block_size, bool use_e4m3,
                            float *out);
 
+/// Fused FP8 dequant + matmul (CPU)
+/// Computes Y[M,N] = X[M,K] * W[N,K]^T where W is stored FP8-quantized
+/// with per-block scales produced by fp8_quantize_tensor.
+/// @param fp8_data   FP8-encoded weights, row-major [N, K]
+/// @param scales     Per-block scale factors, [N * blocks_per_row]
+/// @param X          Input activations, row-major [M, K]
+/// @param Y          Output, row-major [M, N]
+/// @param M,N,K      Matrix dimensions
+/// @param block_size Elements per scaling block (must match quantization)
+/// @param use_e4m3   true for E4M3, false for E5M2
+void fp8_dequant_matmul(const uint8_t *fp8_data, const float *scales,
+                        const float *X, float *Y, int M, int N, int K,
+                        int block_size, bool use_e4m3);
+
 }  // namespace quant
 }  // namespace serius

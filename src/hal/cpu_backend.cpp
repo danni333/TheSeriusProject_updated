@@ -1,8 +1,13 @@
 #include "cpu_backend.h"
 #include "fused_kernels.h"
 
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <mutex>
+#include <queue>
+#include <thread>
 #include <vector>
 
 namespace serius {
@@ -127,39 +132,111 @@ void CpuBackend::memcpy_d2d(void *dst, const void *src, size_t size)
     }
 }
 
+// CPU "stream": a single worker thread executing enqueued ops in order.
+// sync_stream() blocks until all previously enqueued work has run.
+struct CpuStream
+{
+    std::thread worker;
+    std::queue<std::function<void()>> queue;
+    std::mutex mutex;
+    std::condition_variable cv;
+    bool stop = false;
+
+    explicit CpuStream()
+    {
+        worker = std::thread([this] {
+            for (;;) {
+                std::function<void()> task;
+                {
+                    std::unique_lock<std::mutex> lk(mutex);
+                    cv.wait(lk, [this] { return stop || !queue.empty(); });
+                    if (stop && queue.empty()) { return; }
+                    task = std::move(queue.front());
+                    queue.pop();
+                }
+                task();
+            }
+        });
+    }
+
+    ~CpuStream()
+    {
+        {
+            std::lock_guard<std::mutex> lk(mutex);
+            stop = true;
+        }
+        cv.notify_all();
+        if (worker.joinable()) { worker.join(); }
+    }
+
+    void enqueue(std::function<void()> task)
+    {
+        {
+            std::lock_guard<std::mutex> lk(mutex);
+            queue.push(std::move(task));
+        }
+        cv.notify_one();
+    }
+
+    void sync()
+    {
+        // Barrier: enqueue a no-op and wait until the worker has drained
+        // everything enqueued before it.
+        std::mutex done_mtx;
+        std::condition_variable done_cv;
+        bool done = false;
+        enqueue([&] {
+            std::lock_guard<std::mutex> lk(done_mtx);
+            done = true;
+            done_cv.notify_one();
+        });
+        std::unique_lock<std::mutex> lk(done_mtx);
+        done_cv.wait(lk, [&] { return done; });
+    }
+};
+
 void *CpuBackend::create_stream()
 {
-    return nullptr;
+    return new CpuStream();
 }
 
 void CpuBackend::destroy_stream(void *stream)
 {
-    (void)stream;
-    // No-op for CPU
+    delete static_cast<CpuStream *>(stream);
 }
 
 void CpuBackend::sync_stream(void *stream)
 {
-    (void)stream;
-    // CPU operations are synchronous for now.
+    if (stream != nullptr) {
+        static_cast<CpuStream *>(stream)->sync();
+    }
 }
 
 void CpuBackend::memcpy_h2d_async(void *dst, const void *src, size_t size, void *stream)
 {
-    (void)stream;
-    memcpy_h2d(dst, src, size);
+    if (stream == nullptr || size == 0) {
+        memcpy_h2d(dst, src, size);
+        return;
+    }
+    static_cast<CpuStream *>(stream)->enqueue([dst, src, size] { std::memcpy(dst, src, size); });
 }
 
 void CpuBackend::memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream)
 {
-    (void)stream;
-    memcpy_d2h(dst, src, size);
+    if (stream == nullptr || size == 0) {
+        memcpy_d2h(dst, src, size);
+        return;
+    }
+    static_cast<CpuStream *>(stream)->enqueue([dst, src, size] { std::memcpy(dst, src, size); });
 }
 
 void CpuBackend::memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream)
 {
-    (void)stream;
-    memcpy_d2d(dst, src, size);
+    if (stream == nullptr || size == 0) {
+        memcpy_d2d(dst, src, size);
+        return;
+    }
+    static_cast<CpuStream *>(stream)->enqueue([dst, src, size] { std::memcpy(dst, src, size); });
 }
 
 // Global accessor singleton implementation
