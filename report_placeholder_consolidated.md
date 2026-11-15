@@ -20,6 +20,7 @@ Item di questo report verificati e risolti nel frattempo:
 | 6-7 | **MCP HTTP + Stdio Transport stub** | ✅ RISOLTO — `transport_http.cpp` (JSON-RPC via httplib) e `transport_stdio.cpp` (subprocess CreateProcess/fork) implementati; 11/11 test in `test_mcp_client`. |
 | 3 | **Hub Search Engine stub** | ✅ RISOLTO — `search_engine.cpp` riscritto: ricerca full-text + filtri tag/author, ranking deterministico, similarità, suggestions, trending, analytics, cache, highlight, paginazione. Test in `test_hub_search` (4/4). |
 | 5 | **Hub Metadata Manager** | ✅ PARZIALE — metodi CRUD/count/downloads/ratings implementati con persistenza JSON file-based; SQLite resta disabilitata (scelta intenzionale, non bloccante). |
+| 13 | **Hub Converter Safetensors→GGUF** | ✅ RISOLTO — `io/gguf_writer.cpp` (GGUF v3, FP16/FP32, tokenizer KV, RoPE perm llama); `serius convert` bidirezionale; test_gguf_writer 4/4 + verifica live Qwen2.5-Coder-1.5B. |
 | Part5 | **Catch silent io/hub (config_loader, safetensors, sharding, downloader, metadata)** | ✅ RISOLTO — tutti loggano `[Component] Failed ...` con `e.what()`; fallback su config vuota/`false` mantenuto. |
 
 Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era rotto (fixato — root cause in `Tensor` host/device sync), KV cache non persistente tra turni (fixato), multi-modello assente (implementato), `hf://` non supportato a runtime (implementato).

@@ -187,6 +187,9 @@ target_link_libraries(test_red_team PRIVATE serius_core gtest_main)
 add_executable(test_mcp_client test_mcp_client.cpp)
 target_link_libraries(test_mcp_client PRIVATE serius_core gtest_main)
 
+add_executable(test_gguf_writer test_gguf_writer.cpp)
+target_link_libraries(test_gguf_writer PRIVATE serius_core gtest_main)
+
 add_executable(test_react test_react.cpp)
 target_link_libraries(test_react PRIVATE serius_core gtest_main)
 
@@ -310,6 +313,7 @@ gtest_discover_tests(test_batcher)
 gtest_discover_tests(test_dedup)
 gtest_discover_tests(test_red_team)
 gtest_discover_tests(test_mcp_client)
+gtest_discover_tests(test_gguf_writer)
 gtest_discover_tests(test_react)
 gtest_discover_tests(test_guard)
 gtest_discover_tests(test_reasoning)

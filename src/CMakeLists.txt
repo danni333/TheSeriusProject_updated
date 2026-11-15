@@ -60,6 +60,7 @@ add_library(serius_core
     io/config_loader.cpp
     io/gguf_loader.cpp
     io/gguf_export.cpp
+    io/gguf_writer.cpp
     io/simple_weights_loader.cpp
     io/safetensors_loader.cpp
     io/hf_llama_loader.cpp

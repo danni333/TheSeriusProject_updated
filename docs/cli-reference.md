@@ -100,11 +100,20 @@ serius generate -m <model> -p "Your prompt" [OPTIONS]
 
 ### `serius convert`
 
-Convert a GGUF model to a safetensors directory.
+Convert between GGUF and HuggingFace safetensors formats (both directions).
 
 ```bash
-serius convert -m <model.gguf> -o <output_dir>
+# GGUF -> HF directory (safetensors + config.json)
+serius convert -i <model.gguf> -o <output_dir>
+
+# HF dir / .safetensors -> single .gguf (FP16 tensors, tokenizer embedded)
+serius convert -i <model_dir_or_model.safetensors> -o <out.gguf>
+serius convert -i models/qwen -o qwen.gguf --f32        # FP32 tensors
+serius convert -i models/qwen -o qwen.gguf --no-tokenizer
 ```
+
+Input may be a directory with `config.json` + `model.safetensors` (or a
+sharded `*.safetensors.index.json`), or a `.safetensors` file directly.
 
 ### `serius bench`
 

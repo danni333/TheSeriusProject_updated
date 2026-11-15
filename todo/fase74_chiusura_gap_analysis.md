@@ -10,7 +10,10 @@ multi-modello + load/unload runtime + `hf://`, BOS/EOS reali, stress VRAM/RAM
 server-side, TPS reale, chaos assertions, test_placeholder rimosso,
 **A1 MCP transports** (HTTP + stdio, 11/11 test), **A2 Hub Search Engine**
 (file-backed, 4/4 test), **A3 catch silenti** io/hub (tutti loggati),
-MetadataManager CRUD completo (JSON file-based, SQLite resta disabilitata).
+MetadataManager CRUD completo (JSON file-based, SQLite resta disabilitata),
+**B1 GGUF writer** (`io/gguf_writer.cpp`: HF dir/.safetensors → GGUF con
+config KV + tokenizer embedding + RoPE perm per arch llama; `serius convert`
+bidirezionale; verificato end-to-end su Qwen2.5-Coder-1.5B reale).
 
 ---
 
@@ -38,9 +41,15 @@ MetadataManager CRUD completo (JSON file-based, SQLite resta disabilitata).
 
 ## Track B — Media (1–2 settimane)
 
-### B1. Hub Converter Safetensors→GGUF (`src/hub/converter.cpp`, 65 righe)
-- Scrivere GGUF v3 writer: header, metadata KV, tensor infos, allineamento.
-- Importante per l'ecosistema (export modelli convertiti).
+### B1. Hub Converter Safetensors→GGUF ✅ FATTO
+- `src/io/gguf_writer.cpp`: GGUF v3 writer (header, KV metadata, tensor infos,
+  allineamento 32B). FP16 default, FP32 opt-in.
+- Mappatura nomi HF→GGUF inversa a `gguf_export`, RoPE perm per arch "llama",
+  embedding tokenizer.ggml.* da tokenizer.json/merges.txt.
+- `ModelConverter::safetensors_to_gguf` delega al writer; `serius convert`
+  ora bidirezionale (input .gguf → export, dir/.safetensors → import).
+- Test: `test_gguf_writer` (4/4) + verifica live su Qwen2.5-Coder-1.5B
+  ("2+2?" → "4", stop corretto).
 
 ### B2. Model Hub Server routes + auth (`src/hub/model_hub_server.cpp`)
 - `search_models` stub → route REST reali via httplib.
