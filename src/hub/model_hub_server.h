@@ -22,7 +22,7 @@ namespace serius::hub {
 class ModelHubServer
 {
    public:
-    ModelHubServer(int port = defaults::kHttpPort);
+    ModelHubServer(int port = defaults::kHubPort);
     ~ModelHubServer();
 
     void start();

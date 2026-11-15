@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../common/defaults.h"
 #include "../tensor/tensor.h"
 
 #include <cstdint>
@@ -14,7 +15,8 @@ namespace infer {
 class Sampler
 {
 public:
-    Sampler(float temperature = 0.7f, int top_k = 40, float top_p = 0.9f, uint64_t seed = 0);
+    Sampler(float temperature = defaults::kTemperature, int top_k = defaults::kTopK,
+            float top_p = defaults::kTopP, uint64_t seed = 0);
 
     /// Sample one token from logits (shape: (vocab_size,) or last row of (seq, vocab_size)).
     /// Uses temperature scaling, then optional top_k, top_p, and repetition penalty.

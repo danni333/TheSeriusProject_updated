@@ -1,5 +1,6 @@
 #include "cli/cmd_bench.h"
 #include "cli/args_parser.h"
+#include "../common/defaults.h"
 #include "bench/latency.h"
 #include "bench/throughput.h"
 #include "bench/memory.h"
@@ -39,7 +40,7 @@ int cmd_bench(int argc, char **argv)
 
     std::string model_path = parser.get("model");
     std::string prompt = parser.get("prompt");
-    int max_tokens = parser.get_int("max-tokens", 256);
+    int max_tokens = parser.get_int("max-tokens", static_cast<int>(defaults::kMaxNewTokens));
     int concurrent = parser.get_int("concurrent", 4);
     int requests = parser.get_int("requests", 10);
     std::string output_path = parser.get("output", "benchmark_report.md");

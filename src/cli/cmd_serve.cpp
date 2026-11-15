@@ -87,10 +87,11 @@ int cmd_serve(int argc, char **argv)
     if (!name.empty()) {
         config.model_name = name;
     }
-    config.max_new_tokens = static_cast<size_t>(parser.get_int("max-tokens", 256));
-    config.default_temperature = parser.get_float("temperature", 0.7f);
-    config.default_top_k = parser.get_int("top-k", 40);
-    config.default_top_p = parser.get_float("top-p", 0.9f);
+    config.max_new_tokens = static_cast<size_t>(
+        parser.get_int("max-tokens", static_cast<int>(defaults::kMaxNewTokens)));
+    config.default_temperature = parser.get_float("temperature", defaults::kTemperature);
+    config.default_top_k = parser.get_int("top-k", defaults::kTopK);
+    config.default_top_p = parser.get_float("top-p", defaults::kTopP);
     const std::string ui_dir = parser.get("ui");
     if (!ui_dir.empty()) {
         config.ui_dir = ui_dir;

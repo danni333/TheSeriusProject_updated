@@ -1,5 +1,6 @@
 #include "metadata_manager.h"
 #include "model_hub_server.h"
+#include "../common/defaults.h"
 // #include "auth_manager.h"
 #include <signal.h>
 
@@ -27,7 +28,7 @@ void signal_handler(int signal)
     exit(0);
 }
 
-bool initialize_components()
+bool initialize_components(int port)
 {
     // Initialize metadata manager
     g_metadata_manager = std::make_unique<MetadataManager>("hub_metadata.db");
@@ -56,7 +57,7 @@ bool initialize_components()
     }
 
     // Initialize hub server
-    g_server = std::make_unique<ModelHubServer>(8081);
+    g_server = std::make_unique<ModelHubServer>(port);
 
     return true;
 }
@@ -66,7 +67,7 @@ void print_usage()
     std::cout << "Serius Model Hub Server\n";
     std::cout << "Usage: serius_hub_server [options]\n";
     std::cout << "Options:\n";
-    std::cout << "  --port <port>     Server port (default: 8081)\n";
+    std::cout << "  --port <port>     Server port (default: " << serius::defaults::kHubPort << ")\n";
     std::cout << "  --help            Show this help message\n";
 }
 
@@ -76,7 +77,7 @@ int main(int argc, char *argv[])
 {
     using namespace serius::hub;
 
-    int port = 8081;
+    int port = serius::defaults::kHubPort;
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -98,7 +99,7 @@ int main(int argc, char *argv[])
     signal(SIGTERM, signal_handler);
 
     // Initialize components
-    if (!initialize_components()) {
+    if (!initialize_components(port)) {
         std::cerr << "Failed to initialize hub components\n";
         return 1;
     }

@@ -1,5 +1,7 @@
 #include "transport_http.h"
 
+#include "../common/defaults.h"
+
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
@@ -77,8 +79,8 @@ json HttpTransport::send_request(const std::string &method, const json &params)
     req["params"] = params;
 
     httplib::Client cli(url.host, url.port);
-    cli.set_connection_timeout(10);
-    cli.set_read_timeout(60);
+    cli.set_connection_timeout(serius::defaults::kMcpConnectTimeoutSec);
+    cli.set_read_timeout(serius::defaults::kMcpReadTimeoutSec);
 
     httplib::Headers headers = {{"Content-Type", "application/json"},
                                 {"Accept", "application/json"}};

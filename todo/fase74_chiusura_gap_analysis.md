@@ -39,9 +39,13 @@ E2E stdio+HTTP, `test_mcp_server` 11/11).
   `metadata_manager` ora loggano `[Component] Failed ...` con `e.what()`.
 - `nccl_comm` rilancia (non silenzioso), `gguf_export` skip legittimo.
 
-### A4. Config centralizzata
-- `defaults.h` esiste già; estenderlo per porte/timeout/threshold sparsi
-  (vedi report Part 3). Bassa priorità.
+### A4. Config centralizzata ✅ FATTO
+- `defaults.h` esteso: `kHubPort` (8081), `kHost`, timeout MCP/stress,
+  default generazione (`kMaxNewTokens`, `kTemperature`, `kTopK`, `kTopP`).
+- Usati in `ServerConfig`, `Sampler`, `ModelHubServer` (default ora
+  `kHubPort`, prima `kHttpPort` errato), `hub_main` (fixato `--port`
+  che veniva parsato ma ignorato), `transport_http`, `stress_runner`,
+  `worker`, `cmd_chat`/`cmd_serve`/`cmd_bench`.
 
 ## Track B — Media (1–2 settimane)
 

@@ -231,8 +231,8 @@ void StressRunner::finalize_metrics(StressResult& result, std::mutex& mtx,
 
 std::pair<size_t, size_t> StressRunner::sample_server_memory(const std::string &server_url) {
     httplib::Client cli(server_url);
-    cli.set_connection_timeout(5);
-    cli.set_read_timeout(5);
+    cli.set_connection_timeout(defaults::kStressChaosTimeoutSec);
+    cli.set_read_timeout(defaults::kStressChaosTimeoutSec);
     if (auto res = cli.Get("/health"); res && res->status == 200) {
         try {
             const auto j = nlohmann::json::parse(res->body);

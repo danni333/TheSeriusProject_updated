@@ -1,5 +1,6 @@
 #include "cli/cmd_chat.h"
 #include "cli/args_parser.h"
+#include "../common/defaults.h"
 #include "hal/device.h"
 #include "infer/sampler.h"
 #include "io/config_loader.h"
@@ -71,9 +72,9 @@ int cmd_chat(int argc, char **argv)
 
     std::string model_path = parser.get("model");
     std::string model_type = parser.get("type", "llama");
-    float temperature = parser.get_float("temperature", 0.7f);
-    int top_k = parser.get_int("top-k", 40);
-    float top_p = parser.get_float("top-p", 0.9f);
+    float temperature = parser.get_float("temperature", defaults::kTemperature);
+    int top_k = parser.get_int("top-k", defaults::kTopK);
+    float top_p = parser.get_float("top-p", defaults::kTopP);
     int max_new_tokens = parser.get_int("max-tokens", 128);
     uint64_t seed = parser.get_int("seed", 0);
     float repeat_penalty = parser.get_float("repeat-penalty", 1.15f);

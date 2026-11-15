@@ -30,14 +30,14 @@ class InferenceMetrics;
 struct ServerConfig
 {
     uint16_t port = defaults::kHttpPort;
-    std::string host = "0.0.0.0";
+    std::string host = defaults::kHost;
     std::string model_path = "";
     std::string model_type = "llama";  // "llama", "qwen", "transformer"
     std::string model_name = "default";
-    size_t max_new_tokens = 256;
-    float default_temperature = 0.7f;
-    int default_top_k = 40;
-    float default_top_p = 0.9f;
+    size_t max_new_tokens = defaults::kMaxNewTokens;
+    float default_temperature = defaults::kTemperature;
+    int default_top_k = defaults::kTopK;
+    float default_top_p = defaults::kTopP;
     std::string ui_dir = "ui";  // Directory for web UI static files
     /// GPU backend for the loaded LLaMA model: auto = plan from model size vs
     /// free VRAM, cpu = never offload, cuda = require GPU (warn if it can't fit).

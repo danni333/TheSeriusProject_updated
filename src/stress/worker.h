@@ -20,7 +20,7 @@ public:
                  int max_tokens,
                  const std::string& model_name = defaults::kModelName,
                  const std::string& endpoint = "/v1/chat/completions",
-                 int timeout_seconds = 30,
+                 int timeout_seconds = defaults::kStressTimeoutSec,
                  int interval_ms = 100);
 
     /// Run the worker until stopped

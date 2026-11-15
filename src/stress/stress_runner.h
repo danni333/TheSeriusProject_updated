@@ -17,11 +17,11 @@ struct StressConfig {
     int duration_seconds = 60;
     int ramp_step_seconds = 60;
     std::string prompt = "Explain quantum computing in detail...";
-    int max_tokens = 256;
+    int max_tokens = defaults::kMaxNewTokens;
     std::string server_url = defaults::kServerUrl;
     std::string model_name = defaults::kModelName;
     std::string endpoint = "/v1/chat/completions";
-    int http_timeout_seconds = 30;
+    int http_timeout_seconds = defaults::kStressTimeoutSec;
     int request_interval_ms = 100;  // delay between requests issued by each worker
     int ramp_max_users = 128;
     int spike_users = 64;
