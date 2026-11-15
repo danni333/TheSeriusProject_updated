@@ -242,7 +242,7 @@ target_include_directories(serius_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib)
 
 # --- Server library ---
-add_library(serius_server STATIC server/server.cpp server/static_files.cpp)
+add_library(serius_server STATIC server/server.cpp server/server_generation.cpp server/static_files.cpp)
 target_link_libraries(serius_server PUBLIC serius_core httplib::httplib)
 target_include_directories(serius_server PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
