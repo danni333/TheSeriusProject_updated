@@ -27,7 +27,8 @@ std::string generate_report(const StressResult& result,
             {"p99_latency_ms", result.p99_latency_ms},
             {"error_rate", result.error_rate},
             {"total_requests", result.total_requests},
-            {"total_errors", result.total_errors}
+            {"total_errors", result.total_errors},
+            {"total_tokens", result.total_tokens}
         };
 
         nlohmann::json tps_data;
@@ -85,6 +86,7 @@ std::string generate_report(const StressResult& result,
         row("P99 Latency", std::to_string(result.p99_latency_ms) + " ms");
         row("Error Rate", std::to_string(result.error_rate * 100.0f) + "%");
         row("Total Reqs", std::to_string(result.total_requests));
+        row("Total Tokens", std::to_string(result.total_tokens));
         row("Total Errors", std::to_string(result.total_errors));
         ss << "  └──────────────┴────────────┘\n\n";
 

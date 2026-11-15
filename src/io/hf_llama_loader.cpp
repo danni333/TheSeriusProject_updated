@@ -346,7 +346,9 @@ model::LLamaConfig load_llama_config(const std::string &config_path)
     try {
         auto json_data = nlohmann::json::parse(buffer.str());
         return parse_llama_config(json_data);
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::cerr << "[Loader] Failed to parse config JSON (" << config_path
+                  << "): " << e.what() << " — using default config\n";
         return model::LLamaConfig{};
     }
 }

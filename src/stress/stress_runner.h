@@ -5,6 +5,7 @@
 #include <atomic>
 #include <mutex>
 #include <chrono>
+#include <utility>
 
 #include "../common/defaults.h"
 
@@ -39,10 +40,17 @@ struct StressResult {
     float error_rate = 0.0f;
     size_t total_requests = 0;
     size_t total_errors = 0;
+    size_t total_tokens = 0;  // sum of usage.completion_tokens across requests
     std::vector<std::pair<float, float>> tps_timeline;  // (timestamp, tps)
     std::vector<std::pair<float, size_t>> vram_timeline; // (timestamp, bytes)
     std::vector<std::pair<float, size_t>> ram_timeline;  // (timestamp, bytes)
     std::vector<float> latencies_ms;
+};
+
+struct ChaosResult {
+    int checks_passed = 0;
+    int checks_failed = 0;
+    bool server_alive = false;  // /health still responds after the probes
 };
 
 class StressRunner {
@@ -59,8 +67,10 @@ public:
     /// Run spike test: sudden traffic spike
     StressResult run_spike(const StressConfig& cfg);
 
-    /// Run chaos test: malformed inputs and error scenarios
-    void run_chaos(const StressConfig& cfg);
+    /// Run chaos test: malformed inputs and error scenarios.
+    /// Each probe is checked: invalid inputs must yield a client error (4xx),
+    /// and the server must still answer /health afterwards.
+    ChaosResult run_chaos(const StressConfig& cfg);
 
     /// Calculate percentile from latency values
     float calculate_percentile(std::vector<float>& values, float percentile);
@@ -70,11 +80,9 @@ private:
     void finalize_metrics(StressResult& result, std::mutex& mtx,
                           std::chrono::steady_clock::time_point start_time);
 
-    /// Get current VRAM usage (in bytes); 0 when no CUDA device is available.
-    size_t get_vram_usage();
-
-    /// Get current process RAM usage (in bytes); 0 when unsupported.
-    size_t get_ram_usage();
+    /// Sample the SERVER's RAM/VRAM via GET /health (the stress process's own
+    /// memory is irrelevant for leak detection). Returns {ram_bytes, vram_bytes}.
+    std::pair<size_t, size_t> sample_server_memory(const std::string &server_url);
 };
 
 }  // namespace stress

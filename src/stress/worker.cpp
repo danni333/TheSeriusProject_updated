@@ -22,13 +22,15 @@ StressWorker::StressWorker(const std::string& server_url,
 void StressWorker::run(std::atomic<bool>& running, StressResult& result, std::mutex& mtx) {
     while (running) {
         float latency_ms = 0.0f;
-        bool success = send_request(latency_ms);
+        int completion_tokens = 0;
+        bool success = send_request(latency_ms, completion_tokens);
 
         {
             std::lock_guard<std::mutex> lock(mtx);
             result.total_requests++;
             if (success) {
                 result.latencies_ms.push_back(latency_ms);
+                result.total_tokens += static_cast<size_t>(completion_tokens);
             } else {
                 result.total_errors++;
             }
@@ -43,7 +45,7 @@ void StressWorker::run(std::atomic<bool>& running, StressResult& result, std::mu
     }
 }
 
-bool StressWorker::send_request(float& latency_ms) {
+bool StressWorker::send_request(float& latency_ms, int& completion_tokens) {
     httplib::Client cli(server_url_);
     cli.set_connection_timeout(timeout_seconds_);
     cli.set_read_timeout(timeout_seconds_);
@@ -59,8 +61,18 @@ bool StressWorker::send_request(float& latency_ms) {
     auto end = std::chrono::steady_clock::now();
 
     latency_ms = std::chrono::duration<float, std::milli>(end - start).count();
+    completion_tokens = 0;
 
-    return res && res->status == 200;
+    if (!res || res->status != 200) {
+        return false;
+    }
+    try {
+        const auto j = nlohmann::json::parse(res->body);
+        completion_tokens = j.value("usage", nlohmann::json::object())
+                                .value("completion_tokens", 0);
+    } catch (...) {
+    }
+    return true;
 }
 
 }  // namespace stress

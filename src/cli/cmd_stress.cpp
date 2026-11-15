@@ -92,9 +92,11 @@ int cmd_stress(int argc, char **argv)
         result = runner.run_spike(config);
     } else if (test_type == "chaos") {
         std::cout << "Running chaos test...\n";
-        runner.run_chaos(config);
-        std::cout << "Chaos test complete!\n";
-        return 0;
+        auto chaos = runner.run_chaos(config);
+        std::cout << "Chaos checks: " << chaos.checks_passed << " passed, "
+                  << chaos.checks_failed << " failed"
+                  << (chaos.server_alive ? "" : " — SERVER UNREACHABLE") << "\n";
+        return chaos.checks_failed == 0 && chaos.server_alive ? 0 : 1;
     } else {
         std::cerr << "Unknown test type: " << test_type << "\n";
         parser.print_help();

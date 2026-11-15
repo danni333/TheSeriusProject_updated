@@ -35,8 +35,8 @@ private:
     int timeout_seconds_;
     int interval_ms_;
 
-    /// Send a single HTTP request to the server
-    bool send_request(float& latency_ms);
+    /// Send a single HTTP request to the server; outputs latency and generated tokens
+    bool send_request(float& latency_ms, int& completion_tokens);
 };
 
 }  // namespace stress

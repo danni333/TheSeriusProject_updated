@@ -24,10 +24,69 @@
 #include "../transformer/model.h"
 #include "../transformer/qwen_model.h"
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#elif defined(__linux__)
+#include <fstream>
+#include <cstdlib>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#endif
+
+#ifdef SERIUS_USE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 namespace serius {
 namespace server {
 
 namespace {
+
+/// Resident memory of THIS server process (bytes); 0 when unsupported.
+size_t process_ram_bytes()
+{
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(),
+                             reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc),
+                             sizeof(pmc))) {
+        return static_cast<size_t>(pmc.WorkingSetSize);
+    }
+#elif defined(__linux__)
+    std::ifstream status("/proc/self/status");
+    std::string line;
+    while (std::getline(status, line)) {
+        if (line.rfind("VmRSS:", 0) == 0) {
+            return std::strtoull(line.c_str() + 6, nullptr, 10) * 1024;
+        }
+    }
+#elif defined(__APPLE__)
+    mach_task_basic_info info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                  reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
+        return static_cast<size_t>(info.resident_size);
+    }
+#endif
+    return 0;
+}
+
+/// Device memory currently allocated in THIS process (bytes); 0 without CUDA.
+size_t process_vram_bytes()
+{
+#ifdef SERIUS_USE_CUDA
+    size_t free_bytes = 0, total_bytes = 0;
+    if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
+        return total_bytes > free_bytes ? total_bytes - free_bytes : 0;
+    }
+#endif
+    return 0;
+}
 
 static std::chrono::steady_clock::time_point g_start_time = std::chrono::steady_clock::now();
 
@@ -1190,6 +1249,8 @@ void Server::setup_routes()
         j["status"] = "ok";
         j["model_loaded"] = has_model();
         j["model_name"] = model_name();
+        j["ram_bytes"] = process_ram_bytes();
+        j["vram_bytes"] = process_vram_bytes();
         res.set_content(j.dump(), "application/json");
     });
 

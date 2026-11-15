@@ -18,6 +18,10 @@ namespace {
 class MockStressServer {
 public:
     MockStressServer() {
+        server_.Get("/health", [](const httplib::Request&, httplib::Response& res) {
+            res.set_content(R"({"status":"ok","ram_bytes":0,"vram_bytes":0})",
+                            "application/json");
+        });
         server_.Post("/v1/chat/completions",
                      [this](const httplib::Request& req, httplib::Response& res) {
             request_count_.fetch_add(1);
@@ -34,7 +38,7 @@ public:
                 return;
             }
             res.set_content(
-                R"({"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]})",
+                R"({"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}})",
                 "application/json");
         });
     }
@@ -366,11 +370,13 @@ TEST(StressRunnerTest, ChaosNoCrash) {
     cfg.chaos_long_prompt_chars = 1000;
 
     int before = mock.request_count();
-    EXPECT_NO_THROW(runner.run_chaos(cfg));
+    auto chaos = runner.run_chaos(cfg);
     mock.stop();
 
     // Chaos sends 3 probes: empty messages, long context, malformed JSON
     EXPECT_EQ(mock.request_count() - before, 3);
+    EXPECT_EQ(chaos.checks_failed, 0);
+    EXPECT_TRUE(chaos.server_alive);
 }
 
 }  // namespace stress

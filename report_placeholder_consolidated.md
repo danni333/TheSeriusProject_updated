@@ -5,6 +5,23 @@
 
 ---
 
+## Aggiornamento 2026-11-15 (review di completamento)
+
+Item di questo report verificati e risolti nel frattempo:
+
+| # | Item | Stato |
+|---|------|-------|
+| 10 | **Stress Runner VRAM/RAM monitoring** | ✅ RISOLTO — `GET /health` ora espone `ram_bytes`/`vram_bytes` del processo server; il runner campiona il server (prima misurava se stesso). Chaostest ora verifica le risposte; `avg_tps` conta token reali (`usage.completion_tokens`). |
+| - | **BUG CRITICO: chat CLI incoerente** | ✅ RISOLTO — root cause era il batched prefill (Tensor restituiva dati host stale dopo matmul CUDA) + BOS/EOS hardcoded errato per Qwen. Fix in `tensor.{h,cpp}`, `llama_inference.cpp`, `bpe.{h,cpp}`. |
+| 21 | **GGUF Loader unused parameters / input malformati** | ✅ PARZIALE — hardening loader in commit `31f269f` (bound checks, header validation). |
+| Part5 | **printf DEBUG in llama_inference.cpp** | ⚠️ PARZIALE — i printf restano ma sono gated da env (`SERIUS_PROF`, `SERIUS_GPU_TIME`, `SERIUS_PREFILL_BATCH` diagnostics). |
+| Part4 | **test_placeholder.cpp dummy** | ❌ ANCORA PRESENTE — file esiste ancora in `tests/`. |
+| - | **Catch silent hf_llama_loader.cpp:349** | ⚠️ ANCORA — `parse_llama_config` ritorna `LLamaConfig{}` su JSON non parsabile senza log. |
+
+Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era rotto (fixato), KV cache non persistente tra turni (fixato), multi-modello assente (implementato), `hf://` non supportato a runtime (implementato).
+
+---
+
 ## Sommario Esecutivo
 
 **Totale aree di miglioramento identificate: 270+**

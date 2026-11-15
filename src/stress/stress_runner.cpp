@@ -9,23 +9,6 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <psapi.h>
-#pragma comment(lib, "psapi.lib")
-#elif defined(__linux__)
-#include <fstream>
-#elif defined(__APPLE__)
-#include <mach/mach.h>
-#endif
-
-#ifdef SERIUS_USE_CUDA
-#include <cuda_runtime.h>
-#endif
-
 namespace serius {
 namespace stress {
 
@@ -67,10 +50,10 @@ StressResult StressRunner::run_ramp(const StressConfig& cfg) {
         auto step_start = std::chrono::steady_clock::now();
         std::vector<std::thread> workers;
 
-        size_t requests_before = 0;
+        size_t tokens_before = 0;
         {
             std::lock_guard<std::mutex> lock(mtx);
-            requests_before = result.total_requests;
+            tokens_before = result.total_tokens;
         }
 
         spawn_workers(current_users, cfg, running, result, mtx, workers);
@@ -81,13 +64,14 @@ StressResult StressRunner::run_ramp(const StressConfig& cfg) {
         // Record metrics for this step only (delta since step start)
         auto step_elapsed = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - step_start).count();
+        const auto [ram_bytes, vram_bytes] = sample_server_memory(cfg.server_url);
         {
             std::lock_guard<std::mutex> lock(mtx);
-            float step_requests = static_cast<float>(result.total_requests - requests_before);
-            float tps = step_elapsed > 0.0f ? step_requests / step_elapsed : 0.0f;
+            float step_tokens = static_cast<float>(result.total_tokens - tokens_before);
+            float tps = step_elapsed > 0.0f ? step_tokens / step_elapsed : 0.0f;
             result.tps_timeline.push_back({step_elapsed, tps});
-            result.vram_timeline.push_back({step_elapsed, get_vram_usage()});
-            result.ram_timeline.push_back({step_elapsed, get_ram_usage()});
+            result.vram_timeline.push_back({step_elapsed, vram_bytes});
+            result.ram_timeline.push_back({step_elapsed, ram_bytes});
         }
 
         // Stop current workers
@@ -122,14 +106,15 @@ StressResult StressRunner::run_soak(const StressConfig& cfg) {
 
         auto elapsed = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - start_time).count();
+        const auto [ram_bytes, vram_bytes] = sample_server_memory(cfg.server_url);
         {
             std::lock_guard<std::mutex> lock(mtx);
             float tps = elapsed > 0.0f
-                ? static_cast<float>(result.total_requests) / elapsed
+                ? static_cast<float>(result.total_tokens) / elapsed
                 : 0.0f;
             result.tps_timeline.push_back({elapsed, tps});
-            result.vram_timeline.push_back({elapsed, get_vram_usage()});
-            result.ram_timeline.push_back({elapsed, get_ram_usage()});
+            result.vram_timeline.push_back({elapsed, vram_bytes});
+            result.ram_timeline.push_back({elapsed, ram_bytes});
         }
     }
 
@@ -175,30 +160,55 @@ StressResult StressRunner::run_spike(const StressConfig& cfg) {
     return result;
 }
 
-void StressRunner::run_chaos(const StressConfig& cfg) {
+ChaosResult StressRunner::run_chaos(const StressConfig& cfg) {
+    ChaosResult result;
     httplib::Client cli(cfg.server_url);
     cli.set_connection_timeout(cfg.http_timeout_seconds);
     cli.set_read_timeout(cfg.http_timeout_seconds);
 
-    // Test empty input
-    nlohmann::json body;
-    body["model"] = cfg.model_name;
-    body["messages"] = nlohmann::json::array();
-    body["max_tokens"] = cfg.chaos_max_tokens;
-    body["stream"] = false;
+    auto probe = [&](const char *name, const std::string &body,
+                     bool expect_client_error) {
+        auto res = cli.Post(cfg.endpoint, body, "application/json");
+        const bool got_response = static_cast<bool>(res);
+        const bool ok = got_response &&
+            (!expect_client_error || (res->status >= 400 && res->status < 500));
+        if (ok) {
+            ++result.checks_passed;
+        } else {
+            ++result.checks_failed;
+        }
+        (void)name;
+    };
 
-    cli.Post(cfg.endpoint, body.dump(), "application/json");
-    // Should return 400 error, not crash
+    // Empty messages array -> client error, not crash.
+    {
+        nlohmann::json body;
+        body["model"] = cfg.model_name;
+        body["messages"] = nlohmann::json::array();
+        body["max_tokens"] = cfg.chaos_max_tokens;
+        body["stream"] = false;
+        probe("empty messages", body.dump(), true);
+    }
 
-    // Test extremely long context
-    std::string long_prompt(cfg.chaos_long_prompt_chars, 'a');
-    body["messages"] = {{{"role", "user"}, {"content", long_prompt}}};
-    cli.Post(cfg.endpoint, body.dump(), "application/json");
-    // Should return error gracefully
+    // Extremely long context -> client error or graceful handling.
+    {
+        nlohmann::json body;
+        body["model"] = cfg.model_name;
+        body["messages"] = {{{"role", "user"},
+                             {"content", std::string(cfg.chaos_long_prompt_chars, 'a')}}};
+        body["max_tokens"] = cfg.chaos_max_tokens;
+        body["stream"] = false;
+        probe("long context", body.dump(), false);
+    }
 
-    // Test malformed JSON
-    cli.Post(cfg.endpoint, "invalid json", "application/json");
-    // Should return 400, not segfault
+    // Malformed JSON -> client error, not segfault.
+    probe("malformed JSON", "invalid json", true);
+
+    // Server must still be alive afterwards.
+    if (auto res = cli.Get("/health"); res && res->status == 200) {
+        result.server_alive = true;
+    }
+    return result;
 }
 
 void StressRunner::finalize_metrics(StressResult& result, std::mutex& mtx,
@@ -215,46 +225,22 @@ void StressRunner::finalize_metrics(StressResult& result, std::mutex& mtx,
     auto total_elapsed = std::chrono::duration<float>(
         std::chrono::steady_clock::now() - start_time).count();
     result.avg_tps = total_elapsed > 0.0f
-        ? static_cast<float>(result.total_requests) / total_elapsed
+        ? static_cast<float>(result.total_tokens) / total_elapsed
         : 0.0f;
 }
 
-size_t StressRunner::get_vram_usage() {
-#ifdef SERIUS_USE_CUDA
-    size_t free_bytes = 0, total_bytes = 0;
-    if (cudaMemGetInfo(&free_bytes, &total_bytes) == cudaSuccess) {
-        return total_bytes > free_bytes ? total_bytes - free_bytes : 0;
-    }
-#endif
-    return 0;
-}
-
-size_t StressRunner::get_ram_usage() {
-#if defined(_WIN32)
-    PROCESS_MEMORY_COUNTERS_EX pmc{};
-    if (GetProcessMemoryInfo(GetCurrentProcess(),
-                             reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
-                             sizeof(pmc))) {
-        return static_cast<size_t>(pmc.WorkingSetSize);
-    }
-#elif defined(__linux__)
-    std::ifstream status("/proc/self/status");
-    std::string line;
-    while (std::getline(status, line)) {
-        if (line.rfind("VmRSS:", 0) == 0) {
-            // Format: "VmRSS:   12345 kB"
-            return std::strtoull(line.c_str() + 6, nullptr, 10) * 1024;
+std::pair<size_t, size_t> StressRunner::sample_server_memory(const std::string &server_url) {
+    httplib::Client cli(server_url);
+    cli.set_connection_timeout(5);
+    cli.set_read_timeout(5);
+    if (auto res = cli.Get("/health"); res && res->status == 200) {
+        try {
+            const auto j = nlohmann::json::parse(res->body);
+            return {j.value("ram_bytes", size_t{0}), j.value("vram_bytes", size_t{0})};
+        } catch (...) {
         }
     }
-#elif defined(__APPLE__)
-    mach_task_basic_info info;
-    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
-                  reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
-        return static_cast<size_t>(info.resident_size);
-    }
-#endif
-    return 0;
+    return {0, 0};
 }
 
 float StressRunner::calculate_percentile(std::vector<float>& values, float percentile) {
