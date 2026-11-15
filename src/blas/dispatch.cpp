@@ -152,8 +152,10 @@ void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
         B.syncToDevice();
         C.syncToDevice();
         
-        matmul_cuda(A.raw_data_gpu(), B.raw_data_gpu(), C.raw_data_gpu(), A.shape()[0], B.shape()[1], A.shape()[1], 
-                    A.strides()[0], B.strides()[0], C.strides()[0], A.dtype(), stream);
+        // A CPU stream must never reach the CUDA path as a cudaStream_t.
+        void *cuda_stream = hal::is_cpu_stream(stream) ? nullptr : stream;
+        matmul_cuda(A.raw_data_gpu(), B.raw_data_gpu(), C.raw_data_gpu(), A.shape()[0], B.shape()[1], A.shape()[1],
+                    A.strides()[0], B.strides()[0], C.strides()[0], A.dtype(), cuda_stream);
         C.mark_dirty(Tensor::DataLocation::GPU);
         return;
     }
@@ -302,8 +304,9 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
         size_t stride_b = (b_cont.ndim() == 3) ? b_cont.strides()[0] : 0;
         size_t stride_c = mat_c.strides()[0];
 
+        void *cuda_stream = hal::is_cpu_stream(stream) ? nullptr : stream;
         batched_matmul_cuda(a_cont.raw_data_gpu(), b_cont.raw_data_gpu(), mat_c.raw_data_gpu(), batch_size, rows_m, cols_n, inner_k,
-                            lda_c, ldb_c, ldc_c, stride_a, stride_b, stride_c, a_cont.dtype(), stream);
+                            lda_c, ldb_c, ldc_c, stride_a, stride_b, stride_c, a_cont.dtype(), cuda_stream);
 
         mat_c.mark_dirty(Tensor::DataLocation::GPU);
         return;
@@ -319,7 +322,7 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
         throw std::runtime_error("BLAS::batched_matmul CPU path only supports Float32");
     }
 
-    auto run_cpu = [&mat_a, &mat_b, &mat_c, batch_size, rows_m, cols_n, inner_k, lda, ldb, ldc, &info]() {
+    auto run_cpu = [&mat_a, &mat_b, &mat_c, batch_size, rows_m, cols_n, inner_k, lda, ldb, ldc, info]() {
         #pragma omp parallel for
         for (int64_t b = 0; b < static_cast<int64_t>(batch_size); ++b) {
             size_t batch_idx = static_cast<size_t>(b);
