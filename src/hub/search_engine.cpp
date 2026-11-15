@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -422,9 +423,11 @@ std::vector<std::vector<float>> EmbeddingManager::compute_embeddings(const std::
 bool EmbeddingManager::load_model(const std::string &model_path)
 {
     model_path_ = model_path;
-    // A real embedding model file is optional: hash embeddings always work.
-    model_loaded_ = true;
-    return true;
+    model_loaded_ = !model_path.empty() && std::filesystem::exists(model_path);
+    if (!model_loaded_ && !model_path.empty()) {
+        spdlog::warn("Embedding model '{}' not found; using hash embeddings", model_path);
+    }
+    return true;  // hash embeddings are always available as fallback
 }
 
 void EmbeddingManager::unload_model()
@@ -436,12 +439,6 @@ void EmbeddingManager::unload_model()
 bool EmbeddingManager::is_model_loaded() const
 {
     return model_loaded_;
-}
-
-std::vector<float> EmbeddingManager::compute_with_sentence_transformer(const std::string &text)
-{
-    (void)text;
-    return {};  // no real model loaded yet
 }
 
 std::vector<float> EmbeddingManager::compute_with_simple_tokenizer(const std::string &text)

@@ -125,8 +125,8 @@ class EmbeddingManager
     std::string model_path_;
     bool model_loaded_;
 
-    // Embedding computation
-    std::vector<float> compute_with_sentence_transformer(const std::string &text);
+    // Embedding computation (deterministic hashed bag-of-words until a real
+    // embedding model file is provided to load_model()).
     std::vector<float> compute_with_simple_tokenizer(const std::string &text);
 };
 
