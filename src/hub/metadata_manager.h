@@ -1,3 +1,5 @@
+#pragma once
+
 #include "hub_types.h"
 // #include <sqlite3.h>  // Requires SQLite - disabled for now
 

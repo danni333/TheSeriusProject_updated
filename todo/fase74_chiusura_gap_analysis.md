@@ -13,7 +13,9 @@ server-side, TPS reale, chaos assertions, test_placeholder rimosso,
 MetadataManager CRUD completo (JSON file-based, SQLite resta disabilitata),
 **B1 GGUF writer** (`io/gguf_writer.cpp`: HF dir/.safetensors → GGUF con
 config KV + tokenizer embedding + RoPE perm per arch llama; `serius convert`
-bidirezionale; verificato end-to-end su Qwen2.5-Coder-1.5B reale).
+bidirezionale; verificato end-to-end su Qwen2.5-Coder-1.5B reale),
+**B2 Hub server routes + auth** (REST reale: upload/download/search/
+suggest/delete + API key file-based, `test_hub_server` 2/2).
 
 ---
 
@@ -51,9 +53,19 @@ bidirezionale; verificato end-to-end su Qwen2.5-Coder-1.5B reale).
 - Test: `test_gguf_writer` (4/4) + verifica live su Qwen2.5-Coder-1.5B
   ("2+2?" → "4", stop corretto).
 
-### B2. Model Hub Server routes + auth (`src/hub/model_hub_server.cpp`)
-- `search_models` stub → route REST reali via httplib.
-- `auth_manager.h` esiste: integrare token check middleware.
+### B2. Model Hub Server routes + auth (`src/hub/model_hub_server.cpp`) ✅ FATTO
+- Route REST reali via httplib: `GET /health`, `GET /metrics`,
+  `GET /v1/models`, `GET /v1/models/{id}`, `GET /v1/models/search`,
+  `GET /v1/search/suggest`, `POST /v1/models/upload` (multipart
+  `model`+`metadata`), `GET /v1/models/{id}/download` (range provider),
+  `DELETE /v1/models/{id}` (solo owner o permesso `delete`).
+- Auth file-based (`hub_users.json`): `POST /v1/auth/register` emette
+  `sk-*` API key, `GET /v1/auth/me`; `Authorization: Bearer` verificato
+  sulle route di scrittura. Modalità aperta (default_user) finché non
+  esiste alcun utente registrato — JWT/SQLite restano disabilitati.
+- Path risolti a assoluti nel ctor (robustezza a cwd che cambia).
+- Test: `test_hub_server` (2/2) — register→401→upload→list→get→search→
+  download→delete end-to-end.
 
 ### B3. MCP client/server end-to-end
 - Dopo A1: test integration JSON-RPC client↔server, audit log (gia' in `audit.cpp`).

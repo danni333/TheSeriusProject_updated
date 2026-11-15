@@ -107,10 +107,15 @@ int main(int argc, char *argv[])
     std::cout << "Available endpoints:\n";
     std::cout << "  GET  /health\n";
     std::cout << "  GET  /metrics\n";
-    std::cout << "  GET  /v1/hub/models/search?q=<query>\n";
-    std::cout << "  GET  /v1/hub/models/<model_id>\n";
-    std::cout << "  POST /v1/hub/models/upload\n";
-    std::cout << "  GET  /v1/hub/models/<model_id>/download\n";
+    std::cout << "  POST /v1/auth/register\n";
+    std::cout << "  GET  /v1/auth/me\n";
+    std::cout << "  GET  /v1/models\n";
+    std::cout << "  GET  /v1/models/search?q=<query>\n";
+    std::cout << "  GET  /v1/search/suggest?q=<query>\n";
+    std::cout << "  GET  /v1/models/<model_id>\n";
+    std::cout << "  POST /v1/models/upload   (multipart: 'model' + 'metadata')\n";
+    std::cout << "  GET  /v1/models/<model_id>/download\n";
+    std::cout << "  DELETE /v1/models/<model_id>   (owner or 'delete' permission)\n";
     std::cout << "\nPress Ctrl+C to stop the server\n";
 
     // Start server

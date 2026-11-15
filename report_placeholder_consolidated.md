@@ -22,6 +22,7 @@ Item di questo report verificati e risolti nel frattempo:
 | 5 | **Hub Metadata Manager** | ✅ PARZIALE — metodi CRUD/count/downloads/ratings implementati con persistenza JSON file-based; SQLite resta disabilitata (scelta intenzionale, non bloccante). |
 | 13 | **Hub Converter Safetensors→GGUF** | ✅ RISOLTO — `io/gguf_writer.cpp` (GGUF v3, FP16/FP32, tokenizer KV, RoPE perm llama); `serius convert` bidirezionale; test_gguf_writer 4/4 + verifica live Qwen2.5-Coder-1.5B. |
 | Part5 | **Catch silent io/hub (config_loader, safetensors, sharding, downloader, metadata)** | ✅ RISOLTO — tutti loggano `[Component] Failed ...` con `e.what()`; fallback su config vuota/`false` mantenuto. |
+| 16 | **Model Hub Server routes + auth stub** | ✅ RISOLTO — route REST reali (`/v1/models` CRUD, `/v1/models/search`, `/v1/search/suggest`, upload multipart, download, `/metrics`), auth file-based con API key `sk-*` (`hub_users.json`), delete ristretta all'owner. Test `test_hub_server` 2/2. JWT/SQLite restano disabilitati per scelta. |
 
 Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era rotto (fixato — root cause in `Tensor` host/device sync), KV cache non persistente tra turni (fixato), multi-modello assente (implementato), `hf://` non supportato a runtime (implementato).
 

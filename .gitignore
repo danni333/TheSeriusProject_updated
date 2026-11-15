@@ -75,3 +75,7 @@ Thumbs.db
 
 # Todo / scratch notes
 # todo/
+
+# Model hub runtime state
+hub_users.json
+models_metadata.json*
