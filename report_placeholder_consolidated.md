@@ -70,8 +70,8 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 16. **Model Hub Server** - 1 stub (search_models)
 
 ### Media (Limitazioni)
-17. **CPU Backend** - ~~5 stream no-ops~~ ✅ stream reali (worker thread + queue) — resta solo instradamento BLAS→stream
-18. **BLAS Dispatch** - 2 stream non usati ⚠️ ancora validi
+17. **CPU Backend** - ~~5 stream no-ops~~ ✅ stream reali (worker thread + queue)
+18. **BLAS Dispatch** - ~~2 stream non usati~~ ✅ `matmul`/`batched_matmul` instradano stream CPU (`is_cpu_stream` check)
 19. **Quantization FP8 Kernel** - ~~1 stub~~ ✅ `fp8_dequant_matmul` CPU (E4M3/E5M2) — resta path CUDA
 20. **Memory Pool Allocator** - 1 no-op
 21. **GGUF Loader** - 3 unused parameters
@@ -233,7 +233,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 14. **Configurare hardcoded values** (porte, max tokens, thresholds)
 15. **Implementare Graph Compiler trace reale**
 16. **~~Implementare CPU backend stream asincrono~~** ✅ D4
-17. **Implementare BLAS stream parameter usage** ⚠️ parziale (stream esistono, dispatch BLAS non li usa)
+17. **~~Implementare BLAS stream parameter usage~~** ✅ D4
 18. **~~Implementare Quantization FP8 kernel~~** ✅ D5 (CPU dequant-matmul)
 19. **Parametrizzare config in file centralizzato**
 

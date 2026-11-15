@@ -120,15 +120,18 @@ E2E stdio+HTTP, `test_mcp_server` 11/11).
   resta copia inputs→outputs (kernel fusion reale non implementata).
 - Test: `TraceGraphFromRealAutogradGraph`, `TraceGraphNullIsEmpty`.
 
-### D4. CPU backend stream asincrono / BLAS stream params — ✅ FATTO (parziale)
+### D4. CPU backend stream asincrono / BLAS stream params — ✅ FATTO
 - `CpuBackend::create_stream()` ora restituisce un `CpuStream` reale: worker
   thread + code queue (`std::function`), `sync_stream` = barrier di coda,
   `destroy_stream` ferma il worker e fa join.
 - `memcpy_h2d_async`/`d2h_async`/`d2d_async` accodano la copia sullo stream;
   senza stream restano sincrone (contratto invariato).
-- Test: `test_hal` verifica ordinamento, sync e distruzione stream.
-- Resta aperto: i parametri `stream` in `blas::matmul` non instradano ancora
-  verso gli stream CPU (sono ignorati nel dispatch BLAS).
+- `blas::matmul` e `batched_matmul` instradano il param `stream` sullo stream
+  CPU quando `hal::is_cpu_stream(stream)` è vero (registry dei CpuStream
+  vivi → un `cudaStream_t` non viene mai interpretato come CpuStream).
+  Il chiamante deve `sync_stream` prima di leggere l'output.
+- Test: `test_hal` verifica ordinamento, sync, distruzione stream, GEMM su
+  stream e rejection di puntatori estranei.
 
 ### D5. Quantization FP8 kernel — ✅ FATTO (CPU)
 - `fp8_dequant_matmul()`: kernel CPU fused dequant+matmul per pesi FP8

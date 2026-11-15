@@ -1,8 +1,10 @@
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <vector>
 
+#include "blas/blas.h"
 #include "hal/device.h"
 #include "tensor/tensor.h"
 
@@ -86,6 +88,44 @@ void test_cpu_stream()
     std::cout << "CPU stream ok.\n";
 }
 
+void test_blas_on_cpu_stream()
+{
+    std::cout << "Testing BLAS matmul on CPU stream...\n";
+
+    hal::IBackend *be = hal::get_backend(hal::DeviceType::CPU);
+    void *stream = be->create_stream();
+    assert(stream != nullptr);
+    assert(hal::is_cpu_stream(stream));
+
+    // A[2,3] * B[3,2] = C[2,2]
+    Tensor A({2, 3}), B({3, 2}), C({2, 2});
+    const float a_data[6] = {1, 2, 3, 4, 5, 6};
+    const float b_data[6] = {7, 8, 9, 10, 11, 12};
+    std::memcpy(A.data(), a_data, sizeof(a_data));
+    std::memcpy(B.data(), b_data, sizeof(b_data));
+    C.fill(0.0f);
+
+    // Enqueue GEMM on the stream; result must be correct after sync.
+    core::blas::matmul(A, B, C, stream);
+    be->sync_stream(stream);
+
+    const float *c = C.data();
+    // Row-major B[3,2]: C[i,j] = sum_k A[i,k]*B[k,j]
+    // C[0,0]=1*7+2*9+3*11=58  C[0,1]=1*8+2*10+3*12=64
+    // C[1,0]=4*7+5*9+6*11=139 C[1,1]=4*8+5*10+6*12=154
+    assert(std::abs(c[0] - 58.0f) < 1e-4f);
+    assert(std::abs(c[1] - 64.0f) < 1e-4f);
+    assert(std::abs(c[2] - 139.0f) < 1e-4f);
+    assert(std::abs(c[3] - 154.0f) < 1e-4f);
+
+    // A foreign pointer must NOT be treated as a CPU stream.
+    assert(!hal::is_cpu_stream(reinterpret_cast<void *>(0x1)));
+
+    be->destroy_stream(stream);
+    assert(!hal::is_cpu_stream(stream));
+    std::cout << "BLAS on CPU stream ok.\n";
+}
+
 }  // namespace test
 }  // namespace serius
 
@@ -94,6 +134,7 @@ int main()
     serius::test::test_backend_discovery();
     serius::test::test_tensor_sync();
     serius::test::test_cpu_stream();
+    serius::test::test_blas_on_cpu_stream();
 
     std::cout << "All HAL/Device tests passed.\n";
     return 0;

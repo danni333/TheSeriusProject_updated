@@ -8,6 +8,7 @@
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace serius {
@@ -195,13 +196,30 @@ struct CpuStream
     }
 };
 
+// Registry of live CPU streams so callers holding an opaque void* can
+// safely check whether it belongs to this backend before enqueueing work.
+namespace {
+std::mutex g_stream_registry_mutex;
+std::unordered_set<void *> g_cpu_streams;
+}  // namespace
+
 void *CpuBackend::create_stream()
 {
-    return new CpuStream();
+    void *s = new CpuStream();
+    {
+        std::lock_guard<std::mutex> lk(g_stream_registry_mutex);
+        g_cpu_streams.insert(s);
+    }
+    return s;
 }
 
 void CpuBackend::destroy_stream(void *stream)
 {
+    if (stream == nullptr) { return; }
+    {
+        std::lock_guard<std::mutex> lk(g_stream_registry_mutex);
+        g_cpu_streams.erase(stream);
+    }
     delete static_cast<CpuStream *>(stream);
 }
 
@@ -286,6 +304,22 @@ IBackend *get_gpu_backend()
     if (vulkan && vulkan->is_available()) return vulkan;
 #endif
     return nullptr;
+}
+
+bool is_cpu_stream(void *stream)
+{
+    if (stream == nullptr) { return false; }
+    std::lock_guard<std::mutex> lk(g_stream_registry_mutex);
+    return g_cpu_streams.count(stream) != 0;
+}
+
+void cpu_stream_enqueue(void *stream, std::function<void()> fn)
+{
+    if (stream == nullptr || !is_cpu_stream(stream)) {
+        fn();
+        return;
+    }
+    static_cast<CpuStream *>(stream)->enqueue(std::move(fn));
 }
 
 }  // namespace hal

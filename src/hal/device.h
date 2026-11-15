@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 
 namespace serius {
 namespace hal {
@@ -52,6 +53,11 @@ IBackend *get_backend(DeviceType type);
 
 // Helper to get the best available GPU backend (CUDA > Metal > Vulkan), or nullptr if none
 IBackend *get_gpu_backend();
+
+// CPU stream helpers: allow callers holding an opaque void* stream to check
+// whether it is a live CpuBackend stream and enqueue arbitrary work on it.
+bool is_cpu_stream(void *stream);
+void cpu_stream_enqueue(void *stream, std::function<void()> fn);
 
 }  // namespace hal
 }  // namespace serius

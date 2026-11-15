@@ -130,7 +130,6 @@ static void dispatch_cpu_matmul(const Tensor &A, const Tensor &B, Tensor &C)
 
 void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
 {
-    (void)stream;
     if (A.ndim() != 2 || B.ndim() != 2 || C.ndim() != 2) {
         throw std::invalid_argument("matmul requires 2D tensors");
     }
@@ -164,6 +163,17 @@ void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
     B.syncToHost();
     C.syncToHost();
 #endif
+
+    if (stream != nullptr && hal::is_cpu_stream(stream)) {
+        // Enqueue the whole GEMM on the CPU stream; caller must sync_stream
+        // before reading C and keep A/B/C alive until then (same contract
+        // as CUDA async kernels, which also capture raw pointers).
+        hal::cpu_stream_enqueue(stream, [&A, &B, &C] {
+            dispatch_cpu_matmul(A, B, C);
+            C.mark_dirty(Tensor::DataLocation::CPU);
+        });
+        return;
+    }
 
     dispatch_cpu_matmul(A, B, C);
     C.mark_dirty(Tensor::DataLocation::CPU);
@@ -232,7 +242,6 @@ void matvec(const Tensor &mat_a, const Tensor &vec_x, Tensor &vec_y)
 
 void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, void *stream)
 {
-    (void)stream;
     if (mat_a.ndim() != 3 || mat_c.ndim() != 3) {
         throw std::invalid_argument("batched_matmul expects A and C to be 3D tensors");
     }
@@ -310,32 +319,41 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
         throw std::runtime_error("BLAS::batched_matmul CPU path only supports Float32");
     }
 
-    #pragma omp parallel for
-    for (int64_t b = 0; b < static_cast<int64_t>(batch_size); ++b) {
-        size_t batch_idx = static_cast<size_t>(b);
-        const float *a_ptr = mat_a.data() + (batch_idx * mat_a.strides()[0]);
-        const float *b_ptr = (mat_b.ndim() == 3) ? (mat_b.data() + (batch_idx * mat_b.strides()[0])) : mat_b.data();
-        float *c_ptr = mat_c.data() + (batch_idx * mat_c.strides()[0]);
+    auto run_cpu = [&mat_a, &mat_b, &mat_c, batch_size, rows_m, cols_n, inner_k, lda, ldb, ldc, &info]() {
+        #pragma omp parallel for
+        for (int64_t b = 0; b < static_cast<int64_t>(batch_size); ++b) {
+            size_t batch_idx = static_cast<size_t>(b);
+            const float *a_ptr = mat_a.data() + (batch_idx * mat_a.strides()[0]);
+            const float *b_ptr = (mat_b.ndim() == 3) ? (mat_b.data() + (batch_idx * mat_b.strides()[0])) : mat_b.data();
+            float *c_ptr = mat_c.data() + (batch_idx * mat_c.strides()[0]);
 
-        size_t problem_size = rows_m * cols_n * inner_k;
+            size_t problem_size = rows_m * cols_n * inner_k;
 
-        if (problem_size < SIMD_THRESHOLD_SMALL) {
-            matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
-        } else if (problem_size < SIMD_THRESHOLD_MEDIUM) {
-            if (info.has_avx2) {
-                matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
-            } else {
+            if (problem_size < SIMD_THRESHOLD_SMALL) {
                 matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
-            }
-        } else {
-            if (info.has_avx512f) {
-                matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
-            } else if (info.has_avx2) {
-                matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+            } else if (problem_size < SIMD_THRESHOLD_MEDIUM) {
+                if (info.has_avx2) {
+                    matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+                } else {
+                    matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+                }
             } else {
-                matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+                if (info.has_avx512f) {
+                    matmul_avx512(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+                } else if (info.has_avx2) {
+                    matmul_avx2(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+                } else {
+                    matmul_scalar(a_ptr, b_ptr, c_ptr, rows_m, cols_n, inner_k, lda, ldb, ldc);
+                }
             }
         }
+        mat_c.mark_dirty(Tensor::DataLocation::CPU);
+    };
+
+    if (stream != nullptr && hal::is_cpu_stream(stream)) {
+        hal::cpu_stream_enqueue(stream, run_cpu);
+    } else {
+        run_cpu();
     }
 }
 
