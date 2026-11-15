@@ -73,16 +73,20 @@ std::string generate_report(const StressResult& result,
         ss << "  Duration:         " << config.duration_seconds << " seconds\n";
         ss << "  Max Tokens:       " << config.max_tokens << "\n\n";
 
-        ss << "  ┌──────────────┬────────────┬────────────┬────────────┬──────────┐\n";
-        ss << "  │ Metric       │ Value      │            │            │          │\n";
-        ss << "  ├──────────────┼────────────┼────────────┼────────────┼──────────┤\n";
-        ss << "  │ Avg TPS      │ " << std::setw(10) << std::fixed << std::setprecision(1) << result.avg_tps << " │            │            │          │\n";
-        ss << "  │ P50 Latency  │ " << std::setw(10) << std::fixed << std::setprecision(1) << result.p50_latency_ms << " ms      │            │            │          │\n";
-        ss << "  │ P99 Latency  │ " << std::setw(10) << std::fixed << std::setprecision(1) << result.p99_latency_ms << " ms      │            │            │          │\n";
-        ss << "  │ Error Rate   │ " << std::setw(10) << std::fixed << std::setprecision(2) << (result.error_rate * 100) << "% │            │            │          │\n";
-        ss << "  │ Total Reqs   │ " << std::setw(10) << result.total_requests << " │            │            │          │\n";
-        ss << "  │ Total Errors │ " << std::setw(10) << result.total_errors << " │            │            │          │\n";
-        ss << "  └──────────────┴────────────┴────────────┴────────────┴──────────┘\n\n";
+        auto row = [&](const char *metric, const std::string &value) {
+            ss << "  │ " << std::left << std::setw(12) << metric << " │ "
+               << std::right << std::setw(10) << value << " │\n";
+        };
+        ss << "  ┌──────────────┬────────────┐\n";
+        ss << "  │ Metric       │ Value      │\n";
+        ss << "  ├──────────────┼────────────┤\n";
+        row("Avg TPS", std::to_string(result.avg_tps));
+        row("P50 Latency", std::to_string(result.p50_latency_ms) + " ms");
+        row("P99 Latency", std::to_string(result.p99_latency_ms) + " ms");
+        row("Error Rate", std::to_string(result.error_rate * 100.0f) + "%");
+        row("Total Reqs", std::to_string(result.total_requests));
+        row("Total Errors", std::to_string(result.total_errors));
+        ss << "  └──────────────┴────────────┘\n\n";
 
         // Memory leak detection
         if (!result.vram_timeline.empty()) {

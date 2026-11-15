@@ -10,7 +10,9 @@ namespace defaults {
 /// carry their own copy of the same hardcoded values.
 inline constexpr uint16_t kHttpPort = 8080;
 inline const std::string kServerUrl = "http://localhost:" + std::to_string(kHttpPort);
-inline const std::string kModelName = "serius";
+/// Empty = let the server pick the primary loaded model (multi-model registry
+/// returns 404 for unknown names, so a hardcoded default would break stress runs).
+inline const std::string kModelName = "";
 
 }  // namespace defaults
 }  // namespace serius
