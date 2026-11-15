@@ -26,9 +26,9 @@ GGUF note: decode uses packed quantized weights (fast GEMV); batched prefill use
 
 The Hub `EmbeddingManager` runs a real BERT-style encoder for embedding GGUFs:
 
-- **nomic-bert** (e.g. `nomic-embed-text-v1.5.Q4_K_M.gguf`) — ✅ full 12-layer encoder: WordPiece tokenizer, non-causal self-attention + RoPE, GELU FFN, mean pooling → 768-dim normalized embeddings. Quantized tensors Q4_K/Q5_K/Q6_K are dequantized on load.
+- **nomic-bert** (e.g. `nomic-embed-text-v1.5.Q4_K_M.gguf`) — ✅ full 12-layer encoder: WordPiece tokenizer, non-causal self-attention + RoPE, GELU FFN, mean pooling → 768-dim normalized embeddings. Quantized tensors Q4_K/Q5_K/Q6_K are dequantized on load. Retrieval uses the model's task prefixes (`search_query:`/`search_document:`).
 - Other GGUFs → fallback: mean-pooled `token_embd.weight` (weak semantics — for LLM token embeddings only).
-- No usable model → deterministic hash embedding fallback.
+- No usable model → deterministic hash embedding (word unigrams + signed char 3–5-grams, L2-normalized).
 
 ## Quantization Formats
 

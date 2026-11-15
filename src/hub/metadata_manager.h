@@ -1,10 +1,16 @@
 #pragma once
 
 #include "hub_types.h"
-// #include <sqlite3.h>  // Requires SQLite - disabled for now
 
 #include <chrono>
 #include <ctime>
+#include <string>
+#include <vector>
+
+#ifdef SERIUS_HUB_SQLITE
+struct sqlite3;
+struct sqlite3_stmt;
+#endif
 
 namespace serius::hub {
 
@@ -18,6 +24,8 @@ class MetadataManager
     bool save_model_metadata(const ModelMetadata &metadata);
     bool update_model_metadata(const std::string &model_id, const ModelMetadata &metadata);
     ModelMetadata get_model_metadata(const std::string &model_id);
+    /// All stored models (used by SearchEngine semantic/similarity paths).
+    std::vector<ModelMetadata> list_all_models();
     std::vector<ModelMetadata> search_models(const std::string &query = "", const std::vector<std::string> &tags = {},
                                              const std::string &author = "", int limit = 50, int offset = 0);
     bool delete_model_metadata(const std::string &model_id);
@@ -29,15 +37,28 @@ class MetadataManager
     bool update_rating(const std::string &model_id, float rating);
 
    private:
-    // sqlite3 *db_;
+#ifdef SERIUS_HUB_SQLITE
+    sqlite3 *db_ = nullptr;
+#endif
     std::string db_path_;
+    // Set when a legacy JSON file could not be migrated (e.g. rename failed):
+    // the JSON helpers stay authoritative for this instance.
+    bool use_json_fallback_ = false;
 
     bool create_tables();
     bool execute_query(const std::string &sql);
+#ifdef SERIUS_HUB_SQLITE
+    bool ensure_open();
+    bool migrate_json_if_needed();
+    ModelMetadata row_to_model(sqlite3_stmt *stmt);
+    bool bind_and_step_insert(sqlite3_stmt *stmt, const ModelMetadata &m);
+#endif
     // ModelMetadata row_to_model(sqlite3_stmt *stmt);
     std::vector<ModelMetadata> execute_search_query(const std::string &sql, const std::vector<std::string> &params);
 
     // File-based JSON storage helpers (db_path_ holds {id: model_json}).
+    // Used as fallback when SQLite is unavailable and for one-time migration
+    // of legacy JSON metadata files.
     nlohmann::json load_db() const;
     bool save_db(const nlohmann::json &db);
 };

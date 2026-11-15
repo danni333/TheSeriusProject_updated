@@ -116,6 +116,12 @@ class EmbeddingManager
     // Compute embeddings for text
     std::vector<float> compute_embedding(const std::string &text);
 
+    // Task-aware variants: nomic-embed models are trained with
+    // "search_query: "/"search_document: " prefixes — prepending them
+    // measurably improves retrieval. Other backends get the raw text.
+    std::vector<float> compute_query_embedding(const std::string &text);
+    std::vector<float> compute_document_embedding(const std::string &text);
+
     // Batch compute embeddings
     std::vector<std::vector<float>> compute_embeddings(const std::vector<std::string> &texts);
 
@@ -138,6 +144,7 @@ class EmbeddingManager
     // WordPiece + transformer forward + mean pooling — real sentence
     // embeddings instead of token-embedding lookup.
     std::unique_ptr<NomicBertEmbedder> bert_;
+    bool use_task_prefixes_ = false;  // nomic-bert: prepend search_query/document
 
     bool try_load_gguf(const std::string &path);
     bool try_load_nomic_gguf(const std::string &path);

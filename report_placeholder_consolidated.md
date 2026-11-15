@@ -20,10 +20,10 @@ Item di questo report verificati e risolti nel frattempo:
 | 6-7 | **MCP HTTP + Stdio Transport stub** | ✅ RISOLTO — `transport_http.cpp` (JSON-RPC via httplib) e `transport_stdio.cpp` (subprocess CreateProcess/fork) implementati; 11/11 test in `test_mcp_client`. |
 | - | **MCP server end-to-end** | ✅ RISOLTO — `mcp/server.{h,cpp}` (dispatch JSON-RPC: initialize/ping/tools/list/tools/call) + `serius mcp-serve` (stdio o `--http PORT`) con audit log; `test_mcp_server` 11/11 inclusi E2E stdio col binario reale. |
 | 3 | **Hub Search Engine stub** | ✅ RISOLTO — `search_engine.cpp` riscritto: ricerca full-text + filtri tag/author, ranking deterministico, similarità, suggestions, trending, analytics, cache, highlight, paginazione. Test in `test_hub_search` (4/4). |
-| 5 | **Hub Metadata Manager** | ✅ PARZIALE — metodi CRUD/count/downloads/ratings implementati con persistenza JSON file-based; SQLite resta disabilitata (scelta intenzionale, non bloccante). |
+| 5 | **Hub Metadata Manager** | ✅ RISOLTO — backend SQLite reale (amalgamation `sqlite3.c` compilata in `serius_sqlite3`, schema `models`, prepared statements, `busy_timeout`); migrazione automatica JSON→SQLite con rename `.migrated.json`; fallback JSON se la migrazione fallisce. |
 | 13 | **Hub Converter Safetensors→GGUF** | ✅ RISOLTO — `io/gguf_writer.cpp` (GGUF v3, FP16/FP32, tokenizer KV, RoPE perm llama); `serius convert` bidirezionale; test_gguf_writer 4/4 + verifica live Qwen2.5-Coder-1.5B. |
 | Part5 | **Catch silent io/hub (config_loader, safetensors, sharding, downloader, metadata)** | ✅ RISOLTO — tutti loggano `[Component] Failed ...` con `e.what()`; fallback su config vuota/`false` mantenuto. |
-| 16 | **Model Hub Server routes + auth stub** | ✅ RISOLTO — route REST reali (`/v1/models` CRUD, `/v1/models/search`, `/v1/search/suggest`, upload multipart, download, `/metrics`), auth file-based con API key `sk-*` (`hub_users.json`), delete ristretta all'owner. Test `test_hub_server` 2/2. JWT/SQLite restano disabilitati per scelta. |
+| 16 | **Model Hub Server routes + auth stub** | ✅ RISOLTO — route REST reali (`/v1/models` CRUD, `/v1/models/search`, `/v1/search/suggest`, upload multipart, download, `/metrics`), auth file-based con API key `sk-*` (`hub_users.json`), delete ristretta all'owner. Test `test_hub_server` 2/2. Metadata store ora SQLite; JWT resta disabilitato per scelta. |
 
 Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era rotto (fixato — root cause in `Tensor` host/device sync), KV cache non persistente tra turni (fixato), multi-modello assente (implementato), `hf://` non supportato a runtime (implementato).
 
@@ -53,8 +53,8 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 1. **Vulkan Backend** - 4 TODO + availability stub
 2. **Metal Backend** - 2 TODO + availability stub
 3. **Hub Search Engine** - 13 metodi stub (tutti ritornano `{}`)
-4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ path primario: encoder `nomic-bert` reale (GGUF, `src/hub/nomic_bert.cpp`: token embd + token types + LN + attn non-causale + RoPE + GELU FFN + pooling) — dim 768, ~3.8s/embedding CPU. Fallback: mean-pool su `token_embd.weight` (GGUF/safetensors) o hash deterministico
-5. **Hub Metadata Manager** - SQLite disabled
+4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ path primario: encoder `nomic-bert` reale (GGUF, `src/hub/nomic_bert.cpp`) — dim 768, ~3.3s/embedding CPU, task prefix retrieval. Fallback: mean-pool `token_embd.weight` o hash n-gram deterministico
+5. **Hub Metadata Manager** - ~~SQLite disabled~~ ✅ backend SQLite reale + migrazione JSON automatica
 
 ### Alti (Funzionalità Core)
 6. **MCP HTTP Transport** - 1 not implemented
@@ -87,7 +87,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 
 ### Hub/Plugin (7)
 - Downloader: progress placeholder, common_files hardcoded
-- Metadata Manager: SQLite disabled, file-based storage
+- ~~Metadata Manager: SQLite disabled, file-based storage~~ ✅ SQLite reale (v. item 5)
 - Plugin Manager: basic sandboxing, basic permission check, simple detach
 
 ### Optim/Graph (3)
@@ -100,7 +100,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 - Refactorer: library loading non integrato
 
 ### RAG (1)
-- ~~Embeddings: hash-based invece di embedding model~~ ✅ encoder `nomic-bert` reale su GGUF (Q4_K/Q5_K/Q6_K dequant inclusa `dequantize_q5_k`); fallback mean-pool token_embd, poi hash
+- ~~Embeddings: hash-based invece di embedding model~~ ✅ encoder `nomic-bert` reale su GGUF (Q4_K/Q5_K/Q6_K dequant inclusa `dequantize_q5_k`) con task prefix `search_query:`/`search_document:`; fallback mean-pool token_embd, poi hash n-gram (word unigram + char 3-5 gram, firmati)
 
 ### Transformer (1)
 - FFN: fused_bias_gelu temporary
@@ -159,7 +159,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 - SERIUS_USE_CUDA, VULKAN, METAL, NCCL, MPI tutti OFF per default
 
 ### Dipendenze (3)
-- SQLite dichiarata ma non usata
+- ~~SQLite dichiarata ma non usata~~ ✅ amalgamation compilata, backend attivo
 - OpenSSL/JWT disabilitati
 
 ---
@@ -215,7 +215,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 2. **~~Implementare Hub Embedding Manager~~** ✅ encoder nomic-bert reale da GGUF + fallback token_embd/hash
 3. **Implementare Vulkan Backend** - 4 TODO
 4. **Implementare Metal Backend** - 2 TODO
-5. **Integrare SQLite in Hub Metadata Manager**
+5. **~~Integrare SQLite in Hub Metadata Manager~~** ✅ backend SQLite + migrazione JSON
 
 ### ALTE (Importante)
 

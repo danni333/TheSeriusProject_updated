@@ -65,20 +65,6 @@ float token_jaccard(const std::string &a, const std::string &b)
     return uni ? static_cast<float>(inter) / static_cast<float>(uni) : 0.0f;
 }
 
-/// Load the whole metadata JSON object {id: model_json} from db_path.
-nlohmann::json load_metadata_db(const std::string &db_path)
-{
-    std::ifstream file(db_path);
-    if (!file.is_open()) return nlohmann::json::object();
-    try {
-        nlohmann::json j;
-        file >> j;
-        return j;
-    } catch (...) {
-        return nlohmann::json::object();
-    }
-}
-
 /// Path of the analytics sidecar file (search query counters).
 std::string analytics_path(const std::string &db_path)
 {
@@ -158,12 +144,11 @@ std::vector<SearchResult> SearchEngine::semantic_search(const std::string &query
     const auto query_emb = compute_query_embedding(query);
     if (query_emb.empty()) return {};
 
-    const auto db = load_metadata_db(db_path_);
-    if (!db.is_object()) return {};
+    const auto all = MetadataManager(db_path_).list_all_models();
+    if (all.empty()) return {};
 
     std::vector<std::pair<float, SearchResult>> scored;
-    for (auto &[id, j] : db.items()) {
-        const ModelMetadata m = json_to_model(j);
+    for (const auto &m : all) {
         if (!m.is_public) continue;
         if (!tags.empty()) {
             bool any = false;
@@ -173,7 +158,7 @@ std::vector<SearchResult> SearchEngine::semantic_search(const std::string &query
             if (!any) continue;
         }
         const auto doc_text = m.name + " " + m.description;
-        const auto doc_emb = embedding_manager_->compute_embedding(doc_text);
+        const auto doc_emb = embedding_manager_->compute_document_embedding(doc_text);
         const float sim = cosine_similarity(query_emb, doc_emb);
         const float score = 0.7f * sim + 0.3f * token_jaccard(query, doc_text);
 
@@ -198,24 +183,26 @@ std::vector<SearchResult> SearchEngine::semantic_search(const std::string &query
 
 std::vector<SearchResult> SearchEngine::find_similar_models(const std::string &model_id, int limit)
 {
-    const auto db = load_metadata_db(db_path_);
-    if (!db.is_object() || !db.contains(model_id)) return {};
-    const ModelMetadata target = json_to_model(db[model_id]);
+    const auto all = MetadataManager(db_path_).list_all_models();
+    const ModelMetadata *target = nullptr;
+    for (const auto &m : all) {
+        if (m.id == model_id) { target = &m; break; }
+    }
+    if (target == nullptr) return {};
 
-    const auto target_emb = embedding_manager_->compute_embedding(
-        target.name + " " + target.description);
+    const auto target_emb = embedding_manager_->compute_document_embedding(
+        target->name + " " + target->description);
     if (target_emb.empty()) return {};
 
     std::vector<std::pair<float, SearchResult>> scored;
-    for (auto &[id, j] : db.items()) {
-        if (id == model_id) continue;
-        const ModelMetadata m = json_to_model(j);
+    for (const auto &m : all) {
+        if (m.id == model_id) continue;
         if (!m.is_public) continue;
         const auto doc_text = m.name + " " + m.description;
-        const auto emb = embedding_manager_->compute_embedding(doc_text);
+        const auto emb = embedding_manager_->compute_document_embedding(doc_text);
         const float sim = cosine_similarity(target_emb, emb);
         const float score = 0.7f * sim + 0.3f * token_jaccard(
-            target.name + " " + target.description, doc_text);
+            target->name + " " + target->description, doc_text);
         SearchResult r;
         r.model_id = m.id;
         r.name = m.name;
@@ -236,18 +223,15 @@ std::vector<SearchResult> SearchEngine::find_similar_models(const std::string &m
 std::vector<std::string> SearchEngine::get_suggestions(const std::string &partial_query, int limit)
 {
     const std::string prefix = to_lower(partial_query);
-    const auto db = load_metadata_db(db_path_);
+    const auto all = MetadataManager(db_path_).list_all_models();
     std::vector<std::pair<std::string, std::string>> matches;  // (name_lower, display)
-    if (db.is_object()) {
-        for (auto &[id, j] : db.items()) {
-            const ModelMetadata m = json_to_model(j);
-            if (!m.is_public) continue;
-            const std::string name_l = to_lower(m.name);
-            const std::string id_l = to_lower(m.id);
-            if (name_l.rfind(prefix, 0) == 0 || id_l.rfind(prefix, 0) == 0 ||
-                name_l.find(prefix) != std::string::npos) {
-                matches.emplace_back(name_l, m.name.empty() ? m.id : m.name);
-            }
+    for (const auto &m : all) {
+        if (!m.is_public) continue;
+        const std::string name_l = to_lower(m.name);
+        const std::string id_l = to_lower(m.id);
+        if (name_l.rfind(prefix, 0) == 0 || id_l.rfind(prefix, 0) == 0 ||
+            name_l.find(prefix) != std::string::npos) {
+            matches.emplace_back(name_l, m.name.empty() ? m.id : m.name);
         }
     }
     std::sort(matches.begin(), matches.end());
@@ -308,7 +292,7 @@ std::vector<std::string> SearchEngine::get_popular_queries(int limit)
 
 std::vector<float> SearchEngine::compute_query_embedding(const std::string &query)
 {
-    return embedding_manager_->compute_embedding(query);
+    return embedding_manager_->compute_query_embedding(query);
 }
 
 float SearchEngine::cosine_similarity(const std::vector<float> &a, const std::vector<float> &b)
@@ -449,6 +433,16 @@ std::vector<float> EmbeddingManager::compute_embedding(const std::string &text)
     return compute_with_simple_tokenizer(text);
 }
 
+std::vector<float> EmbeddingManager::compute_query_embedding(const std::string &text)
+{
+    return compute_embedding(use_task_prefixes_ ? "search_query: " + text : text);
+}
+
+std::vector<float> EmbeddingManager::compute_document_embedding(const std::string &text)
+{
+    return compute_embedding(use_task_prefixes_ ? "search_document: " + text : text);
+}
+
 std::vector<std::vector<float>> EmbeddingManager::compute_embeddings(const std::vector<std::string> &texts)
 {
     std::vector<std::vector<float>> out;
@@ -506,6 +500,7 @@ void EmbeddingManager::unload_model()
     embed_matrix_ = core::Tensor();
     tokenizer_.reset();
     bert_.reset();
+    use_task_prefixes_ = false;
 }
 
 namespace {
@@ -587,6 +582,7 @@ bool EmbeddingManager::try_load_nomic_gguf(const std::string &path)
         return false;
     }
     bert_ = std::move(emb);
+    use_task_prefixes_ = true;  // nomic-embed models expect task prefixes
     return true;
 }
 
@@ -660,15 +656,32 @@ std::vector<float> EmbeddingManager::compute_with_simple_tokenizer(const std::st
 {
     constexpr size_t kDim = 1024;  // larger space → fewer hash collisions
     std::vector<float> vec(kDim, 0.0f);
+
+    // Signed FNV-1a hashing: bucket index from one hash, sign from a second
+    // so unrelated tokens don't all pile onto positive buckets.
+    auto add_feature = [&](const std::string &feat, float weight) {
+        uint32_t h = 2166136261u;
+        for (unsigned char c : feat) { h ^= c; h *= 16777619u; }
+        uint32_t h2 = h * 2654435761u;
+        const size_t idx = h % kDim;
+        vec[idx] += ((h2 >> 16) & 1) ? weight : -weight;
+    };
+
     std::istringstream iss(text);
     std::string word;
     while (iss >> word) {
         const std::string w = to_lower(word);
-        // FNV-1a hash → bucket; sign from a second hash for variance.
-        uint32_t h = 2166136261u;
-        for (unsigned char c : w) { h ^= c; h *= 16777619u; }
-        const size_t idx = h % kDim;
-        vec[idx] += (h & 0x10000) ? 1.0f : -1.0f;
+        // Word unigram — strong exact-match signal.
+        add_feature("w:" + w, 1.0f);
+        // Character n-grams capture morphology and partial matches
+        // ("quantization" ~ "quantized", typos, subwords). Pad the word so
+        // boundary n-grams exist too.
+        const std::string padded = "^" + w + "$";
+        for (size_t n = 3; n <= 5 && n <= padded.size(); ++n) {
+            for (size_t i = 0; i + n <= padded.size(); ++i) {
+                add_feature("c:" + padded.substr(i, n), 0.5f);
+            }
+        }
     }
     // L2 normalize so cosine_similarity is well-behaved.
     double norm = 0.0;
