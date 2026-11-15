@@ -9,6 +9,9 @@
 #include <vector>
 // #include <sqlite3.h>
 
+#include "../tensor/tensor.h"
+#include "../tokenizer/bpe.h"
+
 namespace serius::hub {
 
 struct SearchFilter
@@ -125,8 +128,16 @@ class EmbeddingManager
     std::string model_path_;
     bool model_loaded_;
 
-    // Embedding computation (deterministic hashed bag-of-words until a real
-    // embedding model file is provided to load_model()).
+    // Real embedding path: token embedding matrix [vocab, dim] mean-pooled
+    // over BPE token ids, L2-normalized. Empty matrix -> hash fallback.
+    core::Tensor embed_matrix_;
+    std::unique_ptr<serius::BPETokenizer> tokenizer_;
+
+    bool try_load_gguf(const std::string &path);
+    bool try_load_safetensors_dir(const std::string &dir);
+
+    // Embedding computation (deterministic hashed bag-of-words fallback when
+    // no embedding model file is provided to load_model()).
     std::vector<float> compute_with_simple_tokenizer(const std::string &text);
 };
 

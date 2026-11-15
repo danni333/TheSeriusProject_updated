@@ -53,7 +53,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 1. **Vulkan Backend** - 4 TODO + availability stub
 2. **Metal Backend** - 2 TODO + availability stub
 3. **Hub Search Engine** - 13 metodi stub (tutti ritornano `{}`)
-4. **Hub Embedding Manager** - 3 metodi stub
+4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ `load_model` carica la matrice `token_embd.weight` da GGUF o `model.safetensors` (+`tokenizer.json`/metadati GGUF) e produce embedding reali (mean-pool + L2-normalize); hash embedding resta fallback
 5. **Hub Metadata Manager** - SQLite disabled
 
 ### Alti (Funzionalità Core)
@@ -100,7 +100,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 - Refactorer: library loading non integrato
 
 ### RAG (1)
-- Embeddings: hash-based invece di embedding model
+- ~~Embeddings: hash-based invece di embedding model~~ ✅ mean-pool su token_embd reale (GGUF/safetensors) con fallback hash
 
 ### Transformer (1)
 - FFN: fused_bias_gelu temporary
@@ -212,7 +212,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ### CRITICHE (Fare subito)
 
 1. **Implementare Hub Search Engine** - 13 metodi stub
-2. **Implementare Hub Embedding Manager** - 3 metodi stub
+2. **~~Implementare Hub Embedding Manager~~** ✅ matrice embedding reale da GGUF/safetensors
 3. **Implementare Vulkan Backend** - 4 TODO
 4. **Implementare Metal Backend** - 2 TODO
 5. **Integrare SQLite in Hub Metadata Manager**
@@ -240,7 +240,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ### BASSE (Opzionale)
 
 20. **Rimuovere test_placeholder.cpp**
-21. **Implementare RAG embedding model reale**
+21. **~~Implementare RAG embedding model reale~~** ✅ mean-pool su `token_embd.weight` (GGUF o safetensors) + BPE tokenizer; hash embedding solo fallback
 22. **Implementare keyword-based verifiers con ML**
 23. **Implementare memory monitoring Linux/macOS**
 24. **Implementare attention block sparse ottimizzato**

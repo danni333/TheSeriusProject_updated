@@ -1,6 +1,8 @@
 #include "search_engine.h"
 
 #include "metadata_manager.h"
+#include "../io/gguf_loader.h"
+#include "../io/safetensors.h"
 
 #include <spdlog/spdlog.h>
 
@@ -11,6 +13,14 @@
 #include <fstream>
 #include <set>
 #include <sstream>
+
+// windows.h (via io/mmap.h) defines min/max macros that break std::min/std::max.
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
 namespace serius::hub {
 
@@ -407,8 +417,32 @@ bool EmbeddingManager::initialize(const std::string &model_path)
 
 std::vector<float> EmbeddingManager::compute_embedding(const std::string &text)
 {
-    // v1: deterministic hashed bag-of-words embedding (384-dim). A real
-    // sentence-transformer can replace this behind load_model() later.
+    if (embed_matrix_.size() > 0 && tokenizer_ != nullptr) {
+        const size_t vocab = embed_matrix_.shape()[0];
+        const size_t dim = embed_matrix_.shape()[1];
+        std::vector<float> vec(dim, 0.0f);
+        auto ids = tokenizer_->encode(text);
+        if (ids.empty()) {
+            return compute_with_simple_tokenizer(text);
+        }
+        for (auto id : ids) {
+            const size_t tid = static_cast<size_t>(id) % vocab;
+            for (size_t d = 0; d < dim; ++d) {
+                vec[d] += embed_matrix_.at(tid, d);
+            }
+        }
+        const float inv = 1.0f / static_cast<float>(ids.size());
+        double norm = 0.0;
+        for (auto &v : vec) {
+            v *= inv;
+            norm += static_cast<double>(v) * v;
+        }
+        norm = std::sqrt(norm);
+        if (norm > 0.0) {
+            for (auto &v : vec) v = static_cast<float>(v / norm);
+        }
+        return vec;
+    }
     return compute_with_simple_tokenizer(text);
 }
 
@@ -422,18 +456,164 @@ std::vector<std::vector<float>> EmbeddingManager::compute_embeddings(const std::
 
 bool EmbeddingManager::load_model(const std::string &model_path)
 {
+    unload_model();
     model_path_ = model_path;
-    model_loaded_ = !model_path.empty() && std::filesystem::exists(model_path);
-    if (!model_loaded_ && !model_path.empty()) {
-        spdlog::warn("Embedding model '{}' not found; using hash embeddings", model_path);
+    if (model_path.empty() || !std::filesystem::exists(model_path)) {
+        if (!model_path.empty()) {
+            spdlog::warn("Embedding model '{}' not found; using hash embeddings", model_path);
+        }
+        return true;  // hash embeddings are always available as fallback
     }
-    return true;  // hash embeddings are always available as fallback
+
+    const std::filesystem::path p(model_path);
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(p, ec) && p.extension() == ".gguf") {
+        if (try_load_gguf(model_path)) {
+            model_loaded_ = true;
+            spdlog::info("EmbeddingManager: loaded GGUF embedding matrix from '{}'", model_path);
+            return true;
+        }
+    } else if (std::filesystem::is_directory(p, ec)) {
+        if (try_load_safetensors_dir(model_path)) {
+            model_loaded_ = true;
+            spdlog::info("EmbeddingManager: loaded safetensors embedding matrix from '{}'", model_path);
+            return true;
+        }
+        // Directory may itself contain a .gguf (e.g. a hub model dir).
+        std::error_code ec;
+        for (const auto &entry : std::filesystem::directory_iterator(p, ec)) {
+            if (entry.path().extension() == ".gguf" && try_load_gguf(entry.path().string())) {
+                model_loaded_ = true;
+                spdlog::info("EmbeddingManager: loaded GGUF embedding matrix from '{}'", entry.path().string());
+                return true;
+            }
+        }
+    }
+
+    model_loaded_ = true;  // path exists but no usable embedding matrix: hash fallback
+    spdlog::warn("EmbeddingManager: no token_embd/embed_tokens tensor in '{}'; using hash embeddings",
+                 model_path);
+    return true;
 }
 
 void EmbeddingManager::unload_model()
 {
     model_loaded_ = false;
     model_handle_ = nullptr;
+    embed_matrix_ = core::Tensor();
+    tokenizer_.reset();
+}
+
+namespace {
+
+/// Copy a [vocab, dim] (or transposed) float matrix into embed_matrix_.
+/// `dim_major` selects the source layout: true means src[d*vocab + t].
+bool store_embedding_matrix(core::Tensor &dst, const float *src, size_t numel,
+                            size_t vocab, size_t dim, bool dim_major)
+{
+    if (src == nullptr || vocab == 0 || dim == 0 || numel != vocab * dim) {
+        return false;
+    }
+    dst = core::Tensor({vocab, dim});
+    for (size_t t = 0; t < vocab; ++t) {
+        for (size_t d = 0; d < dim; ++d) {
+            dst.at(t, d) = dim_major ? src[d * vocab + t] : src[t * dim + d];
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+bool EmbeddingManager::try_load_gguf(const std::string &path)
+{
+    auto tensors = io::load_all_tensors(path);
+    auto it = tensors.find("token_embd.weight");
+    if (it == tensors.end()) {
+        return false;
+    }
+    const core::Tensor &t = it->second;
+    if (t.size() == 0) {
+        return false;
+    }
+
+    auto tok = io::load_gguf_tokenizer(path);
+    if (!tok.valid) {
+        return false;
+    }
+    tokenizer_ = std::make_unique<serius::BPETokenizer>();
+    tokenizer_->load_from_gguf(tok);
+    const size_t vocab = tokenizer_->vocab_size();
+    if (vocab == 0 || t.size() % vocab != 0) {
+        return false;
+    }
+    const size_t dim = t.size() / vocab;
+
+    // GGUF/ggml dim order: shape[0] is the contiguous dim. If the contiguous
+    // dim equals vocab the flat data is dim-major and needs a transpose.
+    const bool dim_major = (t.ndim() == 2 && t.shape()[0] == vocab && t.shape()[1] != vocab);
+    return store_embedding_matrix(embed_matrix_, t.data(), t.size(), vocab, dim, dim_major);
+}
+
+bool EmbeddingManager::try_load_safetensors_dir(const std::string &dir)
+{
+    const std::string st_path = (std::filesystem::path(dir) / "model.safetensors").string();
+    if (!std::filesystem::exists(st_path)) {
+        return false;
+    }
+
+    io::SafetensorsReader reader(st_path);
+    static const char *kNames[] = {
+        "model.embed_tokens.weight",
+        "token_embd.weight",
+        "embed_tokens.weight",
+        "embedding.weight",
+    };
+    std::string tensor_name;
+    for (const char *name : kNames) {
+        if (reader.has_tensor(name)) {
+            tensor_name = name;
+            break;
+        }
+    }
+    if (tensor_name.empty()) {
+        return false;
+    }
+
+    const auto &meta = reader.tensor_info(tensor_name);
+    if (meta.shape.size() != 2) {
+        return false;
+    }
+    const size_t rows = static_cast<size_t>(meta.shape[0]);
+    const size_t cols = static_cast<size_t>(meta.shape[1]);
+
+    tokenizer_ = std::make_unique<serius::BPETokenizer>();
+    const std::string tok_path = (std::filesystem::path(dir) / "tokenizer.json").string();
+    if (std::filesystem::exists(tok_path)) {
+        tokenizer_->load(tok_path);
+    }
+    size_t vocab = tokenizer_->vocab_size();
+    size_t dim = 0;
+    bool dim_major = false;
+    if (vocab > 0 && rows == vocab) {
+        dim = cols;  // standard HF [vocab, dim] row-major
+    } else if (vocab > 0 && cols == vocab) {
+        dim = rows;  // transposed [dim, vocab]
+        dim_major = true;
+    } else {
+        // No usable tokenizer: infer vocab/dim from shape heuristics is
+        // unsafe — require the smaller dim to be plausible.
+        vocab = rows <= cols ? rows : cols;
+        dim = rows <= cols ? cols : rows;
+        dim_major = rows > cols;  // guess: wider axis is vocab? fall back flat
+        spdlog::warn("EmbeddingManager: no tokenizer.json in '{}'; using shape heuristic", dir);
+    }
+
+    core::Tensor t = reader.get_tensor(tensor_name);
+    if (t.size() != vocab * dim) {
+        return false;
+    }
+    return store_embedding_matrix(embed_matrix_, t.data(), t.size(), vocab, dim, dim_major);
 }
 
 bool EmbeddingManager::is_model_loaded() const

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -141,4 +142,43 @@ TEST(HubSearch, SuggestionsAndAnalytics)
     ASSERT_EQ(popular.size(), 2u);
     EXPECT_EQ(popular[0], "qwen");
     EXPECT_EQ(popular[1], "llama");
+}
+
+TEST(HubSearch, EmbeddingManagerRealModel)
+{
+    // Real embedding path: token_embd matrix from a GGUF + BPE tokenizer.
+    const std::string gguf = "../models/smollm2-q4/SmolLM2-135M-Instruct-Q4_0.gguf";
+    if (!fs::exists(gguf)) {
+        GTEST_SKIP() << "GGUF model not found: " << gguf;
+    }
+
+    serius::hub::EmbeddingManager em;
+    ASSERT_TRUE(em.load_model(gguf));
+    ASSERT_TRUE(em.is_model_loaded());
+
+    const auto e1 = em.compute_embedding("hello world");
+    const auto e2 = em.compute_embedding("quantum chromodynamics");
+    const auto e1b = em.compute_embedding("hello world");
+
+    ASSERT_FALSE(e1.empty());
+    EXPECT_EQ(e1.size(), e2.size());
+
+    // Deterministic
+    ASSERT_EQ(e1.size(), e1b.size());
+    for (size_t i = 0; i < e1.size(); ++i) {
+        EXPECT_FLOAT_EQ(e1[i], e1b[i]);
+    }
+
+    // L2-normalized (mean-pooled then normalized)
+    double norm = 0.0;
+    for (float v : e1) norm += static_cast<double>(v) * v;
+    EXPECT_NEAR(std::sqrt(norm), 1.0, 1e-4);
+
+    // Different texts -> different embeddings
+    double diff = 0.0;
+    for (size_t i = 0; i < e1.size(); ++i) {
+        const double d = static_cast<double>(e1[i]) - e2[i];
+        diff += d * d;
+    }
+    EXPECT_GT(diff, 1e-6);
 }
