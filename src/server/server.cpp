@@ -762,6 +762,23 @@ void Server::setup_routes()
             return;
         }
 
+        // Require at least one input: a non-empty "prompt" or a "messages"
+        // array with at least one usable entry. An empty object would
+        // otherwise fall back to the default prompt and burn max_tokens of
+        // generation for a meaningless request.
+        const auto messages = body.value("messages", nlohmann::json::array());
+        const bool has_messages = messages.is_array() && !messages.empty();
+        const std::string prompt_field = body.value("prompt", "");
+        if (!has_messages && prompt_field.empty()) {
+            res.status = 400;
+            res.set_content(
+                nlohmann::json{{"error", {{"message", "messages or prompt is required"},
+                                           {"type", "invalid_request_error"}}}}
+                    .dump(),
+                "application/json");
+            return;
+        }
+
         std::string requested_model = body.value("model", model_name());
         if (requested_model.empty()) {
             requested_model = model_name();

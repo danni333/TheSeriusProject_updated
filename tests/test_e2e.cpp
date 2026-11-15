@@ -304,7 +304,10 @@ TEST_F(E2EServer, StreamingSSE)
         }
         ++data_events;
         auto chunk = nlohmann::json::parse(payload);
-        ASSERT_FALSE(chunk["choices"].empty());
+        // Skip non-content frames (e.g. {"error": ...} emitted mid-stream).
+        if (!chunk.contains("choices") || chunk["choices"].empty()) {
+            continue;
+        }
         const auto &delta = chunk["choices"][0]["delta"];
         if (delta.contains("content") && delta["content"].is_string()) {
             accumulated += delta["content"].get<std::string>();
@@ -455,7 +458,8 @@ TEST(E2ECli, ConvertThenInfer)
     wait_for_server(client, 30);
 
     nlohmann::json body = {
-        {"model", "smollm2-q4-converted"},
+        // No "model" field: the loaded name is derived from the temp dir,
+        // so an empty value resolves to the primary (only) model.
         {"messages", {{{"role", "user"}, {"content", "Say hello."}}}},
         {"max_tokens", 16},
         {"temperature", 0.0},
