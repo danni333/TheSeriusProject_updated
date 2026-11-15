@@ -10,10 +10,10 @@ class ChatUI {
         this.maxTokens = 256;
         this.model = "default";
         this.abortController = null;
-        // Max chat messages sent to the server per request (~20 turns).
-        // The UI keeps full history; only the prompt is windowed so the
-        // server-side prefill doesn't grow unbounded.
-        this.maxHistoryMessages = 40;
+        // History sent to the server is windowed by estimated tokens
+        // (~4 chars/token) so the prompt can't outgrow the context window.
+        // The UI keeps full history; only the outbound transcript is capped.
+        this.maxHistoryTokens = 6000;
 
         this.initElements();
         this.loadState();
@@ -46,6 +46,28 @@ class ChatUI {
         this.loadQuantInput = document.getElementById('load-quant');
         this.loadStatus = document.getElementById('load-status');
         this.loadModelBtn = document.getElementById('load-model-btn');
+        this.emptyState = document.getElementById('empty-state');
+    }
+
+    updateEmptyState() {
+        if (!this.emptyState) return;
+        this.emptyState.classList.toggle('hidden', this.messages.length > 0);
+    }
+
+    openPanel(panel) {
+        panel.classList.remove('hidden');
+        // Force a reflow so the slide-in transition runs.
+        void panel.offsetWidth;
+        panel.classList.add('open');
+    }
+
+    closePanel(panel) {
+        panel.classList.remove('open');
+        setTimeout(() => {
+            if (!panel.classList.contains('open')) {
+                panel.classList.add('hidden');
+            }
+        }, 260);
     }
 
     initEventListeners() {
@@ -68,11 +90,15 @@ class ChatUI {
         });
 
         this.settingsBtn.addEventListener('click', () => {
-            this.settingsPanel.classList.toggle('hidden');
+            if (this.settingsPanel.classList.contains('hidden')) {
+                this.openPanel(this.settingsPanel);
+            } else {
+                this.closePanel(this.settingsPanel);
+            }
         });
 
         this.closeSettingsBtn.addEventListener('click', () => {
-            this.settingsPanel.classList.add('hidden');
+            this.closePanel(this.settingsPanel);
         });
 
         this.temperatureInput.addEventListener('input', (e) => {
@@ -110,14 +136,16 @@ class ChatUI {
         });
 
         this.modelsBtn.addEventListener('click', () => {
-            this.modelsPanel.classList.toggle('hidden');
-            if (!this.modelsPanel.classList.contains('hidden')) {
+            if (this.modelsPanel.classList.contains('hidden')) {
+                this.openPanel(this.modelsPanel);
                 this.refreshModelsPanel();
+            } else {
+                this.closePanel(this.modelsPanel);
             }
         });
 
         this.closeModelsBtn.addEventListener('click', () => {
-            this.modelsPanel.classList.add('hidden');
+            this.closePanel(this.modelsPanel);
         });
 
         this.loadModelBtn.addEventListener('click', () => this.loadModel());
@@ -193,6 +221,7 @@ class ChatUI {
                 throw new Error(msg || `HTTP ${response.status}`);
             }
             this.loadStatus.textContent = `Loaded: ${data.id || name || path}`;
+            this.loadStatus.classList.remove('error');
             this.loadPathInput.value = '';
             this.loadNameInput.value = '';
             this.loadQuantInput.value = '';
@@ -200,6 +229,7 @@ class ChatUI {
             await this.renderModelsList();
         } catch (error) {
             this.loadStatus.textContent = 'Error: ' + error.message;
+            this.loadStatus.classList.add('error');
             console.error('Model load failed:', error);
         } finally {
             this.loadModelBtn.disabled = false;
@@ -225,6 +255,7 @@ class ChatUI {
         } catch (error) {
             console.error('Model unload failed:', error);
             this.loadStatus.textContent = 'Unload error: ' + error.message;
+            this.loadStatus.classList.add('error');
         }
     }
 
@@ -253,19 +284,97 @@ class ChatUI {
                 .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    // Minimal markdown renderer: fenced code blocks, inline code, bold.
-    // Input is HTML-escaped first, so output is XSS-safe. Unclosed fences
-    // (mid-stream) are tolerated and rendered as a code block.
+    // Minimal markdown renderer: fenced code, headings, lists, quotes,
+    // bold/italic/code/links. Input is HTML-escaped first, so output is
+    // XSS-safe. Unclosed fences (mid-stream) are tolerated.
     renderMarkdown(text) {
         const escaped = this.escapeHtml(text);
         const blocks = [];
-        let html = escaped.replace(/```(\w*)\n?([\s\S]*?)(```|$)/g, (m, lang, code) => {
-            blocks.push(`<pre><code${lang ? ` class="language-${lang}"` : ''}>${code.replace(/\n$/, '')}</code></pre>`);
+        const stash = (html) => {
+            blocks.push(html);
             return `%%MD_BLOCK_${blocks.length - 1}%%`;
-        });
-        html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-        html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-        return html.replace(/%%MD_BLOCK_(\d+)%%/g, (m, i) => blocks[parseInt(i, 10)]);
+        };
+
+        // Fenced code blocks first — contents are not inline-formatted.
+        let src = escaped.replace(/```(\w*)\n?([\s\S]*?)(```|$)/g, (m, lang, code) =>
+            stash(`<pre><code${lang ? ` class="language-${lang}"` : ''}>${code.replace(/\n$/, '')}</code></pre>`));
+
+        const inline = (s) => {
+            const spans = [];
+            let out = s.replace(/`([^`\n]+)`/g, (m, c) => {
+                spans.push(`<code>${c}</code>`);
+                return `%%CS_${spans.length - 1}%%`;
+            });
+            out = out.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+                '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+            out = out.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            out = out.replace(/(^|[^*\w])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+            out = out.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+            return out.replace(/%%CS_(\d+)%%/g, (m, i) => spans[parseInt(i, 10)]);
+        };
+
+        const lines = src.split('\n');
+        const out = [];
+        let listTag = null;
+        let para = [];
+        let quote = [];
+
+        const flushPara = () => {
+            if (para.length) {
+                out.push(`<p>${para.map(inline).join('<br>')}</p>`);
+                para = [];
+            }
+        };
+        const flushQuote = () => {
+            if (quote.length) {
+                out.push(`<blockquote>${quote.map(inline).join('<br>')}</blockquote>`);
+                quote = [];
+            }
+        };
+        const flushList = () => {
+            if (listTag) {
+                out.push(`</${listTag}>`);
+                listTag = null;
+            }
+        };
+        const flushAll = () => { flushPara(); flushQuote(); flushList(); };
+
+        for (const line of lines) {
+            const t = line.trim();
+            const block = t.match(/^%%MD_BLOCK_(\d+)%%$/);
+            if (block) {
+                flushAll();
+                out.push(blocks[parseInt(block[1], 10)]);
+                continue;
+            }
+            let m;
+            if ((m = line.match(/^#{1,6}\s+(.*)$/))) {
+                flushAll();
+                const lvl = line.match(/^#+/)[0].length;
+                out.push(`<h${lvl}>${inline(m[1])}</h${lvl}>`);
+            } else if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) {
+                flushAll();
+                out.push('<hr>');
+            } else if ((m = line.match(/^&gt;\s?(.*)$/))) {
+                flushPara(); flushList();
+                quote.push(m[1]);
+            } else if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) {
+                flushPara(); flushQuote();
+                if (listTag !== 'ul') { flushList(); out.push('<ul>'); listTag = 'ul'; }
+                out.push(`<li>${inline(m[1])}</li>`);
+            } else if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) {
+                flushPara(); flushQuote();
+                if (listTag !== 'ol') { flushList(); out.push('<ol>'); listTag = 'ol'; }
+                out.push(`<li>${inline(m[1])}</li>`);
+            } else if (t === '') {
+                flushAll();
+            } else {
+                flushQuote(); flushList();
+                para.push(line);
+            }
+        }
+        flushAll();
+        return out.join('\n');
     }
 
     saveState() {
@@ -333,6 +442,7 @@ class ChatUI {
                 }
             }
         }
+        this.updateEmptyState();
     }
 
     // Append a message bubble to the DOM only (no state push).
@@ -340,11 +450,26 @@ class ChatUI {
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${role}`;
 
+        if (role !== 'system') {
+            const avatar = document.createElement('div');
+            avatar.className = 'avatar';
+            avatar.textContent = role === 'user' ? 'U' : 'S';
+            messageDiv.appendChild(avatar);
+        }
+
+        const body = document.createElement('div');
+        body.className = 'message-body';
+
+        const bubble = document.createElement('div');
+        bubble.className = 'bubble';
+
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
         contentDiv.innerHTML = this.renderMarkdown(content);
 
-        messageDiv.appendChild(contentDiv);
+        bubble.appendChild(contentDiv);
+        body.appendChild(bubble);
+        messageDiv.appendChild(body);
         this.messagesContainer.appendChild(messageDiv);
         this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
     }
@@ -352,6 +477,7 @@ class ChatUI {
     addMessage(role, content) {
         this.renderMessage(role, content);
         this.messages.push({ role, content });
+        this.updateEmptyState();
         this.saveState();
     }
 
@@ -380,9 +506,18 @@ class ChatUI {
 
         // 'system' entries in this.messages are UI error notices, not real
         // system prompts — keep them out of the transcript sent to the model.
-        const history = this.messages
-            .filter(m => m.role !== 'system')
-            .slice(-this.maxHistoryMessages);
+        // Window by estimated tokens (~4 chars/token), dropping oldest first
+        // but always keeping at least the latest user/assistant exchange.
+        const history = [];
+        let historyTokens = 0;
+        for (let i = this.messages.length - 1; i >= 0; --i) {
+            const m = this.messages[i];
+            if (m.role === 'system') continue;
+            const est = Math.ceil((m.content || '').length / 4) + 4;
+            if (historyTokens + est > this.maxHistoryTokens && history.length > 0) break;
+            historyTokens += est;
+            history.unshift(m);
+        }
         const messages = [
             { role: 'system', content: this.systemPrompt },
             ...history
@@ -390,6 +525,7 @@ class ChatUI {
 
         this.abortController = new AbortController();
         this.sendBtn.textContent = 'Stop';
+        this.sendBtn.classList.add('streaming');
         this.sendBtn.disabled = false;
 
         try {
@@ -424,6 +560,7 @@ class ChatUI {
             }
 
             this.addMessage('assistant', '');
+            this.showTypingIndicator();
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
@@ -495,7 +632,19 @@ class ChatUI {
         } finally {
             this.abortController = null;
             this.sendBtn.textContent = 'Send';
+            this.sendBtn.classList.remove('streaming');
             this.saveState();
+        }
+    }
+
+    // Animated dots shown inside the empty assistant bubble until the
+    // first token arrives.
+    showTypingIndicator() {
+        const lastMsg = this.messagesContainer.lastChild;
+        const contentDiv = lastMsg && lastMsg.querySelector('.message-content');
+        if (contentDiv && !this.messages[this.messages.length - 1].content) {
+            contentDiv.innerHTML =
+                '<span class="typing-dots"><span></span><span></span><span></span></span>';
         }
     }
 }
