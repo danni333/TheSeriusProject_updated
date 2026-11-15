@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <sstream>
 
@@ -48,7 +49,8 @@ bool parse_header(const std::string &json_str, std::unordered_map<std::string, S
             (*out)[it.key()] = std::move(m);
         }
         return true;
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::cerr << "[Safetensors] Failed to parse header JSON: " << e.what() << "\n";
         return false;
     }
 }

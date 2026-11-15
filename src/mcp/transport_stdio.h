@@ -8,9 +8,9 @@
 namespace serius {
 namespace mcp {
 
-/// stdio transport: launches a subprocess and communicates over stdin/stdout.
-/// Best-effort implementation; a real deployment should manage the subprocess
-/// lifetime and buffered I/O carefully.
+/// stdio transport: launches a subprocess and communicates over stdin/stdout
+/// using newline-delimited JSON-RPC. Requests block until the matching
+/// response id arrives or the subprocess closes stdout.
 class StdioTransport : public Transport
 {
    public:
@@ -24,9 +24,16 @@ class StdioTransport : public Transport
                       const json &params = json::object()) override;
 
    private:
+    void spawn();
+
     std::string command_;
     FILE *in_ = nullptr;   // write to subprocess stdin
     FILE *out_ = nullptr;  // read from subprocess stdout
+#if defined(_WIN32)
+    void *process_ = nullptr;  // HANDLE, kept opaque to avoid windows.h here
+#else
+    long pid_ = -1;
+#endif
 };
 
 }  // namespace mcp

@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 
 #include <nlohmann/json.hpp>
 
@@ -39,7 +40,9 @@ bool load_sharded_safetensors(const std::string &index_path, std::map<std::strin
             (*out)[name] = reader.get_tensor(name);
         }
         return !out->empty();
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::cerr << "[Sharding] Failed to load index " << index_path
+                  << ": " << e.what() << "\n";
         return false;
     }
 }

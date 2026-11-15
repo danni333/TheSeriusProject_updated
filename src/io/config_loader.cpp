@@ -1,6 +1,7 @@
 #include "config_loader.h"
 
 #include <fstream>
+#include <iostream>
 #include <sstream>
 
 #include <nlohmann/json.hpp>
@@ -119,7 +120,8 @@ model::ModelConfig load_model_config(const std::string &path)
     try {
         nlohmann::json j = nlohmann::json::parse(ss.str());
         return parse_config(j);
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::cerr << "[Config] Failed to parse " << path << ": " << e.what() << "\n";
         return model::ModelConfig{};
     }
 }
@@ -129,7 +131,8 @@ model::ModelConfig load_model_config_from_string(const std::string &json_str)
     try {
         nlohmann::json j = nlohmann::json::parse(json_str);
         return parse_config(j);
-} catch (const std::exception &) {
+} catch (const std::exception &e) {
+        std::cerr << "[Config] Failed to parse config string: " << e.what() << "\n";
         return model::ModelConfig{};
     }
 }
@@ -145,7 +148,8 @@ model::QwenConfig load_qwen_config(const std::string &path)
     try {
         nlohmann::json j = nlohmann::json::parse(ss.str());
         return parse_qwen_config(j);
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::cerr << "[Config] Failed to parse " << path << ": " << e.what() << "\n";
         return model::QwenConfig{};
     }
 }
@@ -155,7 +159,8 @@ model::QwenConfig load_qwen_config_from_string(const std::string &json_str)
     try {
         nlohmann::json j = nlohmann::json::parse(json_str);
         return parse_qwen_config(j);
-    } catch (const std::exception &) {
+    } catch (const std::exception &e) {
+        std::cerr << "[Config] Failed to parse qwen config string: " << e.what() << "\n";
         return model::QwenConfig{};
     }
 }

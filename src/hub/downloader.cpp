@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 
 #ifdef _WIN32
@@ -159,7 +160,8 @@ std::vector<HubFile> ModelDownloader::list_hf_files(const std::string &repo_id,
             f.size = entry.value("size", (size_t)0);
             if (!f.path.empty()) files.push_back(std::move(f));
         }
-    } catch (...) {
+    } catch (const std::exception &e) {
+        std::cerr << "[Hub] Failed to parse file listing response: " << e.what() << "\n";
         return {};
     }
     return files;

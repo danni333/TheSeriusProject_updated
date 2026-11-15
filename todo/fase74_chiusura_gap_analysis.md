@@ -1,0 +1,95 @@
+# Fase 74 — Chiusura Gap Analysis (post report_placeholder)
+
+Piano di chiusura dei debiti tecnici emersi da `report_placeholder_consolidated.md`
+(2026-10-29, aggiornato 2026-11-15) e dal lavoro su web UI / inferenza.
+
+## Stato attuale (2026-11-15, secondo aggiornamento)
+
+Già risolti: batched prefill (Tensor host/device sync), KV cache persistente,
+multi-modello + load/unload runtime + `hf://`, BOS/EOS reali, stress VRAM/RAM
+server-side, TPS reale, chaos assertions, test_placeholder rimosso,
+**A1 MCP transports** (HTTP + stdio, 11/11 test), **A2 Hub Search Engine**
+(file-backed, 4/4 test), **A3 catch silenti** io/hub (tutti loggati),
+MetadataManager CRUD completo (JSON file-based, SQLite resta disabilitata).
+
+---
+
+## Track A — Quick win (1–3 giorni l'uno)
+
+### A1. MCP transports (`src/mcp/`) ✅ FATTO
+- `transport_http.cpp`: POST JSON-RPC via `cpp-httplib` — implementato.
+- `transport_stdio.cpp`: subprocess `CreateProcess`/fork con pipe bidirezionali.
+- Test: roundtrip HTTP + stdio in `test_mcp_client` (11/11).
+
+### A2. Hub Search Engine (`src/hub/search_engine.cpp`) ✅ FATTO
+- `search_models`: keyword + filtri tag/author su `MetadataManager` JSON.
+- `semantic_search`: ranking deterministico (embedding hash-like, 256-dim).
+- `get_suggestions`, trending, analytics, cache, highlight, paginazione.
+- Test: `test_hub_search` (4/4).
+
+### A3. Catch silenti residui ✅ FATTO
+- `config_loader`, `safetensors_loader`, `sharding`, `downloader`,
+  `metadata_manager` ora loggano `[Component] Failed ...` con `e.what()`.
+- `nccl_comm` rilancia (non silenzioso), `gguf_export` skip legittimo.
+
+### A4. Config centralizzata
+- `defaults.h` esiste già; estenderlo per porte/timeout/threshold sparsi
+  (vedi report Part 3). Bassa priorità.
+
+## Track B — Media (1–2 settimane)
+
+### B1. Hub Converter Safetensors→GGUF (`src/hub/converter.cpp`, 65 righe)
+- Scrivere GGUF v3 writer: header, metadata KV, tensor infos, allineamento.
+- Importante per l'ecosistema (export modelli convertiti).
+
+### B2. Model Hub Server routes + auth (`src/hub/model_hub_server.cpp`)
+- `search_models` stub → route REST reali via httplib.
+- `auth_manager.h` esiste: integrare token check middleware.
+
+### B3. MCP client/server end-to-end
+- Dopo A1: test integration JSON-RPC client↔server, audit log (gia' in `audit.cpp`).
+
+## Track C — Backend hardware (DEPRIORITIZZATO)
+
+### C1. Vulkan backend (`src/hal/vulkan_backend.cpp`, 92 righe, tutto stub)
+- Richiede Vulkan SDK, SPIR-V shaders, VMA. Ordine di grandezza: settimane.
+- **Raccomandazione**: non partire ora. CPU (AVX2/512) + CUDA coprono i target
+  attuali. Rivalutare solo se serve GPU vendor-diversa da NVIDIA.
+
+### C2. Metal backend
+- Solo macOS; ambiente di sviluppo è Windows. **Skip** salvo porting futuro.
+
+## Track D — Inference avanzata (media)
+
+### D1. Flash Attention backward CPU (`src/attention/`)
+- Richiede per il training su sequenze lunghe. Media complessità.
+
+### D2. Pipeline-parallel gradient reale
+- Oggi `run_transformer_layers` ha placeholder per intermediate ranks.
+- Serve per training distribuito PP; non per inferenza.
+
+### D3. Graph compiler trace reale
+- strumentazione per auto-tuning kernel.
+
+### D4. CPU backend stream asincrono / BLAS stream params
+- Micro-ottimizzazioni; guadagno modesto.
+
+### D5. Quantization FP8 kernel
+- Serve solo se si vuole FP8 inference; CUDA ha già FP16/BF16 path.
+
+---
+
+## Priorità consigliata
+
+1. **A1 + A2** — chiudono gli stub più visibili (MCP + Hub search), sforzo piccolo.
+2. **A3** — igiene, veloce.
+3. **B1** — GGUF writer, valore ecosistema alto.
+4. **B2 + B3** — completano il percorso MCP/Hub.
+5. Track C: **non fare** a meno che non serva Vulkan/Metal davvero.
+6. Track D: solo se si punta al training distribuito.
+
+## Criteri di "fatto"
+
+- Ogni stub rimosso ha test dedicato in `tests/`.
+- Nessun `return {}` / `not implemented` silenzioso senza env opt-out.
+- Report consolidato aggiornato a ogni track completata.

@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
 
+#include <httplib.h>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "mcp/client.h"
 #include "mcp/transport.h"
+#include "mcp/transport_http.h"
+#include "mcp/transport_stdio.h"
 
 using serius::mcp::MCPClient;
 using serius::mcp::MCPTool;
@@ -118,4 +122,108 @@ TEST(MCPClient, EmptyToolsOnMissingResult)
     std::vector<serius::mcp::MCPTool> result;
     result = client.list_tools();
     EXPECT_TRUE(result.empty());
+}
+
+// ---- HttpTransport ----
+
+namespace {
+
+class MockMcpHttpServer {
+public:
+    MockMcpHttpServer() {
+        server_.Post("/mcp", [this](const httplib::Request &req, httplib::Response &res) {
+            ++request_count;
+            last_body = req.body;
+            res.set_content(R"({"jsonrpc":"2.0","id":1,"result":{"tools":[]}})",
+                            "application/json");
+        });
+    }
+    bool start() {
+        port_ = server_.bind_to_any_port("127.0.0.1");
+        if (port_ < 0) return false;
+        thread_ = std::thread([this] { server_.listen_after_bind(); });
+        return true;
+    }
+    void stop() {
+        server_.stop();
+        if (thread_.joinable()) thread_.join();
+    }
+    std::string url() const { return "http://127.0.0.1:" + std::to_string(port_) + "/mcp"; }
+    int request_count = 0;
+    std::string last_body;
+private:
+    httplib::Server server_;
+    std::thread thread_;
+    int port_ = -1;
+};
+
+}  // namespace
+
+TEST(HttpTransport, JsonRpcOverHttp)
+{
+    MockMcpHttpServer mock;
+    ASSERT_TRUE(mock.start());
+
+    serius::mcp::HttpTransport transport(mock.url());
+    json resp = transport.send_request("tools/list", json::object());
+    mock.stop();
+
+    EXPECT_TRUE(resp.contains("result"));
+    EXPECT_TRUE(resp["result"].contains("tools"));
+    EXPECT_EQ(mock.request_count, 1);
+    // The request envelope must be valid JSON-RPC with our method.
+    json sent = json::parse(mock.last_body);
+    EXPECT_EQ(sent["jsonrpc"], "2.0");
+    EXPECT_EQ(sent["method"], "tools/list");
+    EXPECT_TRUE(sent.contains("id"));
+}
+
+TEST(HttpTransport, InvalidEndpointReturnsError)
+{
+    serius::mcp::HttpTransport transport("");
+    json resp = transport.send_request("tools/list");
+    EXPECT_TRUE(resp.contains("error"));
+}
+
+TEST(HttpTransport, HttpsRejected)
+{
+    serius::mcp::HttpTransport transport("https://example.com/mcp");
+    json resp = transport.send_request("tools/list");
+    EXPECT_TRUE(resp.contains("error"));
+    EXPECT_NE(resp["error"]["message"].get<std::string>().find("HTTPS"),
+              std::string::npos);
+}
+
+// ---- StdioTransport ----
+
+TEST(StdioTransport, SpawnFailureReturnsError)
+{
+    // A command that does not exist: pipes may open but the child exits
+    // immediately, so the request fails gracefully instead of crashing.
+    serius::mcp::StdioTransport transport(
+#if defined(_WIN32)
+        "cmd /c exit 1"
+#else
+        "false"
+#endif
+    );
+    json resp = transport.send_request("tools/list");
+    EXPECT_TRUE(resp.contains("error"));
+}
+
+TEST(StdioTransport, RoundtripEcho)
+{
+    // `more`/`cat` echo each stdin line back on stdout: the echoed JSON-RPC
+    // request contains our id, so send_request returns it as the response.
+    // This exercises the full spawn -> write -> read -> parse path.
+    serius::mcp::StdioTransport transport(
+#if defined(_WIN32)
+        "cmd /c more"
+#else
+        "cat"
+#endif
+    );
+    json resp = transport.send_request("ping", json::object());
+    EXPECT_EQ(resp.value("method", std::string{}), "ping");
+    EXPECT_TRUE(resp.contains("id"));
 }

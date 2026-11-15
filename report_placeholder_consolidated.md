@@ -15,10 +15,14 @@ Item di questo report verificati e risolti nel frattempo:
 | - | **BUG CRITICO: chat CLI incoerente** | ✅ RISOLTO — root cause era il batched prefill (Tensor restituiva dati host stale dopo matmul CUDA) + BOS/EOS hardcoded errato per Qwen. Fix in `tensor.{h,cpp}`, `llama_inference.cpp`, `bpe.{h,cpp}`. |
 | 21 | **GGUF Loader unused parameters / input malformati** | ✅ PARZIALE — hardening loader in commit `31f269f` (bound checks, header validation). |
 | Part5 | **printf DEBUG in llama_inference.cpp** | ⚠️ PARZIALE — i printf restano ma sono gated da env (`SERIUS_PROF`, `SERIUS_GPU_TIME`, `SERIUS_PREFILL_BATCH` diagnostics). |
-| Part4 | **test_placeholder.cpp dummy** | ❌ ANCORA PRESENTE — file esiste ancora in `tests/`. |
-| - | **Catch silent hf_llama_loader.cpp:349** | ⚠️ ANCORA — `parse_llama_config` ritorna `LLamaConfig{}` su JSON non parsabile senza log. |
+| Part4 | **test_placeholder.cpp dummy** | ✅ RISOLTO — target rimosso da `tests/CMakeLists.txt` e file eliminato. |
+| - | **Catch silent hf_llama_loader.cpp:349** | ✅ RISOLTO — ora logga warning con path ed errore. |
+| 6-7 | **MCP HTTP + Stdio Transport stub** | ✅ RISOLTO — `transport_http.cpp` (JSON-RPC via httplib) e `transport_stdio.cpp` (subprocess CreateProcess/fork) implementati; 11/11 test in `test_mcp_client`. |
+| 3 | **Hub Search Engine stub** | ✅ RISOLTO — `search_engine.cpp` riscritto: ricerca full-text + filtri tag/author, ranking deterministico, similarità, suggestions, trending, analytics, cache, highlight, paginazione. Test in `test_hub_search` (4/4). |
+| 5 | **Hub Metadata Manager** | ✅ PARZIALE — metodi CRUD/count/downloads/ratings implementati con persistenza JSON file-based; SQLite resta disabilitata (scelta intenzionale, non bloccante). |
+| Part5 | **Catch silent io/hub (config_loader, safetensors, sharding, downloader, metadata)** | ✅ RISOLTO — tutti loggano `[Component] Failed ...` con `e.what()`; fallback su config vuota/`false` mantenuto. |
 
-Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era rotto (fixato), KV cache non persistente tra turni (fixato), multi-modello assente (implementato), `hf://` non supportato a runtime (implementato).
+Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era rotto (fixato — root cause in `Tensor` host/device sync), KV cache non persistente tra turni (fixato), multi-modello assente (implementato), `hf://` non supportato a runtime (implementato).
 
 ---
 

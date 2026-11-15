@@ -84,7 +84,8 @@ Questo documento fornisce una panoramica completa di tutte le fasi del progetto 
 - **Fase 70**: [Biomedical AI](fase70+.md) - Genomics.
 - **Fase 71**: [Climate Science](fase71+.md) - ESM.
 - **Fase 72**: [Quantum ML](fase72+.md) - Hybrid Circuits.
+- **Fase 74**: [Chiusura Gap Analysis](fase74_chiusura_gap_analysis.md) - Piano debiti tecnici post report_placeholder (MCP transports, Hub search/converter, backend Vulkan/Metal, inference avanzata).
 
 ---
 
-*Ultimo aggiornamento: 10 Marzo 2026*
+*Ultimo aggiornamento: 15 Novembre 2026*

@@ -7,10 +7,9 @@
 namespace serius {
 namespace mcp {
 
-/// HTTP + SSE transport to a remote MCP server.
-/// Requires an HTTP client library (e.g. cpp-httplib / curl) which is not a
-/// hard dependency of the core engine; this header declares the interface and
-/// a minimal stub returning "not implemented".
+/// HTTP transport to a remote MCP server: sends JSON-RPC requests as plain
+/// HTTP POST (streamable-HTTP style, no SSE). HTTPS endpoints are rejected
+/// unless the build provides OpenSSL support in cpp-httplib.
 class HttpTransport : public Transport
 {
    public:
