@@ -1,5 +1,7 @@
 #include "awq.h"
 
+#include "quant_matmul.h"
+
 #include <algorithm>
 #include <cmath>
 #include <numeric>
@@ -126,18 +128,11 @@ void awq_matmul(const AWQQuantizedWeight &awq_weight, const float *X, float *Y, 
     std::vector<float> W_scaled(static_cast<size_t>(N) * static_cast<size_t>(K));
     dequantize_tensor(awq_weight.quantized, W_scaled.data());
 
-    // Compute Y = X * W^T with fused scale compensation
     // Y[i, j] = sum_k X[i, k] * (W_scaled[j, k] / s_k)
-    for (int i = 0; i < M; ++i) {
-        for (int j = 0; j < N; ++j) {
-            float sum = 0.0f;
-            for (int k = 0; k < K; ++k) {
-                float w_dequant = W_scaled[j * K + k] / awq_weight.channel_scales[static_cast<size_t>(k)];
-                sum += X[i * K + k] * w_dequant;
-            }
-            Y[i * N + j] = sum;
-        }
-    }
+    auto decode = [&](int j, int k) -> float {
+        return W_scaled[static_cast<size_t>(j) * K + k] / awq_weight.channel_scales[static_cast<size_t>(k)];
+    };
+    dequant_matmul_t(X, Y, M, N, K, decode);
 }
 
 }  // namespace quant

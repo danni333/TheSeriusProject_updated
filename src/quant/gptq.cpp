@@ -1,5 +1,7 @@
 #include "gptq.h"
 
+#include "quant_matmul.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -278,31 +280,26 @@ void gptq_matmul(const GPTQQuantizedWeight &gptq_weight, const float *X, float *
     size_t block_size = gptq_weight.block_size;
     size_t num_groups_per_row = (static_cast<size_t>(K) + block_size - 1) / block_size;
 
-    for (int i = 0; i < M; ++i) {
-        for (int j = 0; j < N; ++j) {
-            float sum = 0.0f;
-            for (int k = 0; k < K; ++k) {
-                size_t flat_idx = static_cast<size_t>(j) * static_cast<size_t>(K) + static_cast<size_t>(k);
-                size_t packed_idx = flat_idx / 2;
-                uint8_t packed = gptq_weight.quantized.packed[packed_idx];
-                uint8_t q;
-                if (flat_idx % 2 == 0) {
-                    q = packed & 0x0F;
-                } else {
-                    q = (packed >> 4) & 0x0F;
-                }
-
-                size_t g = static_cast<size_t>(k) / block_size;
-                size_t group_idx = static_cast<size_t>(j) * num_groups_per_row + g;
-                float scale = gptq_weight.group_scales[group_idx];
-                uint8_t zero = gptq_weight.group_zeros[group_idx];
-
-                float w = dequantize_single(q, scale, zero);
-                sum += X[i * K + k] * w;
-            }
-            Y[i * N + j] = sum;
+    auto decode = [&](int j, int k) -> float {
+        size_t flat_idx = static_cast<size_t>(j) * static_cast<size_t>(K) + static_cast<size_t>(k);
+        size_t packed_idx = flat_idx / 2;
+        uint8_t packed = gptq_weight.quantized.packed[packed_idx];
+        uint8_t q;
+        if (flat_idx % 2 == 0) {
+            q = packed & 0x0F;
+        } else {
+            q = (packed >> 4) & 0x0F;
         }
-    }
+
+        size_t g = static_cast<size_t>(k) / block_size;
+        size_t group_idx = static_cast<size_t>(j) * num_groups_per_row + g;
+        float scale = gptq_weight.group_scales[group_idx];
+        uint8_t zero = gptq_weight.group_zeros[group_idx];
+
+        return dequantize_single(q, scale, zero);
+    };
+
+    dequant_matmul_t(X, Y, M, N, K, decode);
 }
 
 }  // namespace quant

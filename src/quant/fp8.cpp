@@ -6,6 +6,7 @@
 #include <limits>
 
 #include "quant_kernels.h"
+#include "quant_matmul.h"
 #include "../hal/device.h"
 
 namespace serius {
@@ -421,23 +422,15 @@ void fp8_dequantize_tensor(const uint8_t *fp8_data, const float *scales, size_t 
 void fp8_dequant_matmul(const uint8_t *fp8_data, const float *scales, const float *X, float *Y, int M, int N, int K,
                         int block_size, bool use_e4m3)
 {
-    for (int i = 0; i < M; ++i) {
-        for (int j = 0; j < N; ++j) {
-            float sum = 0.0f;
-            const uint8_t *w_row = fp8_data + static_cast<size_t>(j) * K;
-            const float *x_row = X + static_cast<size_t>(i) * K;
+    auto decode = [&](int j, int k) -> float {
+        // Flat block index matches fp8_quantize_tensor's sequential blocking.
+        size_t flat = static_cast<size_t>(j) * K + k;
+        float scale = scales[flat / static_cast<size_t>(block_size)];
+        uint8_t v = fp8_data[flat];
+        return (use_e4m3 ? fp8_e4m3_to_float(v) : fp8_e5m2_to_float(v)) * scale;
+    };
 
-            for (int k = 0; k < K; ++k) {
-                // Flat block index matches fp8_quantize_tensor's sequential blocking.
-                size_t flat = static_cast<size_t>(j) * K + k;
-                float scale = scales[flat / static_cast<size_t>(block_size)];
-                float w = (use_e4m3 ? fp8_e4m3_to_float(w_row[k]) : fp8_e5m2_to_float(w_row[k])) * scale;
-                sum += x_row[k] * w;
-            }
-
-            Y[static_cast<size_t>(i) * N + j] = sum;
-        }
-    }
+    dequant_matmul_t(X, Y, M, N, K, decode);
 }
 
 }  // namespace quant
