@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "../autograd/node.h"
 #include "../tensor/tensor.h"
 
 namespace serius {
@@ -62,6 +63,12 @@ public:
     /// @param model Reference to the model (not implemented in this version)
     /// @param input_shape Shape of the input tensor
     void trace(void* model, const std::vector<size_t>& input_shape);
+
+    /// Trace a real autograd graph: walks `output`'s ancestors in topological
+    /// order and emits one GraphOp per computed node (op type = node name,
+    /// inputs = child indices, output_shape = node data shape).
+    /// Leaf/input nodes (no children) are indexed but emit no op.
+    void trace_graph(core::autograd::Node *output);
 
     /// Optimize the traced graph.
     void optimize();

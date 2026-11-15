@@ -1,6 +1,9 @@
 #include "graph_compiler.h"
 
+#include "../autograd/engine.h"
+
 #include <algorithm>
+#include <map>
 
 namespace serius {
 namespace optim {
@@ -74,6 +77,29 @@ void GraphCompiler::trace(void* model, const std::vector<size_t>& input_shape)
     op3.outputs = {3};
     op3.output_shape = input_shape;
     ops_.push_back(op3);
+}
+
+void GraphCompiler::trace_graph(core::autograd::Node *output)
+{
+    ops_.clear();
+    if (output == nullptr) { return; }
+
+    const auto order = core::autograd::topological_sort(output);
+    std::map<core::autograd::Node *, size_t> index;
+    for (size_t i = 0; i < order.size(); ++i) { index[order[i]] = i; }
+
+    for (core::autograd::Node *node : order) {
+        if (node->children.empty()) { continue; }  // leaf/input node
+        GraphOp op;
+        op.type = node->name.empty() ? "unknown" : node->name;
+        op.inputs.reserve(node->children.size());
+        for (core::autograd::Node *child : node->children) {
+            op.inputs.push_back(index[child]);
+        }
+        op.outputs = {index[node]};
+        op.output_shape = node->data.shape();
+        ops_.push_back(std::move(op));
+    }
 }
 
 void GraphCompiler::optimize()

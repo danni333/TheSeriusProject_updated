@@ -55,8 +55,12 @@ class PipelineExecutor
     /// @param input_data   Input data for the first stage (ignored on other stages)
     ///                     Shape: [num_micro_batches * micro_batch_size]
     /// @param output_data  Output from the last stage (ignored on other stages)
+    /// @param loss_gradients  dL/d(output) for the last stage, shape
+    ///                     [num_micro_batches * hidden_size]. If nullptr, the
+    ///                     last stage uses a unit gradient (placeholder).
     void execute(ForwardFn forward_fn, BackwardFn backward_fn,
-                 const float *input_data, float *output_data);
+                 const float *input_data, float *output_data,
+                 const float *loss_gradients = nullptr);
 
     /// Execute only the forward pass (for inference).
     void execute_forward(ForwardFn forward_fn, const float *input_data, float *output_data);

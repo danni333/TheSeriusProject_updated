@@ -474,6 +474,59 @@ TEST(PipelineTest, TwoStagePipeline)
     SUCCEED();
 }
 
+TEST(PipelineTest, LossGradientPropagatesToFirstStage)
+{
+    const int world_size = 2;
+    auto comms = create_local_group(world_size);
+
+    PipelineConfig config;
+    config.num_stages = 2;
+    config.num_micro_batches = 2;
+    config.hidden_size = 4;
+
+    // Recorded grad_output seen by each stage's backward_fn, per micro-batch.
+    std::vector<std::vector<std::vector<float>>> seen(world_size);
+    std::mutex seen_mtx;
+
+    std::vector<std::thread> threads;
+    for (int r = 0; r < world_size; ++r) {
+        threads.emplace_back([&, r]() {
+            PipelineExecutor pipeline(comms[static_cast<size_t>(r)].get(), config);
+            const float scale = r == 0 ? 2.0f : 3.0f;
+            auto fwd = [scale](const float *in, float *out, size_t count) {
+                for (size_t i = 0; i < count; ++i) out[i] = in[i] * scale;
+            };
+            auto bwd = [scale, &seen, &seen_mtx, r](const float *grad_out, float *grad_in,
+                                                    size_t count) {
+                {
+                    std::lock_guard<std::mutex> lk(seen_mtx);
+                    seen[static_cast<size_t>(r)].emplace_back(grad_out, grad_out + count);
+                }
+                for (size_t i = 0; i < count; ++i) grad_in[i] = grad_out[i] * scale;
+            };
+
+            std::vector<float> input(2 * 4, 1.0f);
+            std::vector<float> output(2 * 4, 0.0f);
+            // dL/d(out): mb0 = [1..4], mb1 = [5..8]
+            std::vector<float> loss(2 * 4);
+            for (int i = 0; i < 8; ++i) loss[static_cast<size_t>(i)] = static_cast<float>(i + 1);
+
+            pipeline.execute(fwd, bwd, input.data(), output.data(), loss.data());
+        });
+    }
+    for (auto &t : threads) t.join();
+
+    // Last stage must see the caller-provided loss gradients (reverse mb order).
+    ASSERT_EQ(seen[1].size(), 2u);
+    EXPECT_EQ(seen[1][0], std::vector<float>({5, 6, 7, 8}));  // mb1 first
+    EXPECT_EQ(seen[1][1], std::vector<float>({1, 2, 3, 4}));  // then mb0
+
+    // First stage sees the propagated gradient: loss * stage1_scale(3).
+    ASSERT_EQ(seen[0].size(), 2u);
+    EXPECT_EQ(seen[0][0], std::vector<float>({15, 18, 21, 24}));
+    EXPECT_EQ(seen[0][1], std::vector<float>({3, 6, 9, 12}));
+}
+
 TEST(PipelineTest, BubbleRatio)
 {
     PipelineConfig config;

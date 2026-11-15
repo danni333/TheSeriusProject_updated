@@ -23,7 +23,7 @@ PipelineExecutor::PipelineExecutor(Communicator *comm, const PipelineConfig &con
 }
 
 void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn, const float *input_data,
-                               float *output_data)
+                               float *output_data, const float *loss_gradients)
 {
     int my_stage = stage();
     int n_mb = config_.num_micro_batches;
@@ -65,17 +65,21 @@ void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn, con
     // Phase 2: Backward pass (all micro-batches, reverse order)
     // =============================================
     for (int mb = n_mb - 1; mb >= 0; --mb) {
-        // auto mb_idx = static_cast<size_t>(mb);
+        const auto mb_idx = static_cast<size_t>(mb);
 
         std::vector<float> grad_output(hs, 0.0f);
         std::vector<float> grad_input(hs, 0.0f);
 
         if (is_last_stage()) {
-            // Last stage: gradient comes from the loss (stored in backward_buffers)
-            // For now, assume the caller has set up the gradient externally
-            // or it's computed from the output. Use a placeholder of 1.0 for the
-            // gradient (the actual loss gradient would be computed by the caller).
-            std::fill(grad_output.begin(), grad_output.end(), 1.0f);
+            // Last stage: gradient comes from the loss. Use the caller-provided
+            // dL/d(output) slice for this micro-batch when available; otherwise
+            // fall back to a unit gradient (documented placeholder).
+            if (loss_gradients != nullptr) {
+                std::memcpy(grad_output.data(), loss_gradients + mb_idx * hs,
+                            hs * sizeof(float));
+            } else {
+                std::fill(grad_output.begin(), grad_output.end(), 1.0f);
+            }
         } else {
             // Receive gradient from next stage
             comm_->recv(grad_output.data(), hs, my_stage + 1);
