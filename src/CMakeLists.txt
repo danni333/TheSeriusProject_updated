@@ -26,7 +26,9 @@ add_library(serius_core
     blas/matvec_quant.cpp
     autograd/node.cpp
     autograd/engine.cpp
-    autograd/ops.cpp
+    autograd/ops_basic.cpp
+    autograd/ops_rope.cpp
+    autograd/ops_norm.cpp
     finetune/sft_loader.cpp
     finetune/sft_trainer.cpp
     transformer/layernorm.cpp
