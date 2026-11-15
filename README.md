@@ -13,8 +13,11 @@ Licenza: Apache 2.0
 TheSeriusProject fornisce:
 
 - **Motore tensoriale custom**: implementazione di operazioni base (BLAS‑like), autograd e kernel specializzati.
-- **Supporto multi‑backend**: CPU scalar/AVX/AVX2/AVX‑512, CUDA (dove disponibile).
-- **Stack Transformer completo**: attenzione (MLA-like), RoPE, FFN, layernorm, KV cache, training loop.
+- **Supporto multi‑backend**: CPU scalar/AVX2/AVX‑512, CUDA (dove disponibile), FP16/BF16.
+- **Stack Transformer completo**: attenzione (GQA, MLA-like), RoPE, FFN, RMSNorm, KV cache, MoE.
+- **Inferenza LLaMA/GGUF**: loader GGUF (Q4_0/Q4_1/Q8_0/Q4_K/Q6_K), pesi quantizzati packed per il decode, conversione GGUF→safetensors.
+- **Server HTTP OpenAI‑compatibile**: chat/completions, completions, embeddings, streaming SSE, multi-modello a runtime (load/unload, `hf://`).
+- **Web UI integrata**: chat browser servita direttamente dal binario C++ (`ui/`).
 - **Calcolo Distribuito**: supporto per Data Parallelism (DP), Pipeline Parallelism (PP) e Tensor Parallelism (TP).
 - **Suite di test & benchmark**: test unitari granulari e benchmark per matmul, memoria, mixed precision, ecc.
 
@@ -38,26 +41,26 @@ Per dettagli sul piano a lungo termine vedere i file in `todo/` (in particolare 
 
 ### Requisiti
 
-- **Compilatore C++17** o superiore (MSVC, Clang, GCC).
-- **CMake** (>= 3.20 consigliato).
+- **Compilatore C++20** (MSVC 2022, Clang, GCC).
+- **CMake** (>= 3.25).
 - **Python** opzionale per script di test/benchmark.
 - **CUDA Toolkit** opzionale per abilitare il backend GPU.
 
 ### Clona il repository
 
 ```bash
-git clone https://github.com/<user>/TheSeriusProject.git
-cd TheSeriusProject
+git clone https://github.com/danni333/TheSeriusProject_updated.git
+cd TheSeriusProject_updated
 ```
 
 ### Compilazione base (CPU)
 
 ```bash
-mkdir build
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
 ```
+
+Su Windows con MSVC serve l'ambiente developer (Developer PowerShell o `Launch-VsDevShell.ps1`). Il binario finisce in `build/src/serius` (o `build-ninja/src/serius.exe` con Ninja).
 
 L'output di build e gli eventuali errori vengono registrati nei file `build_*.txt` nella root del progetto.
 
@@ -66,15 +69,28 @@ L'output di build e gli eventuali errori vengono registrati nei file `build_*.tx
 Il loader JSON supporta sia il blocco annidato `moe` sia i campi flat `moe_enabled`, `num_experts`, `top_k`, ecc. Per provare il percorso completo di inferenza su CPU usa il modello dimostrativo piccolo:
 
 ```bash
-./build/serius chat --config configs/model_moe_demo.json --type transformer --max-new-tokens 16
+./build/src/serius chat --config configs/model_moe_demo.json --type transformer --max-new-tokens 16
 ```
 
 `--max-new-tokens` limita la generazione per prove rapide. `configs/model_moe_1b.json` è invece un profilo molto più grande e richiede memoria significativamente maggiore.
 Il profilo demo usa pesi inizializzati casualmente: serve a verificare parsing, routing MoE e inferenza end-to-end, non a produrre risposte linguistiche utili.
 
+### Server HTTP + Web UI
+
+```bash
+# Modello locale (dir safetensors, config.json o file .gguf) oppure hf://repo
+./build/src/serius serve -m models/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m.gguf --type llama -p 8080 --ui ui
+
+# Poi apri http://localhost:8080 nel browser.
+```
+
+- **Multi-modello a runtime**: `POST /v1/models/load` e `DELETE /v1/models/{id}` permettono di caricare/scaricare modelli mentre il server gira; la UI ha un pannello Models integrato. I load girano in parallelo all'inference.
+- **KV cache persistente**: in chat multi-turn il server riusa il KV cache dei turni precedenti quando il prompt è un'estensione esatta (stesso modello e system prompt).
+- **Env utili**: `SERIUS_PREFILL_BATCH=1` abilita il prefill batched (default: token-per-token, più lento ma identico al decode), `SERIUS_KV_FP32=1` forsa KV cache FP32, `SERIUS_GPU_TIME=1` logga i tempi GPU.
+
 ### Esecuzione test
 
-All'interno della cartella `build`:
+All'interno della cartella di build:
 
 ```bash
 ctest --output-on-failure
@@ -87,11 +103,18 @@ I sorgenti dei test si trovano in `tests/` (autograd, BLAS, CUDA, tensor, transf
 ## Struttura del codice (alto livello)
 
 - `src/autograd/` — motore di autograd e primitive di calcolo.
-- `src/blas/` — implementazioni di `matmul` e altre operazioni a basso livello (scalar, AVX, CUDA).
-- `src/tensor/` — implementazione del tipo `Tensor` e logica di gestione memoria.
+- `src/blas/` — implementazioni di `matmul` e altre operazioni a basso livello (scalar, AVX2, AVX512, CUDA, quantized GEMV).
+- `src/tensor/` — implementazione del tipo `Tensor` e logica di gestione memoria (host/device sync).
 - `src/memory/` — allocator e gestione pool di memoria.
-- `src/transformer/` — blocchi transformer (attenzione, FFN, layernorm, KV cache, modello completo).
+- `src/transformer/` — blocchi transformer (attenzione, FFN, layernorm, KV cache, modello LLaMA completo).
+- `src/infer/` — inferenza LLaMA (prefill, decode, KV cache, sampler).
+- `src/io/` — loader modelli: GGUF, safetensors, config JSON, conversione.
+- `src/tokenizer/` — tokenizer BPE con metadata GGUF (BOS/EOS).
+- `src/server/` — server HTTP (endpoint OpenAI-compat, registry multi-modello, static files per la UI).
+- `src/cli/` — CLI (`chat`, `serve`, `generate`, `convert`, `import`, `doctor`, `bench`, `stress`).
 - `src/train/` — training loop, checkpointing, ottimizzatori (es. AdamW).
+- `src/quant/`, `src/attention/`, `src/hal/`, `src/distributed/`, `src/hub/` — quantizzazione, flash attention, astrazione device, parallelismo, model hub.
+- `ui/` — web UI (HTML/JS/CSS) servita dal server.
 - `tests/` — test unitari e benchmark.
 - `todo/` — roadmap dettagliata per le varie fasi del progetto.
 

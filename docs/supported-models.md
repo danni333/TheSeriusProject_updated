@@ -11,6 +11,17 @@ List of compatible model architectures and quantization formats.
 | Generic Transformer | ✅ Supported | Configurable via JSON |
 | MoE (Mixture of Experts) | ✅ Supported | DeepSeekMoE, Mixtral |
 
+## Loading Formats
+
+| Format | How | Status |
+|--------|-----|--------|
+| GGUF (.gguf) | `--model model.gguf` or `POST /v1/models/load` | ✅ Q4_0, Q4_1, Q8_0, Q4_K, Q6_K (decode packed + dense prefill) |
+| Safetensors dir | `--model <dir>` (config.json + weights) | ✅ |
+| HuggingFace | `--model hf://org/repo --quant q4_k_m` | ✅ GGUF download at runtime |
+| JSON config | `--type transformer --config ...` | ✅ |
+
+GGUF note: decode uses packed quantized weights (fast GEMV); batched prefill uses dense FP32 dequantized weights. Enable `SERIUS_PREFILL_BATCH=1` for faster prompt processing — outputs can differ slightly from the decode path on quantized models.
+
 ## Quantization Formats
 
 | Format | VRAM Savings | Quality | Status |
