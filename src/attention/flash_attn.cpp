@@ -92,6 +92,146 @@ void validate_flash_attention_inputs(const core::Tensor &query, const core::Tens
         if (dim > int_max) throw std::invalid_argument("Flash attention: dimensions exceed CUDA kernel limits");
     }
 }
+// ---------------------------------------------------------------------------
+// CPU implementation: blocked/online-softmax forward and a backward that
+// recomputes P = exp(S - LSE) row-by-row, never materializing the S^2 matrix.
+// ---------------------------------------------------------------------------
+namespace cpu {
+
+// Per (b,h,q_pos): scores over key positions, honoring the causal rule
+// k_pos > q_pos => masked (same convention as the CUDA kernel and tests).
+inline bool key_allowed(bool is_causal, int q_pos, int k_pos)
+{
+    return !is_causal || k_pos <= q_pos;
+}
+
+void forward(const float *q, const float *k, const float *v, float *out, float *lse,
+             int batch, int heads, int seq_q, int seq_k, int head_dim, float scale,
+             bool is_causal)
+{
+    const size_t q_stride = static_cast<size_t>(seq_q) * head_dim;
+    const size_t kv_stride = static_cast<size_t>(seq_k) * head_dim;
+    std::vector<float> scores(static_cast<size_t>(seq_k));
+
+    for (int b = 0; b < batch; ++b) {
+        for (int h = 0; h < heads; ++h) {
+            const size_t base = (static_cast<size_t>(b) * heads + h);
+            const float *qb = q + base * q_stride;
+            const float *kb = k + base * kv_stride;
+            const float *vb = v + base * kv_stride;
+            float *ob = out + base * q_stride;
+            float *lb = lse + base * static_cast<size_t>(seq_q);
+
+            for (int i = 0; i < seq_q; ++i) {
+                const float *qi = qb + static_cast<size_t>(i) * head_dim;
+                // Pass 1: scores + max (online-softmax bookkeeping via two passes
+                // is exact and simpler; scores buffer is O(seq_k) per row).
+                float max_score = -std::numeric_limits<float>::infinity();
+                for (int j = 0; j < seq_k; ++j) {
+                    if (!key_allowed(is_causal, i, j)) {
+                        scores[j] = -std::numeric_limits<float>::infinity();
+                        continue;
+                    }
+                    const float *kj = kb + static_cast<size_t>(j) * head_dim;
+                    float s = 0.0F;
+                    for (int d = 0; d < head_dim; ++d) s += qi[d] * kj[d];
+                    s *= scale;
+                    scores[j] = s;
+                    max_score = std::max(max_score, s);
+                }
+                // Pass 2: exp sum -> lse, weighted V accumulation.
+                double sum_exp = 0.0;
+                for (int j = 0; j < seq_k; ++j) {
+                    if (std::isfinite(scores[j])) sum_exp += std::exp(static_cast<double>(scores[j] - max_score));
+                }
+                lb[i] = max_score + static_cast<float>(std::log(sum_exp));
+                float *oi = ob + static_cast<size_t>(i) * head_dim;
+                for (int d = 0; d < head_dim; ++d) oi[d] = 0.0F;
+                for (int j = 0; j < seq_k; ++j) {
+                    if (!std::isfinite(scores[j])) continue;
+                    const float p = static_cast<float>(std::exp(static_cast<double>(scores[j] - max_score)) / sum_exp);
+                    const float *vj = vb + static_cast<size_t>(j) * head_dim;
+                    for (int d = 0; d < head_dim; ++d) oi[d] += p * vj[d];
+                }
+            }
+        }
+    }
+}
+
+void backward(const float *q, const float *k, const float *v, const float *out, const float *dout,
+              const float *lse, float *dq, float *dk, float *dv, int batch, int heads, int seq_q,
+              int seq_k, int head_dim, float scale, bool is_causal)
+{
+    const size_t q_stride = static_cast<size_t>(seq_q) * head_dim;
+    const size_t kv_stride = static_cast<size_t>(seq_k) * head_dim;
+    std::vector<float> probs(static_cast<size_t>(seq_k));
+    std::vector<float> dp(static_cast<size_t>(seq_k));
+
+    for (int b = 0; b < batch; ++b) {
+        for (int h = 0; h < heads; ++h) {
+            const size_t base = (static_cast<size_t>(b) * heads + h);
+            const float *qb = q + base * q_stride;
+            const float *kb = k + base * kv_stride;
+            const float *vb = v + base * kv_stride;
+            const float *ob = out + base * q_stride;
+            const float *dob = dout + base * q_stride;
+            const float *lb = lse + base * static_cast<size_t>(seq_q);
+            float *dqb = dq ? dq + base * q_stride : nullptr;
+            float *dkb = dk ? dk + base * kv_stride : nullptr;
+            float *dvb = dv ? dv + base * kv_stride : nullptr;
+            if (dkb) for (size_t i = 0; i < kv_stride; ++i) dkb[i] = 0.0F;
+            if (dvb) for (size_t i = 0; i < kv_stride; ++i) dvb[i] = 0.0F;
+
+            for (int i = 0; i < seq_q; ++i) {
+                const float *qi = qb + static_cast<size_t>(i) * head_dim;
+                const float *oi = ob + static_cast<size_t>(i) * head_dim;
+                const float *doi = dob + static_cast<size_t>(i) * head_dim;
+                float *dqi = dqb ? dqb + static_cast<size_t>(i) * head_dim : nullptr;
+                if (dqi) for (int d = 0; d < head_dim; ++d) dqi[d] = 0.0F;
+
+                // Recompute row probabilities: P_ij = exp(S_ij - LSE_i) for
+                // unmasked j, 0 otherwise (masked entries contribute nothing).
+                for (int j = 0; j < seq_k; ++j) {
+                    if (!key_allowed(is_causal, i, j)) {
+                        probs[j] = 0.0F;
+                        continue;
+                    }
+                    const float *kj = kb + static_cast<size_t>(j) * head_dim;
+                    float s = 0.0F;
+                    for (int d = 0; d < head_dim; ++d) s += qi[d] * kj[d];
+                    probs[j] = std::exp(s * scale - lb[i]);
+                }
+                // delta_i = <dO_i, O_i>
+                double delta = 0.0;
+                for (int d = 0; d < head_dim; ++d) delta += static_cast<double>(doi[d]) * oi[d];
+                // dp_j = <dO_i, V_j>
+                for (int j = 0; j < seq_k; ++j) {
+                    if (probs[j] == 0.0F) { dp[j] = 0.0F; continue; }
+                    const float *vj = vb + static_cast<size_t>(j) * head_dim;
+                    double acc = 0.0;
+                    for (int d = 0; d < head_dim; ++d) acc += static_cast<double>(doi[d]) * vj[d];
+                    dp[j] = static_cast<float>(acc);
+                }
+                // Accumulate dQ_i, dK_j, dV_j.
+                for (int j = 0; j < seq_k; ++j) {
+                    if (probs[j] == 0.0F) continue;
+                    const float ds = probs[j] * (dp[j] - static_cast<float>(delta));
+                    const float *kj = kb + static_cast<size_t>(j) * head_dim;
+                    float *dkj = dkb ? dkb + static_cast<size_t>(j) * head_dim : nullptr;
+                    float *dvj = dvb ? dvb + static_cast<size_t>(j) * head_dim : nullptr;
+                    const float p_dout = probs[j];
+                    for (int d = 0; d < head_dim; ++d) {
+                        if (dqi) dqi[d] += scale * ds * kj[d];
+                        if (dkj) dkj[d] += scale * ds * qi[d];
+                        if (dvj) dvj[d] += p_dout * doi[d];
+                    }
+                }
+            }
+        }
+    }
+}
+
+}  // namespace cpu
 }  // namespace
 
 std::pair<core::Tensor, core::Tensor> flash_attention_forward_internal(
@@ -130,7 +270,11 @@ std::pair<core::Tensor, core::Tensor> flash_attention_forward_internal(
     }
 #endif
 
-    throw std::runtime_error("Flash attention requires CUDA tensors and a CUDA-enabled build.");
+    // CPU path: online-softmax forward, O(seq_k) scratch per query row.
+    cpu::forward(query.data(), key.data(), value.data(), out.data(), lse.data(), batch_size,
+                 num_heads, seq_len_q, static_cast<int>(k_shape[2]), static_cast<int>(q_shape[3]),
+                 config.softmax_scale, config.is_causal);
+    return {std::move(out), std::move(lse)};
 }
 
 core::Tensor flash_attention_forward(const core::Tensor &query, const core::Tensor &key, const core::Tensor &value,
@@ -188,7 +332,14 @@ core::autograd::Node *flash_attention(core::autograd::Node *query, core::autogra
             return;
         }
 #endif
-        throw std::runtime_error("Flash attention backward not implemented on CPU.");
+        // CPU path: recompute P row-by-row from Q,K,V,LSE (no S^2 storage).
+        cpu::backward(query->data.data(), key->data.data(), value->data.data(),
+                      out_node->data.data(), out_node->grad.data(), lse.data(),
+                      query->requires_grad ? query->grad.data() : nullptr,
+                      key->requires_grad ? key->grad.data() : nullptr,
+                      value->requires_grad ? value->grad.data() : nullptr, batch_size, num_heads,
+                      seq_len_q, seq_len_k, head_dim, config.softmax_scale, config.is_causal);
+        return;
     };
 
     return out_node;

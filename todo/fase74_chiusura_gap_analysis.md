@@ -97,8 +97,12 @@ E2E stdio+HTTP, `test_mcp_server` 11/11).
 
 ## Track D — Inference avanzata (media)
 
-### D1. Flash Attention backward CPU (`src/attention/`)
-- Richiede per il training su sequenze lunghe. Media complessità.
+### D1. Flash Attention backward CPU (`src/attention/`) ✅ FATTO
+- `flash_attn.cpp`: forward CPU (online softmax, O(seq_k) scratch/riga) e
+  backward CPU (ricombina P=exp(S-LSE) riga per riga, niente matrice S²;
+  gradienti parziali supportate). Prima: throw "not implemented".
+- Test: `CpuForwardMatchesReference` + `CpuBackwardMatchesReference` in
+  `test_flash_attn` (9/9), parity con il riferimento naive.
 
 ### D2. Pipeline-parallel gradient reale
 - Oggi `run_transformer_layers` ha placeholder per intermediate ranks.

@@ -326,5 +326,129 @@ TEST(FlashAttentionTest, BackwardParity)
 #endif
 }
 
+// ---------- CPU path (no CUDA required) ----------
+
+TEST(FlashAttentionTest, CpuForwardMatchesReference)
+{
+    constexpr int batch = 1, heads = 2, sq = 6, sk = 8, dim = 32;
+    const float scale = 1.0F / std::sqrt(static_cast<float>(dim));
+    Tensor q({batch, heads, sq, dim}), k({batch, heads, sk, dim}), v({batch, heads, sk, dim});
+    for (size_t i = 0; i < q.size(); ++i) q[i] = std::sin(static_cast<float>(i) * 0.13F);
+    for (size_t i = 0; i < k.size(); ++i) k[i] = std::cos(static_cast<float>(i) * 0.11F);
+    for (size_t i = 0; i < v.size(); ++i) v[i] = std::sin(static_cast<float>(i) * 0.07F);
+
+    for (bool causal : {false, true}) {
+        FlashAttentionConfig cfg;
+        cfg.is_causal = causal;
+        cfg.softmax_scale = scale;
+        Tensor out = flash_attention_forward(q, k, v, cfg);
+
+        for (int b = 0; b < batch; ++b)
+            for (int h = 0; h < heads; ++h)
+                for (int i = 0; i < sq; ++i) {
+                    std::vector<float> scores(sk, -std::numeric_limits<float>::infinity());
+                    float mx = -std::numeric_limits<float>::infinity();
+                    for (int j = 0; j < sk; ++j) {
+                        if (causal && j > i) continue;
+                        float s = 0;
+                        for (int d = 0; d < dim; ++d)
+                            s += q[((b * heads + h) * sq + i) * dim + d] *
+                                 k[((b * heads + h) * sk + j) * dim + d];
+                        scores[j] = s * scale;
+                        mx = std::max(mx, scores[j]);
+                    }
+                    double denom = 0;
+                    for (int j = 0; j < sk; ++j)
+                        if (std::isfinite(scores[j])) denom += std::exp(scores[j] - mx);
+                    for (int d = 0; d < dim; ++d) {
+                        float expected = 0;
+                        for (int j = 0; j < sk; ++j) {
+                            if (!std::isfinite(scores[j])) continue;
+                            expected += static_cast<float>(std::exp(scores[j] - mx) / denom) *
+                                        v[((b * heads + h) * sk + j) * dim + d];
+                        }
+                        EXPECT_NEAR(out[((b * heads + h) * sq + i) * dim + d], expected, 2e-4F)
+                            << "causal=" << causal << " b=" << b << " h=" << h << " i=" << i << " d=" << d;
+                    }
+                }
+    }
+}
+
+TEST(FlashAttentionTest, CpuBackwardMatchesReference)
+{
+    constexpr int sq = 4, sk = 5, dim = 32;
+    const float scale = 1.0F / std::sqrt(static_cast<float>(dim));
+    Tensor q_data({1, 1, sq, dim}), k_data({1, 1, sk, dim}), v_data({1, 1, sk, dim});
+    std::vector<float> qv(sq * dim), kv(sk * dim), vv(sk * dim), gv(sq * dim);
+    for (size_t i = 0; i < qv.size(); ++i) {
+        qv[i] = std::sin(static_cast<float>(i) * 0.13F);
+        gv[i] = std::cos(static_cast<float>(i) * 0.09F);
+        q_data[i] = qv[i];
+    }
+    for (size_t i = 0; i < kv.size(); ++i) {
+        kv[i] = std::cos(static_cast<float>(i) * 0.15F);
+        vv[i] = std::sin(static_cast<float>(i) * 0.08F + 0.2F);
+        k_data[i] = kv[i];
+        v_data[i] = vv[i];
+    }
+
+    auto *qn = new core::autograd::Node(std::move(q_data));
+    auto *kn = new core::autograd::Node(std::move(k_data));
+    auto *vn = new core::autograd::Node(std::move(v_data));
+    qn->requires_grad = kn->requires_grad = vn->requires_grad = true;
+
+    FlashAttentionConfig cfg;
+    cfg.softmax_scale = scale;
+    cfg.is_causal = true;
+    auto *out_node = flash_attention(qn, kn, vn, cfg);
+    out_node->grad = core::Tensor(out_node->data.shape());
+    for (size_t i = 0; i < gv.size(); ++i) out_node->grad[i] = gv[i];
+    out_node->backward_fn();
+
+    // Reference gradients (same math as the CUDA-gated test above).
+    std::vector<float> eq(sq * dim, 0), ek(sk * dim, 0), ev(sk * dim, 0);
+    for (int i = 0; i < sq; ++i) {
+        std::vector<float> scores(sk, -std::numeric_limits<float>::infinity());
+        float mx = -std::numeric_limits<float>::infinity();
+        for (int j = 0; j <= i; ++j) {
+            float s = 0;
+            for (int d = 0; d < dim; ++d) s += qv[i * dim + d] * kv[j * dim + d];
+            scores[j] = s * scale;
+            mx = std::max(mx, scores[j]);
+        }
+        double denom = 0;
+        for (int j = 0; j <= i; ++j) denom += std::exp(scores[j] - mx);
+        std::vector<float> p(sk, 0);
+        for (int j = 0; j <= i; ++j) p[j] = static_cast<float>(std::exp(scores[j] - mx) / denom);
+        std::vector<float> o(dim, 0);
+        for (int j = 0; j <= i; ++j)
+            for (int d = 0; d < dim; ++d) o[d] += p[j] * vv[j * dim + d];
+        double delta = 0;
+        for (int d = 0; d < dim; ++d) delta += gv[i * dim + d] * o[d];
+        for (int j = 0; j <= i; ++j) {
+            double dp = 0;
+            for (int d = 0; d < dim; ++d) {
+                dp += gv[i * dim + d] * vv[j * dim + d];
+                ev[j * dim + d] += p[j] * gv[i * dim + d];
+            }
+            float ds = p[j] * (static_cast<float>(dp) - static_cast<float>(delta));
+            for (int d = 0; d < dim; ++d) {
+                eq[i * dim + d] += scale * ds * kv[j * dim + d];
+                ek[j * dim + d] += scale * ds * qv[i * dim + d];
+            }
+        }
+    }
+    for (int i = 0; i < sq * dim; ++i) EXPECT_NEAR(qn->grad[i], eq[i], 2e-4F);
+    for (int i = 0; i < sk * dim; ++i) {
+        EXPECT_NEAR(kn->grad[i], ek[i], 2e-4F);
+        EXPECT_NEAR(vn->grad[i], ev[i], 2e-4F);
+    }
+
+    delete out_node;
+    delete qn;
+    delete kn;
+    delete vn;
+}
+
 }  // namespace test
 }  // namespace serius
