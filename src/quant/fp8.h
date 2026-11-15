@@ -93,5 +93,12 @@ void fp8_dequant_matmul(const uint8_t *fp8_data, const float *scales,
                         const float *X, float *Y, int M, int N, int K,
                         int block_size, bool use_e4m3);
 
+#ifdef SERIUS_USE_CUDA
+/// CUDA version of fp8_dequant_matmul — all pointers must be device memory.
+void fp8_dequant_matmul_cuda(const uint8_t *fp8_data, const float *scales,
+                             const float *X, float *Y, int M, int N, int K,
+                             int block_size, bool use_e4m3);
+#endif
+
 }  // namespace quant
 }  // namespace serius

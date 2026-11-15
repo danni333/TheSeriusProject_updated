@@ -63,16 +63,16 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 9. **Graph Compiler Trace** - 1 not implemented
 10. **Stress Runner** - 2 Placeholder (VRAM/RAM monitoring)
 11. **Pipeline Parallel** - 1 Placeholder (gradiente)
-12. **LLaMA Inference** - 1 Placeholder (intermediate ranks)
+12. **LLaMA Inference** - ~~1 Placeholder (intermediate ranks)~~ ✅ PP non-ultimo rank ritorna `Tensor()` vuoto documentato (logits esistono solo sull'ultimo rank)
 13. **Hub Converter** - 1 Placeholder (Safetensors→GGUF)
-14. **SSM Block** - 1 Placeholder (input projection)
-15. **CLI Commands** - 2 implementation pending
+14. **SSM Block** - ~~1 Placeholder (input projection)~~ ✅ `in_proj_` ora è una proiezione reale `[d_model, 2*d_state+1]` che produce B/C/dt per passo (dt via softplus); B/C non più presi direttamente da x
+15. **CLI Commands** - ~~2 implementation pending~~ ✅ `serius doctor` ora è un health-check reale: versione, core CPU, RAM totale/available, backend GPU HAL + nome device CUDA e VRAM, flag di build
 16. **Model Hub Server** - 1 stub (search_models)
 
 ### Media (Limitazioni)
 17. **CPU Backend** - ~~5 stream no-ops~~ ✅ stream reali (worker thread + queue)
 18. **BLAS Dispatch** - ~~2 stream non usati~~ ✅ `matmul`/`batched_matmul` instradano stream CPU (`is_cpu_stream` check)
-19. **Quantization FP8 Kernel** - ~~1 stub~~ ✅ `fp8_dequant_matmul` CPU (E4M3/E5M2) — resta path CUDA
+19. **Quantization FP8 Kernel** - ~~1 stub~~ ✅ `fp8_dequant_matmul` CPU (E4M3/E5M2) + `fp8_dequant_matmul_cuda` (kernel in `quant_kernels.cu`, test GPU-vs-CPU in `test_quant`)
 20. **Memory Pool Allocator** - 1 no-op
 21. **GGUF Loader** - 3 unused parameters
 

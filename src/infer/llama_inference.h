@@ -66,7 +66,9 @@ struct KVCache {
 ///
 /// @param model  Loaded LLaMAModel (weights are read from its Nodes' .data)
 /// @param token_ids  1D tensor of token IDs, shape [seq_len]
-/// @return Logits tensor, shape [seq_len, vocab_size]
+/// @return Logits tensor, shape [seq_len, vocab_size].
+///         Empty tensor on non-last pipeline-parallel ranks (they only
+///         forward hidden states; logits exist solely on the last rank).
 core::Tensor llama_forward_inference(const model::LLaMAModel &model,
                                      const core::Tensor &token_ids,
                                      KVCache *cache = nullptr);

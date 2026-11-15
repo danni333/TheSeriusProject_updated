@@ -170,6 +170,40 @@ void fp8_dequantize_tensor_cuda(const uint8_t* fp8_data, const float* scales, fl
     fp8_dequantize_block_kernel<<<blocks, threads>>>(fp8_data, scales, out, n, block_size, use_e4m3);
 }
 
+// Y[M,N] = X[M,K] * W[N,K]^T with W stored as FP8 + flat per-block scales.
+// One thread per output element; weights dequantized in-register.
+__global__ void fp8_dequant_matmul_kernel(
+    const uint8_t* __restrict__ W, const float* __restrict__ scales,
+    const float* __restrict__ X, float* __restrict__ Y,
+    int M, int N, int K, int block_size, bool use_e4m3)
+{
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    const int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (row >= M || col >= N) return;
+
+    const size_t w_base = static_cast<size_t>(col) * K;
+    const size_t x_base = static_cast<size_t>(row) * K;
+    float acc = 0.0f;
+    for (int k = 0; k < K; ++k) {
+        const size_t flat = w_base + k;
+        const float scale = scales[flat / block_size];
+        const uint8_t v = W[flat];
+        const float w = (use_e4m3 ? fp8_e4m3_to_float_dev(v) : fp8_e5m2_to_float_dev(v)) * scale;
+        acc += X[x_base + k] * w;
+    }
+    Y[static_cast<size_t>(row) * N + col] = acc;
+}
+
+void fp8_dequant_matmul_cuda(const uint8_t* fp8_data, const float* scales,
+                             const float* X, float* Y, int M, int N, int K,
+                             int block_size, bool use_e4m3)
+{
+    dim3 block(16, 16);
+    dim3 grid((N + block.x - 1) / block.x, (M + block.y - 1) / block.y);
+    fp8_dequant_matmul_kernel<<<grid, block>>>(fp8_data, scales, X, Y, M, N, K, block_size, use_e4m3);
+    cudaDeviceSynchronize();
+}
+
 } // namespace cuda
 } // namespace quant
 } // namespace serius

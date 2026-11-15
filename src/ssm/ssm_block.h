@@ -22,7 +22,7 @@ class MambaBlock
     // Parameters (stored row-major)
     core::Tensor A_log_;   // [d_state]
     core::Tensor D_;       // [d_model]
-    core::Tensor in_proj_; // [2*d_model + d_state*2 + 1, d_model] (simplified: not used)
+    core::Tensor in_proj_; // [d_model, 2*d_state+1] — projects x[t] to [B, C, dt_raw]
 };
 
 }  // namespace ssm

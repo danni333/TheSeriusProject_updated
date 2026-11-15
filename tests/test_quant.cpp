@@ -16,6 +16,10 @@
 #include "tensor/tensor.h"
 #include "transformer/kv_cache.h"
 
+#ifdef SERIUS_USE_CUDA
+#include <cuda_runtime.h>
+#endif
+
 namespace serius {
 namespace test {
 
@@ -651,6 +655,54 @@ TEST(QuantFP8, DequantMatmulE5M2)
         EXPECT_LT(v, static_cast<float>(K) * 2.0f);
     }
 }
+
+#ifdef SERIUS_USE_CUDA
+TEST(QuantFP8, DequantMatmulCudaMatchesCpu)
+{
+    const int M = 4, N = 8, K = 64;
+    const int block_size = 32;
+
+    std::vector<float> W(static_cast<size_t>(N) * K);
+    std::vector<float> X(static_cast<size_t>(M) * K);
+    for (size_t i = 0; i < W.size(); ++i)
+        W[i] = std::cos(static_cast<float>(i) * 0.11f) * 1.5f;
+    for (size_t i = 0; i < X.size(); ++i)
+        X[i] = std::sin(static_cast<float>(i) * 0.05f);
+
+    std::vector<float> scales;
+    std::vector<uint8_t> fp8_data;
+    fp8_quantize_tensor(W.data(), W.size(), block_size, /*use_e4m3=*/true, scales, fp8_data);
+
+    std::vector<float> Y_cpu(static_cast<size_t>(M) * N, -1.0f);
+    fp8_dequant_matmul(fp8_data.data(), scales.data(), X.data(), Y_cpu.data(), M, N, K, block_size,
+                       /*use_e4m3=*/true);
+
+    // Upload to device, run CUDA kernel, download.
+    uint8_t *d_fp8 = nullptr;
+    float *d_scales = nullptr, *d_X = nullptr, *d_Y = nullptr;
+    ASSERT_EQ(cudaMalloc(&d_fp8, fp8_data.size()), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_scales, scales.size() * sizeof(float)), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_X, X.size() * sizeof(float)), cudaSuccess);
+    ASSERT_EQ(cudaMalloc(&d_Y, Y_cpu.size() * sizeof(float)), cudaSuccess);
+    cudaMemcpy(d_fp8, fp8_data.data(), fp8_data.size(), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_scales, scales.data(), scales.size() * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_X, X.data(), X.size() * sizeof(float), cudaMemcpyHostToDevice);
+
+    fp8_dequant_matmul_cuda(d_fp8, d_scales, d_X, d_Y, M, N, K, block_size, /*use_e4m3=*/true);
+
+    std::vector<float> Y_gpu(Y_cpu.size());
+    cudaMemcpy(Y_gpu.data(), d_Y, Y_gpu.size() * sizeof(float), cudaMemcpyDeviceToHost);
+
+    for (size_t i = 0; i < Y_cpu.size(); ++i) {
+        EXPECT_NEAR(Y_gpu[i], Y_cpu[i], 1e-4f) << "mismatch at flat index " << i;
+    }
+
+    cudaFree(d_fp8);
+    cudaFree(d_scales);
+    cudaFree(d_X);
+    cudaFree(d_Y);
+}
+#endif  // SERIUS_USE_CUDA
 
 // ============================================================
 // AWQ Tests

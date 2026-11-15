@@ -161,10 +161,15 @@ serius doctor
 Serius System Diagnostics
 ========================
 
-✅ CPU: Detected
-✅ RAM: Available
-⚠️  GPU: Detection pending (CUDA/Metal support)
-✅ Build: C++20 compatible
+Version: 0.1.0
+
+✅ CPU: 16 logical cores
+✅ RAM: 23.8 GiB total, 13.8 GiB available
+✅ GPU: CUDA backend available — NVIDIA GeForce RTX 3060 Laptop GPU (1 device, 6.0 GiB VRAM)
+
+Build:
+  C++ standard : C++20
+  CUDA         : enabled
 ```
 
 ### `serius --help`

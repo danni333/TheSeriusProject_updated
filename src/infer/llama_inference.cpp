@@ -1090,7 +1090,10 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
         }
 
         if (model.topology().pp_rank < model.topology().pp_size - 1) {
-            return Tensor({0}); // Placeholder for intermediate ranks
+            // Intermediate PP ranks only forward hidden states through the
+            // pipeline; logits exist solely on the last rank. Return an empty
+            // tensor — callers must not read logits on non-last ranks.
+            return Tensor();
         }
     } else {
         // Single-rank path
