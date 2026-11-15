@@ -152,14 +152,21 @@ E2E stdio+HTTP, `test_mcp_server` 11/11).
 5. Track C: **non fare** a meno che non serva Vulkan/Metal davvero.
 6. Track D: solo se si punta al training distribuito.
 
-## Track E — Follow-up: Nomic embedding performance (NUOVO)
+## Track E — Follow-up: Nomic embedding performance (IN CORSO)
 
-Encoder `nomic-bert` funzionante (commit `a62e1c8`) ma ~3.8s/embedding su CPU
-(naive loops, 12 layer). Obiettivi:
+Encoder `nomic-bert` funzionante (commit `a62e1c8`). Stato attuale:
 
-- **Velocità da record CPU e GPU**: batching delle sequenze, riuso delle
-  proiezioni fuse (QKV già fused), GEMM via `blas::matmul` invece dei loop
-  scalari, opzionale path CUDA per l'encoder.
+- **GEMM via `blas::matmul`** (2026-11-16): pesi trasposti a load-time
+  (`[in,out]`), `linear_rows` scalare sostituito da `linear_gemm` con
+  `syncToHost()` post-matmul (richiesto: `blas::matmul` può dispatchare
+  su CUDA async e il risultato non tornerebbe nel buffer host).
+  RoPE cos/sin hoisted fuori dal loop layer.
+- **Risultato**: ~3.8s → ~0.84s per embedding (**~4.5x**), cosine
+  semanticamente identiche (max_diff GEMM-vs-scalare ~3e-6, verificato).
+  CPU e CUDA disabilitato danno lo stesso tempo → path CPU AVX2.
+- **Rimasto per "record"**: batching multi-testo in un solo GEMM,
+  pesi GPU persistenti (evitare H2D per chiamata), eventualmente
+  kernel attention su GPU.
 - **Test su corpus reale**: embeddare la repo stessa (file markdown/docs)
   e verificare che la ricerca semantica restituisca documenti rilevanti
   (es. query "quantization" → file quant, "http server" → server docs).

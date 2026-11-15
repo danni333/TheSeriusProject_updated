@@ -86,6 +86,11 @@ class NomicBertEmbedder
 
     static bool get_tensor(const std::unordered_map<std::string, core::Tensor> &tensors,
                            const std::string &name, std::vector<float> *out);
+    /// Load a 2D weight [out_dim, in_dim] and store it transposed as
+    /// [in_dim, out_dim] row-major, ready for a single GEMM forward pass.
+    static bool get_tensor_transposed(const std::unordered_map<std::string, core::Tensor> &tensors,
+                                      const std::string &name, size_t out_dim, size_t in_dim,
+                                      std::vector<float> *out);
 };
 
 }  // namespace serius::hub

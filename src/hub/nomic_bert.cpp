@@ -1,5 +1,7 @@
 #include "nomic_bert.h"
 
+#include "../blas/blas.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -12,6 +14,33 @@ namespace {
 constexpr float kSilkEps = 1e-12f;
 
 inline float silu(float x) { return x / (1.0f + std::exp(-x)); }
+
+/// Transpose a row-major [rows, cols] matrix in place-equivalent fashion:
+/// returns a new vector holding the [cols, rows] layout so that
+/// y = x @ W^T can run as a single GEMM (x:[T,in], Wt:[in,out] -> [T,out]).
+std::vector<float> transpose_matrix(const std::vector<float> &src, size_t rows, size_t cols)
+{
+    std::vector<float> dst(src.size());
+    for (size_t r = 0; r < rows; ++r) {
+        for (size_t c = 0; c < cols; ++c) {
+            dst[c * rows + r] = src[r * cols + c];
+        }
+    }
+    return dst;
+}
+
+/// y[t,o] = sum_i x[t,i] * wt[i*out + o]  — single GEMM via core::blas (AVX2/512).
+void linear_gemm(const float *x, const float *wt, float *y, int T, int in, int out)
+{
+    // Non-owning tensor views over caller buffers; blas::matmul never writes A/B.
+    core::Tensor A(const_cast<float *>(x), {static_cast<size_t>(T), static_cast<size_t>(in)});
+    core::Tensor B(const_cast<float *>(wt), {static_cast<size_t>(in), static_cast<size_t>(out)});
+    core::Tensor C(y, {static_cast<size_t>(T), static_cast<size_t>(out)});
+    core::blas::matmul(A, B, C);
+    // blas::matmul may dispatch to CUDA asynchronously; pull the result back
+    // into the caller's host buffer before returning.
+    C.syncToHost();
+}
 
 /// LayerNorm over `n` contiguous floats: out = (x-mean)/sqrt(var+eps)*w + b.
 void layernorm(float *x, const float *w, const float *b, int n, float eps)
@@ -28,21 +57,6 @@ void layernorm(float *x, const float *w, const float *b, int n, float eps)
     const float inv = 1.0f / std::sqrt(static_cast<float>(var) + eps);
     for (int i = 0; i < n; ++i) {
         x[i] = (x[i] - static_cast<float>(mean)) * inv * w[i] + b[i];
-    }
-}
-
-/// y[t,o] = sum_i x[t,i] * w[o*in + i]   (w is [out,in] row-major)
-void linear_rows(const float *x, const float *w, float *y, int T, int in, int out)
-{
-    for (int t = 0; t < T; ++t) {
-        const float *xr = x + static_cast<size_t>(t) * in;
-        float *yr = y + static_cast<size_t>(t) * out;
-        for (int o = 0; o < out; ++o) {
-            const float *wr = w + static_cast<size_t>(o) * in;
-            float acc = 0.0f;
-            for (int i = 0; i < in; ++i) acc += xr[i] * wr[i];
-            yr[o] = acc;
-        }
     }
 }
 
@@ -67,6 +81,18 @@ bool NomicBertEmbedder::get_tensor(const std::unordered_map<std::string, core::T
     const size_t n = it->second.size();
     out->resize(n);
     std::memcpy(out->data(), it->second.data(), n * sizeof(float));
+    return true;
+}
+
+bool NomicBertEmbedder::get_tensor_transposed(
+    const std::unordered_map<std::string, core::Tensor> &tensors, const std::string &name,
+    size_t out_dim, size_t in_dim, std::vector<float> *out)
+{
+    std::vector<float> flat;
+    if (!get_tensor(tensors, name, &flat) || flat.size() != out_dim * in_dim) {
+        return false;
+    }
+    *out = transpose_matrix(flat, out_dim, in_dim);
     return true;
 }
 
@@ -95,11 +121,13 @@ bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor>
     for (int l = 0; l < cfg_.n_layers; ++l) {
         const std::string p = "blk." + std::to_string(l) + ".";
         LayerW &w = layers_[l];
-        if (!get_tensor(tensors, p + "attn_qkv.weight", &w.qkv)) return false;
-        if (!get_tensor(tensors, p + "attn_output.weight", &w.wo)) return false;
-        if (!get_tensor(tensors, p + "ffn_up.weight", &w.up)) return false;
-        if (!get_tensor(tensors, p + "ffn_gate.weight", &w.gate)) return false;
-        if (!get_tensor(tensors, p + "ffn_down.weight", &w.down)) return false;
+        // Weights are stored transposed ([in,out]) so the forward pass runs
+        // as plain GEMMs: y = x @ Wt.
+        if (!get_tensor_transposed(tensors, p + "attn_qkv.weight", 3 * H, H, &w.qkv)) return false;
+        if (!get_tensor_transposed(tensors, p + "attn_output.weight", H, H, &w.wo)) return false;
+        if (!get_tensor_transposed(tensors, p + "ffn_up.weight", F, H, &w.up)) return false;
+        if (!get_tensor_transposed(tensors, p + "ffn_gate.weight", F, H, &w.gate)) return false;
+        if (!get_tensor_transposed(tensors, p + "ffn_down.weight", H, F, &w.down)) return false;
         if (!get_tensor(tensors, p + "attn_output_norm.weight", &w.attn_norm_w)) return false;
         if (!get_tensor(tensors, p + "attn_output_norm.bias", &w.attn_norm_b)) return false;
         if (!get_tensor(tensors, p + "layer_output_norm.weight", &w.out_norm_w)) return false;
@@ -220,10 +248,17 @@ std::vector<float> NomicBertEmbedder::forward_hidden(const std::vector<int> &ids
     }
 
     const float scale = 1.0f / std::sqrt(static_cast<float>(hd));
-    // RoPE inv_freq: theta^(-2i/hd), i in [0, hd/2)
-    std::vector<float> inv_freq(hd / 2);
-    for (int i = 0; i < hd / 2; ++i) {
-        inv_freq[i] = std::pow(cfg_.rope_theta, -2.0f * i / hd);
+    // RoPE inv_freq: theta^(-2i/hd), i in [0, hd/2). cos/sin tables are
+    // position-only — compute once and reuse across all layers.
+    const int half = hd / 2;
+    std::vector<float> rope_cos(static_cast<size_t>(T) * half);
+    std::vector<float> rope_sin(static_cast<size_t>(T) * half);
+    for (int t = 0; t < T; ++t) {
+        for (int i = 0; i < half; ++i) {
+            const float ang = t * std::pow(cfg_.rope_theta, -2.0f * i / hd);
+            rope_cos[static_cast<size_t>(t) * half + i] = std::cos(ang);
+            rope_sin[static_cast<size_t>(t) * half + i] = std::sin(ang);
+        }
     }
 
     std::vector<float> qkv(static_cast<size_t>(T) * 3 * H);
@@ -235,19 +270,20 @@ std::vector<float> NomicBertEmbedder::forward_hidden(const std::vector<int> &ids
     std::vector<float> ffz(static_cast<size_t>(T) * H);
 
     for (const LayerW &w : layers_) {
-        // QKV projection
-        linear_rows(x.data(), w.qkv.data(), qkv.data(), T, H, 3 * H);
+        // QKV projection (GEMM)
+        linear_gemm(x.data(), w.qkv.data(), qkv.data(), T, H, 3 * H);
 
         // RoPE on Q and K (NeoX rotate-half), per head per position
         auto rope = [&](int base_off, int t) {
+            const float *cs = rope_cos.data() + static_cast<size_t>(t) * half;
+            const float *sn = rope_sin.data() + static_cast<size_t>(t) * half;
             for (int h = 0; h < nh; ++h) {
                 float *head = qkv.data() + static_cast<size_t>(t) * 3 * H + base_off + h * hd;
-                for (int i = 0; i < hd / 2; ++i) {
-                    const float ang = t * inv_freq[i];
-                    const float c = std::cos(ang), s = std::sin(ang);
-                    const float x1 = head[i], x2 = head[i + hd / 2];
+                for (int i = 0; i < half; ++i) {
+                    const float c = cs[i], s = sn[i];
+                    const float x1 = head[i], x2 = head[i + half];
                     head[i] = x1 * c - x2 * s;
-                    head[i + hd / 2] = x2 * c + x1 * s;
+                    head[i + half] = x2 * c + x1 * s;
                 }
             }
         };
@@ -285,7 +321,7 @@ std::vector<float> NomicBertEmbedder::forward_hidden(const std::vector<int> &ids
         }
 
         // Output projection + residual + post-norm
-        linear_rows(attn.data(), w.wo.data(), proj.data(), T, H, H);
+        linear_gemm(attn.data(), w.wo.data(), proj.data(), T, H, H);
         for (int t = 0; t < T; ++t) {
             float *xr = x.data() + static_cast<size_t>(t) * H;
             const float *pr = proj.data() + static_cast<size_t>(t) * H;
@@ -294,10 +330,10 @@ std::vector<float> NomicBertEmbedder::forward_hidden(const std::vector<int> &ids
         }
 
         // SwiGLU FFN: down( silu(gate(x)) * up(x) ) + residual + post-norm
-        linear_rows(x.data(), w.up.data(), ffu.data(), T, H, F);
-        linear_rows(x.data(), w.gate.data(), ff1.data(), T, H, F);
+        linear_gemm(x.data(), w.up.data(), ffu.data(), T, H, F);
+        linear_gemm(x.data(), w.gate.data(), ff1.data(), T, H, F);
         for (size_t i = 0; i < ffu.size(); ++i) ffu[i] *= silu(ff1[i]);
-        linear_rows(ffu.data(), w.down.data(), ffz.data(), T, F, H);
+        linear_gemm(ffu.data(), w.down.data(), ffz.data(), T, F, H);
         for (int t = 0; t < T; ++t) {
             float *xr = x.data() + static_cast<size_t>(t) * H;
             const float *zr = ffz.data() + static_cast<size_t>(t) * H;

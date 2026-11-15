@@ -53,7 +53,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 1. **Vulkan Backend** - 4 TODO + availability stub
 2. **Metal Backend** - 2 TODO + availability stub
 3. **Hub Search Engine** - 13 metodi stub (tutti ritornano `{}`)
-4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ path primario: encoder `nomic-bert` reale (GGUF, `src/hub/nomic_bert.cpp`) — dim 768, ~3.3s/embedding CPU, task prefix retrieval. Fallback: mean-pool `token_embd.weight` o hash n-gram deterministico
+4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ path primario: encoder `nomic-bert` reale (GGUF, `src/hub/nomic_bert.cpp`) — dim 768, ~0.84s/embedding CPU (GEMM BLAS, ~4.5x), task prefix retrieval. Fallback: mean-pool `token_embd.weight` o hash n-gram deterministico
 5. **Hub Metadata Manager** - ~~SQLite disabled~~ ✅ backend SQLite reale + migrazione JSON automatica
 
 ### Alti (Funzionalità Core)
