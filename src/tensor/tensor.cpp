@@ -310,18 +310,23 @@ Tensor::~Tensor()
 float &Tensor::operator[](size_t idx)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("operator[] requires Float32");
+    syncToHost();
+    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
     return static_cast<float *>(data_)[idx];
 }
 
 const float &Tensor::operator[](size_t idx) const
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("operator[] requires Float32");
+    syncToHost();
     return static_cast<const float *>(data_)[idx];
 }
 
 float &Tensor::at(const std::vector<size_t> &indices)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    syncToHost();
+    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
     if (indices.size() != shape_.size()) {
         throw std::invalid_argument("Number of indices doesn't match tensor dimensions");
     }
@@ -331,6 +336,7 @@ float &Tensor::at(const std::vector<size_t> &indices)
 const float &Tensor::at(const std::vector<size_t> &indices) const
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    syncToHost();
     if (indices.size() != shape_.size()) {
         throw std::invalid_argument("Number of indices doesn't match tensor dimensions");
     }
@@ -340,18 +346,23 @@ const float &Tensor::at(const std::vector<size_t> &indices) const
 float &Tensor::at(size_t row, size_t col)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    syncToHost();
+    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
     return static_cast<float *>(data_)[(row * strides_[0]) + (col * strides_[1])];
 }
 
 const float &Tensor::at(size_t row, size_t col) const
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    syncToHost();
     return static_cast<const float *>(data_)[(row * strides_[0]) + (col * strides_[1])];
 }
 
 float &Tensor::at(size_t dim0, size_t dim1, size_t dim2)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    syncToHost();
+    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
     if (shape_.size() != 3) throw std::runtime_error("Tensor is not 3D");
     return static_cast<float *>(data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2])];
 }
@@ -359,6 +370,7 @@ float &Tensor::at(size_t dim0, size_t dim1, size_t dim2)
 const float &Tensor::at(size_t dim0, size_t dim1, size_t dim2) const
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    syncToHost();
     if (shape_.size() != 3) throw std::runtime_error("Tensor is not 3D");
     return static_cast<const float *>(data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2])];
 }
@@ -366,6 +378,8 @@ const float &Tensor::at(size_t dim0, size_t dim1, size_t dim2) const
 float &Tensor::at(size_t dim0, size_t dim1, size_t dim2, size_t dim3)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    syncToHost();
+    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
     if (shape_.size() != 4) throw std::runtime_error("Tensor is not 4D");
     return static_cast<float *>(
         data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2]) + (dim3 * strides_[3])];
@@ -374,6 +388,7 @@ float &Tensor::at(size_t dim0, size_t dim1, size_t dim2, size_t dim3)
 const float &Tensor::at(size_t dim0, size_t dim1, size_t dim2, size_t dim3) const
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
+    syncToHost();
     if (shape_.size() != 4) throw std::runtime_error("Tensor is not 4D");
     return static_cast<const float *>(
         data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2]) + (dim3 * strides_[3])];
@@ -381,6 +396,7 @@ const float &Tensor::at(size_t dim0, size_t dim1, size_t dim2, size_t dim3) cons
 
 float Tensor::item(size_t idx) const
 {
+    syncToHost();
     switch (dtype_) {
         case hal::DType::Float32:
             return static_cast<const float *>(data_)[idx];
@@ -395,6 +411,8 @@ float Tensor::item(size_t idx) const
 
 void Tensor::set_item(size_t idx, float val)
 {
+    syncToHost();
+    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
     switch (dtype_) {
         case hal::DType::Float32:
             static_cast<float *>(data_)[idx] = val;

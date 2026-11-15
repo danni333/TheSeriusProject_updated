@@ -419,6 +419,10 @@ void BPETokenizer::load_from_gguf(const io::GGUFTokenizerData &data)
     special_tokens_.clear();
     is_gpt2_byte_level_ = false;
     is_sentencepiece_   = false;
+    bos_id_ = static_cast<TokenId>(data.bos_token_id);
+    eos_id_ = static_cast<TokenId>(data.eos_token_id);
+    if (bos_id_ >= data.tokens.size()) { bos_id_ = BOS_ID; }
+    if (eos_id_ >= data.tokens.size()) { eos_id_ = EOS_ID; }
 
     // Build vocab from token list (index = token-id).
     // GGUF token_type: 1=normal, 3=control/special, 6=byte.

@@ -106,15 +106,24 @@ class Tensor
     float *data()
     {
         if (dtype_ != hal::DType::Float32) throw std::runtime_error("Tensor::data() used on non-float32 tensor");
+        syncToHost();
+        // Host pointer may be written through: the GPU copy is now stale.
+        if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
         return static_cast<float *>(data_);
     }
     const float *data() const
     {
         if (dtype_ != hal::DType::Float32) throw std::runtime_error("Tensor::data() const used on non-float32 tensor");
+        syncToHost();
         return static_cast<const float *>(data_);
     }
 
-    void *raw_data() { return data_; }
+    void *raw_data()
+    {
+        syncToHost();
+        if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+        return data_;
+    }
     const void *raw_data() const { return data_; }
 
     // --- Shape Operations ---

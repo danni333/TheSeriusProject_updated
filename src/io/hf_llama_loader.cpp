@@ -1,6 +1,7 @@
 #include "hf_llama_loader.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -415,7 +416,16 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
     // Only the "llama" arch family stores Q/K with RoPE head_dim pairs
     // permuted in GGUF (verified against Qwen2 GGUFs, which are stored in
     // plain HF order). Other archs must NOT be unpermuted.
-    const bool rope_perm = (io::gguf_architecture(gguf_path) == "llama");
+    const bool rope_perm = (io::gguf_architecture(gguf_path) == "llama") && [] {
+#if defined(_MSC_VER)
+        char buf[8];
+        size_t len = 0;
+        return !(getenv_s(&len, buf, sizeof(buf), "SERIUS_GGUF_ROPE_PERM") == 0 && len > 0 && buf[0] == '0');
+#else
+        const char *e = std::getenv("SERIUS_GGUF_ROPE_PERM");
+        return e == nullptr || e[0] != '0';
+#endif
+    }();
 
     // Layers
     for (size_t l = 0; l < num_layers; ++l) {

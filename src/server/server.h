@@ -10,6 +10,7 @@
 #include <httplib.h>
 
 #include "../common/defaults.h"
+#include "../tokenizer/bpe.h"
 
 namespace serius {
 namespace model {
@@ -57,6 +58,9 @@ struct LoadedModel
     std::unique_ptr<model::TransformerModel> transformer;
     std::unique_ptr<BPETokenizer> tokenizer;
     std::unique_ptr<infer::KVCache> kv_cache;
+    /// Token ids currently materialized in kv_cache (prompt + generated),
+    /// used for prefix reuse across chat turns. Empty = cache cold.
+    std::vector<TokenId> cached_token_ids;
     LoadedModel() = default;
     LoadedModel(LoadedModel &&) = default;
     LoadedModel &operator=(LoadedModel &&) = default;

@@ -22,6 +22,12 @@ class BPETokenizer
     static constexpr TokenId EOS_ID = 2;
     static constexpr TokenId UNK_ID = 3;
 
+    // Per-model BOS/EOS ids (GGUF metadata overrides the defaults above;
+    // e.g. Qwen's </s>/<|im_end|> live at ids ~151k, and id 2 is a normal
+    // token there).
+    TokenId bos_id() const { return bos_id_; }
+    TokenId eos_id() const { return eos_id_; }
+
     void train(const std::string &text, size_t vocab_size);
 
     std::vector<TokenId> encode(const std::string &text) const;
@@ -50,6 +56,8 @@ class BPETokenizer
     std::vector<std::string> special_tokens_;
     bool is_gpt2_byte_level_ = false;
     bool is_sentencepiece_ = false;
+    TokenId bos_id_ = BOS_ID;
+    TokenId eos_id_ = EOS_ID;
 
     std::vector<TokenId> merge_tokens(std::vector<TokenId> ids) const;
 };

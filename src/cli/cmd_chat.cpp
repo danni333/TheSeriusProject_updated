@@ -302,8 +302,8 @@ int cmd_chat(int argc, char **argv)
                     std::fprintf(stderr, "[chatprof] prompt_tokens=%zu\n", ids.size());
                 }
             }
-            if (!is_chatml && (ids.empty() || ids[0] != BPETokenizer::BOS_ID)) {
-                ids.insert(ids.begin(), BPETokenizer::BOS_ID);
+            if (!is_chatml && (ids.empty() || ids[0] != tokenizer.bos_id())) {
+                ids.insert(ids.begin(), tokenizer.bos_id());
             }
 
             cache.clear();

@@ -208,6 +208,62 @@ std::string message_text(const nlohmann::json &msg)
     return "";
 }
 
+/// EOS_ID==2 is the GPT-2/LLaMA convention; GGUF models carry their real
+/// eos in the tokenizer (Qwen ends on <|im_end|>, where id 2 is a normal
+/// token). The <|im_end|> string check is kept as a safety net for ChatML
+/// models whose metadata eos differs.
+bool is_stop_token(const BPETokenizer &tokenizer, int next_id, const std::string &tok_str)
+{
+    return next_id == static_cast<int>(tokenizer.eos_id()) ||
+           tok_str == "<|im_end|>";
+}
+
+size_t common_prefix_len(const std::vector<TokenId> &a, const std::vector<TokenId> &b)
+{
+    const size_t n = std::min(a.size(), b.size());
+    size_t i = 0;
+    while (i < n && a[i] == b[i]) {
+        ++i;
+    }
+    return i;
+}
+
+/// Truncate every layer's KV cache to `len` entries. Entries beyond `len`
+/// are simply ignored — attention only reads [0, current_len).
+void truncate_kv_cache(infer::KVCache &cache, size_t len)
+{
+    for (auto &layer : cache.layers) {
+        layer.current_len = len;
+    }
+}
+
+/// Prefill `ids` into `cache`, reusing the longest prefix already present
+/// (tracked via `kv_ids`, the token sequence the cache currently holds).
+/// Only the suffix is forwarded, one token at a time — the batched prefill
+/// path is disabled while it produces degenerate output, and the
+/// single-token path dispatches to the CUDA decode graph for GPU models.
+/// Returns the logits row for the last prompt position.
+core::Tensor prefill_llama(const model::LLaMAModel &model,
+                           const std::vector<TokenId> &ids,
+                           infer::KVCache &cache,
+                           std::vector<TokenId> *kv_ids)
+{
+    size_t prefix = 0;
+    if (kv_ids && !kv_ids->empty() && !cache.layers.empty()) {
+        prefix = common_prefix_len(ids, *kv_ids);
+    }
+    // Always forward at least the last prompt token: its logits are needed
+    // to sample the first generated token, and they are not stored.
+    const size_t start = std::min(prefix, ids.size() - 1);
+    truncate_kv_cache(cache, start);
+
+    core::Tensor last_logits({0});
+    for (size_t i = start; i < ids.size(); ++i) {
+        last_logits = infer::llama_forward_single_token(model, static_cast<int>(ids[i]), i, &cache);
+    }
+    return last_logits;
+}
+
 /// Build the full prompt for /v1/chat/completions from the messages array.
 /// With chatml=true the whole transcript is rendered as ChatML turns
 /// (<|im_start|>role ... <|im_end|>) ending with an open assistant turn, so
@@ -277,39 +333,29 @@ GenerationResult generate_llama(const model::LLaMAModel &model,
                                 size_t max_new_tokens,
                                 const infer::Sampler &sampler,
                                 infer::KVCache &cache,
-                                InferenceMetrics *metrics)
+                                InferenceMetrics *metrics,
+                                std::vector<TokenId> *kv_ids = nullptr)
 {
     GenerationResult res;
     std::vector<TokenId> ids = tokenizer.encode(prompt);
-    if (ids.empty() || ids[0] != BPETokenizer::BOS_ID) {
-        ids.insert(ids.begin(), BPETokenizer::BOS_ID);
+    if (ids.empty() || ids[0] != tokenizer.bos_id()) {
+        ids.insert(ids.begin(), tokenizer.bos_id());
     }
     res.prompt_tokens = ids.size();
 
-    cache.clear();
-    core::Tensor prompt_input({ids.size()});
-    for (size_t i = 0; i < ids.size(); ++i) {
-        prompt_input[i] = static_cast<float>(ids[i]);
-    }
-
-    core::Tensor logits = infer::llama_forward_inference_last(model, prompt_input, &cache);
-    size_t vocab_size = logits.shape().back();
-    size_t last_row = logits.shape()[0] - 1;
+    core::Tensor logits = prefill_llama(model, ids, cache, kv_ids);
+    const size_t vocab_size = logits.shape().back();
 
     int next_id = 0;
-    if (!infer::sample_gpu_candidates(logits, last_row, sampler, next_id)) {
-        core::Tensor last_logits({vocab_size});
-        const float *src = logits.data() + (last_row * vocab_size);
-        std::copy(src, src + vocab_size, last_logits.data());
-        next_id = sampler.sample(last_logits);
+    if (!infer::sample_gpu_candidates(logits, 0, sampler, next_id)) {
+        next_id = sampler.sample(logits);
     }
 
     for (size_t gen = 0; gen < max_new_tokens; ++gen) {
-        if (next_id == BPETokenizer::EOS_ID) {
+        std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
+        if (is_stop_token(tokenizer, next_id, tok_str)) {
             break;
         }
-
-        std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
         res.text += tok_str;
         ++res.completion_tokens;
         if (metrics) {
@@ -328,6 +374,9 @@ GenerationResult generate_llama(const model::LLaMAModel &model,
         }
     }
 
+    if (kv_ids) {
+        *kv_ids = ids;
+    }
     res.text = sanitize_utf8(res.text);
     return res;
 }
@@ -341,13 +390,13 @@ void stream_llama(const model::LLaMAModel &model,
                   const std::string &req_id,
                   const std::string &model_name,
                   httplib::DataSink &sink,
-                  InferenceMetrics *metrics)
+                  InferenceMetrics *metrics,
+                  std::vector<TokenId> *kv_ids = nullptr)
 {
     std::vector<TokenId> ids = tokenizer.encode(prompt);
-    if (ids.empty() || ids[0] != BPETokenizer::BOS_ID) {
-        ids.insert(ids.begin(), BPETokenizer::BOS_ID);
+    if (ids.empty() || ids[0] != tokenizer.bos_id()) {
+        ids.insert(ids.begin(), tokenizer.bos_id());
     }
-    cache.clear();
 
     const auto created = static_cast<int64_t>(
         std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
@@ -366,21 +415,11 @@ void stream_llama(const model::LLaMAModel &model,
     std::string intro_str = "data: " + intro.dump() + "\n\n";
     sink.write(intro_str.data(), intro_str.size());
 
-    core::Tensor prompt_input({ids.size()});
-    for (size_t i = 0; i < ids.size(); ++i) {
-        prompt_input[i] = static_cast<float>(ids[i]);
-    }
-
-    core::Tensor logits = infer::llama_forward_inference_last(model, prompt_input, &cache);
-    const size_t last_row = logits.shape()[0] - 1;
+    core::Tensor logits = prefill_llama(model, ids, cache, kv_ids);
 
     int next_id = 0;
-    if (!infer::sample_gpu_candidates(logits, last_row, sampler, next_id)) {
-        const size_t vocab_size = logits.shape().back();
-        core::Tensor last_logits({vocab_size});
-        const float *src = logits.data() + (last_row * vocab_size);
-        std::copy(src, src + vocab_size, last_logits.data());
-        next_id = sampler.sample(last_logits);
+    if (!infer::sample_gpu_candidates(logits, 0, sampler, next_id)) {
+        next_id = sampler.sample(logits);
     }
 
     std::string pending;
@@ -389,11 +428,10 @@ void stream_llama(const model::LLaMAModel &model,
             break;
         }
 
-        if (next_id == BPETokenizer::EOS_ID) {
+        std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
+        if (is_stop_token(tokenizer, next_id, tok_str)) {
             break;
         }
-
-        std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
         if (metrics) {
             metrics->on_token_generated(0.0f);
         }
@@ -461,6 +499,10 @@ void stream_llama(const model::LLaMAModel &model,
 
     const std::string done_str = "data: [DONE]\n\n";
     sink.write(done_str.data(), done_str.size());
+
+    if (kv_ids) {
+        *kv_ids = ids;
+    }
 }
 
 GenerationResult generate_transformer(const model::TransformerModel &model,
@@ -473,7 +515,7 @@ GenerationResult generate_transformer(const model::TransformerModel &model,
     GenerationResult res;
     std::vector<TokenId> ids = tokenizer.encode(prompt);
     if (ids.empty()) {
-        ids.push_back(BPETokenizer::BOS_ID);
+        ids.push_back(tokenizer.bos_id());
     }
     res.prompt_tokens = ids.size();
 
@@ -496,11 +538,11 @@ GenerationResult generate_transformer(const model::TransformerModel &model,
         }
 
         int next_id = sampler.sample(last_logits);
-        if (next_id == BPETokenizer::EOS_ID) {
+        std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
+        if (is_stop_token(tokenizer, next_id, tok_str)) {
             break;
         }
 
-        std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
         res.text += tok_str;
         ++res.completion_tokens;
         if (metrics) {
@@ -526,7 +568,7 @@ void stream_transformer(const model::TransformerModel &model,
 {
     std::vector<TokenId> ids = tokenizer.encode(prompt);
     if (ids.empty()) {
-        ids.push_back(BPETokenizer::BOS_ID);
+        ids.push_back(tokenizer.bos_id());
     }
 
     const auto created = static_cast<int64_t>(
@@ -570,11 +612,10 @@ void stream_transformer(const model::TransformerModel &model,
         }
 
         int next_id = sampler.sample(last_logits);
-        if (next_id == BPETokenizer::EOS_ID) {
+        std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
+        if (is_stop_token(tokenizer, next_id, tok_str)) {
             break;
         }
-
-        std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
         if (metrics) {
             metrics->on_token_generated(0.0f);
         }
@@ -1418,7 +1459,7 @@ void Server::setup_routes()
                     try {
                         LoadedModel *lm = find_model(requested_model);
                         if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
-                            stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id, requested_model, sink, metrics_.get());
+                            stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id, requested_model, sink, metrics_.get(), &lm->cached_token_ids);
                         } else if (lm && lm->transformer && lm->tokenizer) {
                             stream_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, req_id, requested_model, sink, metrics_.get());
                         } else {
@@ -1446,7 +1487,7 @@ void Server::setup_routes()
         GenerationResult gen_res;
         LoadedModel *lm = find_model(requested_model);
         if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
-            gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, metrics_.get());
+            gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, metrics_.get(), &lm->cached_token_ids);
         } else if (lm && lm->transformer && lm->tokenizer) {
             gen_res = generate_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, metrics_.get());
         } else {
@@ -1542,7 +1583,7 @@ void Server::setup_routes()
 
                     LoadedModel *lm = find_model(requested_model);
                     if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
-                        stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id, requested_model, sink, metrics_.get());
+                        stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id, requested_model, sink, metrics_.get(), &lm->cached_token_ids);
                     } else if (lm && lm->transformer && lm->tokenizer) {
                         stream_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, req_id, requested_model, sink, metrics_.get());
                     } else {
@@ -1564,7 +1605,7 @@ void Server::setup_routes()
         GenerationResult gen_res;
         LoadedModel *lm = find_model(requested_model);
         if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
-            gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, metrics_.get());
+            gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, metrics_.get(), &lm->cached_token_ids);
         } else if (lm && lm->transformer && lm->tokenizer) {
             gen_res = generate_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, metrics_.get());
         } else {
@@ -1647,7 +1688,7 @@ void Server::setup_routes()
 
             if (emb_ok) {
                 std::vector<TokenId> ids = lm->tokenizer->encode(inp);
-                if (ids.empty()) ids.push_back(BPETokenizer::BOS_ID);
+                if (ids.empty()) ids.push_back(lm->tokenizer->bos_id());
                 total_prompt_tokens += ids.size();
 
                 size_t hs = lm->llama->config().hidden_size;

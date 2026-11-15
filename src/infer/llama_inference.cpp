@@ -46,6 +46,27 @@ constexpr float EPSILON_DEFAULT = 1e-5F;
 constexpr size_t AVX_FLOAT_STRIDE = 8;
 constexpr float ATTENTION_MASK_VAL = -1e9F;
 
+// Batched prefill (seq_len > 1 in one forward) currently produces degenerate
+// output — verified end-to-end: prompts <= 8 tokens take the per-token decode
+// path and are fine, anything longer collapses into repetition on both the
+// CPU and CUDA paths. It stays opt-in via SERIUS_PREFILL_BATCH=1 until the
+// batched kernels are fixed; the default is the slower but correct
+// single-token prefill.
+inline bool prefill_batch_enabled() {
+    static const bool enabled = [] {
+#if defined(_MSC_VER)
+        char buf[8];
+        size_t len = 0;
+        return getenv_s(&len, buf, sizeof(buf), "SERIUS_PREFILL_BATCH") == 0 &&
+               len > 0 && buf[0] == '1';
+#else
+        const char *v = std::getenv("SERIUS_PREFILL_BATCH");
+        return v != nullptr && v[0] == '1';
+#endif
+    }();
+    return enabled;
+}
+
 using core::Tensor;
 
 // --- Temporary decode profiling (SERIUS_PROF=1) ---
@@ -997,7 +1018,7 @@ static void compute_logits(const model::LLaMAModel &model, const Tensor &final_n
 Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache) {
     enable_ftz_daz_once();
 #ifdef SERIUS_USE_CUDA
-    if (model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
+    if (prefill_batch_enabled() && model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
         return llama_forward_cuda(model, token_ids, cache);
     }
 #endif
@@ -1008,8 +1029,11 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
     // Fast prefill: when the model carries packed quantized weights, run the
     // prompt through the single-token decode path. Only worthwhile for tiny
     // prompts — the batched cuBLAS prefill below is far faster per token.
+    // Batched prefill is opt-in (SERIUS_PREFILL_BATCH=1): it is mathematically
+    // correct, but GGUF decode uses lossy-requantized packed weights while the
+    // batched path uses dense FP32 weights, so outputs can differ slightly.
     const bool has_quant = !model.layers().empty() && model.layers()[0]->qkv_w.valid();
-    if (has_quant && seq_len <= 8) {
+    if (!prefill_batch_enabled() || (has_quant && seq_len <= 8)) {
         core::Tensor last_logits({0});
         for (size_t i = 0; i < seq_len; ++i) {
             const int tid = static_cast<int>(token_ids[i]);
@@ -1084,6 +1108,16 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
 
 Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache) {
     enable_ftz_daz_once();
+    if (!prefill_batch_enabled()) {
+        // Batched prefill is opt-in — decode one token at a time instead.
+        // llama_forward_single_token dispatches to the CUDA graph path for
+        // GPU-resident models, so this stays reasonably fast.
+        Tensor last_logits({0});
+        for (size_t i = 0; i < token_ids.size(); ++i) {
+            last_logits = llama_forward_single_token(model, static_cast<int>(token_ids[i]), i, cache);
+        }
+        return last_logits;
+    }
 #ifdef SERIUS_USE_CUDA
     if (model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
         return llama_forward_cuda_last(model, token_ids, cache);
