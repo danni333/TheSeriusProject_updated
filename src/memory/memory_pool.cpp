@@ -62,6 +62,25 @@ void *MemoryPool::allocate(size_t size)
 
     allocation_count_++;
 
+    // Reuse a freed block first (first-fit, split the remainder when it is
+    // large enough to hold another aligned allocation).
+    for (size_t i = 0; i < free_list_.size(); ++i) {
+        FreeBlock &fb = free_list_[i];
+        if (fb.size < aligned_size) continue;
+        void *ptr = fb.ptr;
+        size_t remainder = fb.size - aligned_size;
+        free_list_bytes_ -= fb.size;
+        if (remainder >= ALIGNMENT) {
+            fb.ptr = static_cast<uint8_t *>(fb.ptr) + aligned_size;
+            fb.size = remainder;
+            free_list_bytes_ += remainder;
+        } else {
+            free_list_.erase(free_list_.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+        peak_used_ = std::max(peak_used_, used());
+        return ptr;
+    }
+
     if (current_offset_ + aligned_size <= blocks_[current_block_idx_]->size) {
         void *ptr = blocks_[current_block_idx_]->data + current_offset_;
         current_offset_ += aligned_size;
@@ -97,10 +116,23 @@ void MemoryPool::grow(size_t min_size)
     current_offset_ = 0;
 }
 
+void MemoryPool::deallocate(void *ptr, size_t size)
+{
+    if (ptr == nullptr || size == 0) {
+        return;
+    }
+    size_t aligned_size = align_up(size, ALIGNMENT);
+    free_list_.push_back(FreeBlock{ptr, aligned_size});
+    free_list_bytes_ += aligned_size;
+    deallocation_count_++;
+}
+
 void MemoryPool::reset()
 {
     current_block_idx_ = 0;
     current_offset_ = 0;
+    free_list_.clear();
+    free_list_bytes_ = 0;
 }
 
 size_t MemoryPool::capacity() const
@@ -119,6 +151,9 @@ size_t MemoryPool::used() const
         total += blocks_[i]->size;
     }
     total += current_offset_;
+    // Subtract bytes sitting in the free list (they were bump-allocated but
+    // are available for reuse).
+    total = total > free_list_bytes_ ? total - free_list_bytes_ : 0;
     return total;
 }
 
@@ -154,6 +189,10 @@ ScopedArena::~ScopedArena()
 {
     pool_.current_block_idx_ = saved_block_idx_;
     pool_.current_offset_ = saved_offset_;
+    // Rewinding the bump pointer invalidates any free-list entries that
+    // point into the rewound region — drop the whole list to be safe.
+    pool_.free_list_.clear();
+    pool_.free_list_bytes_ = 0;
 }
 
 }  // namespace memory

@@ -73,8 +73,8 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 17. **CPU Backend** - ~~5 stream no-ops~~ ✅ stream reali (worker thread + queue)
 18. **BLAS Dispatch** - ~~2 stream non usati~~ ✅ `matmul`/`batched_matmul` instradano stream CPU (`is_cpu_stream` check)
 19. **Quantization FP8 Kernel** - ~~1 stub~~ ✅ `fp8_dequant_matmul` CPU (E4M3/E5M2) + `fp8_dequant_matmul_cuda` (kernel in `quant_kernels.cu`, test GPU-vs-CPU in `test_quant`)
-20. **Memory Pool Allocator** - 1 no-op
-21. **GGUF Loader** - 3 unused parameters
+20. **Memory Pool Allocator** - ~~1 no-op~~ ✅ `MemoryPool::deallocate` con free-list (first-fit + split), usato da `PoolAllocator` e `Tensor::free_data`; `reset()`/`ScopedArena` invalidano la free-list
+21. **GGUF Loader** - ~~3 unused parameters~~ ✅ rimosso `value_length` morto da `read_gguf_kv_entry` (scriveva sempre 0, tutti i caller passavano `nullptr`)
 
 ### Bassa (Commenti/Opzionale)
 22. **Transformer FFN** - 1 commento sviluppo

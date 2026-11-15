@@ -138,6 +138,64 @@ TEST(MemoryPoolTest, StatsTracking)
     EXPECT_EQ(pool.allocation_count(), 3);
 }
 
+TEST(MemoryPoolTest, DeallocateReusesFreedBlock)
+{
+    MemoryPool pool(4096);
+
+    void *a = pool.allocate(256);
+    void *b = pool.allocate(256);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(b, nullptr);
+    EXPECT_NE(a, b);
+    const size_t used_before = pool.used();
+
+    pool.deallocate(a, 256);
+    // Freed bytes no longer count as used.
+    EXPECT_EQ(pool.used(), used_before - 256);
+
+    void *c = pool.allocate(256);
+    ASSERT_NE(c, nullptr);
+    // Same-size allocation must reuse the freed block.
+    EXPECT_EQ(c, a);
+    EXPECT_EQ(pool.used(), used_before);
+
+    // A smaller allocation reuses the block and leaves a usable remainder.
+    pool.deallocate(b, 256);
+    void *d = pool.allocate(128);
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(d, b);
+    void *e = pool.allocate(128);
+    ASSERT_NE(e, nullptr);
+    EXPECT_EQ(e, static_cast<uint8_t *>(b) + 128);
+    EXPECT_EQ(pool.used(), used_before);
+}
+
+TEST(MemoryPoolTest, DeallocateThenLargerAllocationFallsThrough)
+{
+    MemoryPool pool(4096);
+    void *a = pool.allocate(128);
+    pool.deallocate(a, 128);
+
+    // Request larger than the freed block -> bump allocator path.
+    void *b = pool.allocate(512);
+    ASSERT_NE(b, nullptr);
+    EXPECT_NE(b, a);
+}
+
+TEST(MemoryPoolTest, ResetClearsFreeList)
+{
+    MemoryPool pool(4096);
+    void *a = pool.allocate(256);
+    pool.deallocate(a, 256);
+    pool.reset();
+
+    void *b = pool.allocate(256);
+    ASSERT_NE(b, nullptr);
+    // After reset the bump pointer rewound; the stale free-list entry must
+    // not hand out memory that overlaps the new bump region.
+    EXPECT_EQ(b, a);
+}
+
 TEST(MemoryPoolTest, PrintStats)
 {
     MemoryPool pool(1024);

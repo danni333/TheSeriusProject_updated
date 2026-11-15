@@ -152,6 +152,18 @@ E2E stdio+HTTP, `test_mcp_server` 11/11).
 5. Track C: **non fare** a meno che non serva Vulkan/Metal davvero.
 6. Track D: solo se si punta al training distribuito.
 
+## Track E — Follow-up: Nomic embedding performance (NUOVO)
+
+Encoder `nomic-bert` funzionante (commit `a62e1c8`) ma ~3.8s/embedding su CPU
+(naive loops, 12 layer). Obiettivi:
+
+- **Velocità da record CPU e GPU**: batching delle sequenze, riuso delle
+  proiezioni fuse (QKV già fused), GEMM via `blas::matmul` invece dei loop
+  scalari, opzionale path CUDA per l'encoder.
+- **Test su corpus reale**: embeddare la repo stessa (file markdown/docs)
+  e verificare che la ricerca semantica restituisca documenti rilevanti
+  (es. query "quantization" → file quant, "http server" → server docs).
+
 ## Criteri di "fatto"
 
 - Ogni stub rimosso ha test dedicato in `tests/`.

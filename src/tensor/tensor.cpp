@@ -282,7 +282,7 @@ void Tensor::free_data()
             }
             data_ = nullptr;
         } else if (data_ != nullptr && pool_ != nullptr) {
-            // Memory pool resets en-masse, no per-tensor deallocate required usually
+            pool_->deallocate(data_, size_ * element_size());
             data_ = nullptr;
         }
 

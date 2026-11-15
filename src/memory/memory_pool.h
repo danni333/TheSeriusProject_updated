@@ -21,6 +21,11 @@ class MemoryPool
     MemoryPool &operator=(const MemoryPool &) = delete;
 
     void *allocate(size_t size);
+    /// Return a previously allocated block to the pool's free list so it can
+    /// be reused by a later allocate() of equal-or-smaller size. Arena
+    /// semantics still apply: reset() and ~ScopedArena() rewind the bump
+    /// pointer and invalidate the free list.
+    void deallocate(void *ptr, size_t size);
     void reset();
 
     size_t capacity() const;
@@ -52,8 +57,17 @@ class MemoryPool
     size_t current_block_idx_;
     size_t current_offset_;
 
+    struct FreeBlock
+    {
+        void *ptr;
+        size_t size;  // aligned size
+    };
+    std::vector<FreeBlock> free_list_;
+    size_t free_list_bytes_ = 0;
+
     size_t peak_used_{0};
     size_t allocation_count_{0};
+    size_t deallocation_count_{0};
 
     static size_t align_up(size_t val, size_t alignment);
     void grow(size_t min_size);

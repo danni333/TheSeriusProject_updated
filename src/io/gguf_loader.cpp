@@ -498,7 +498,7 @@ bool skip_gguf_value(std::ifstream &f, uint32_t type)
     }
 }
 
-bool read_gguf_kv_entry(std::ifstream &f, std::string *key, uint32_t *type, uint64_t *value_length)
+bool read_gguf_kv_entry(std::ifstream &f, std::string *key, uint32_t *type)
 {
     uint64_t key_len = read_u64_le(f);
     if (!f || key_len > kMaxStringBytes || key_len > stream_remaining(f)) return false;
@@ -510,7 +510,6 @@ bool read_gguf_kv_entry(std::ifstream &f, std::string *key, uint32_t *type, uint
     if (!f) return false;
 
     if (key) *key = std::move(key_value);
-    if (value_length) *value_length = 0;
     return true;
 }
 
@@ -713,7 +712,7 @@ std::vector<std::string> gguf_tensor_names(const std::string &path)
     for (uint64_t i = 0; i < meta.n_kv; ++i) {
         std::string key;
         uint32_t type = 0;
-        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) {
+        if (!read_gguf_kv_entry(f, &key, &type)) {
             break;
         }
         (void)key;
@@ -748,7 +747,7 @@ std::optional<GGUFTensorInfo> get_tensor_info(const std::string &path, const std
     for (uint64_t i = 0; i < meta.n_kv; ++i) {
         std::string key;
         uint32_t type = 0;
-        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) {
+        if (!read_gguf_kv_entry(f, &key, &type)) {
             break;
         }
         (void)key;
@@ -788,7 +787,7 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
     for (uint64_t i = 0; i < meta.n_kv; ++i) {
         std::string key;
         uint32_t type = 0;
-        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) {
+        if (!read_gguf_kv_entry(f, &key, &type)) {
             break;
         }
         (void)key;
@@ -1004,7 +1003,7 @@ std::string gguf_architecture(const std::string &path)
     for (uint64_t i = 0; i < meta.n_kv; ++i) {
         std::string key;
         uint32_t type = 0;
-        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) { break; }
+        if (!read_gguf_kv_entry(f, &key, &type)) { break; }
         if (key == "general.architecture" && type == 8) {
             std::string arch;
             if (read_string_kv_value(f, &arch)) { return arch; }
@@ -1032,7 +1031,7 @@ serius::model::ModelConfig gguf_to_model_config(const std::string &path)
     for (uint64_t i = 0; i < meta.n_kv; ++i) {
         std::string key;
         uint32_t type = 0;
-        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) {
+        if (!read_gguf_kv_entry(f, &key, &type)) {
             break;
         }
 
@@ -1099,7 +1098,7 @@ GGUFTokenizerData load_gguf_tokenizer(const std::string &path)
     for (uint64_t i = 0; i < meta.n_kv; ++i) {
         std::string key;
         uint32_t type = 0;
-        if (!read_gguf_kv_entry(f, &key, &type, nullptr)) { break; }
+        if (!read_gguf_kv_entry(f, &key, &type)) { break; }
 
         // ---- tokenizer.ggml.tokens  (type 9 = array of string) ----
         if (key == "tokenizer.ggml.tokens" && type == 9) {

@@ -42,9 +42,11 @@ class PoolAllocator
 
     void deallocate(T *p, std::size_t n) noexcept
     {
-        // Real freeing happens when the pool is reset or destroyed.
-        (void)p;
-        (void)n;
+        // Returns the block to the pool's free list for reuse by a later
+        // allocation; the underlying arena block is released on reset().
+        if (p != nullptr) {
+            pool_->deallocate(p, n * sizeof(T));
+        }
     }
 
     MemoryPool *pool() const noexcept { return pool_; }
