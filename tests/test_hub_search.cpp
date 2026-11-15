@@ -182,3 +182,110 @@ TEST(HubSearch, EmbeddingManagerRealModel)
     }
     EXPECT_GT(diff, 1e-6);
 }
+
+TEST(HubSearch, EmbeddingManagerSafetensorsDir)
+{
+    // Real embedding path via model dir: model.safetensors (BF16
+    // model.embed_tokens.weight) + tokenizer.json.
+    const std::string dir = "../models/smollm2-135m";
+    if (!fs::exists(dir + "/model.safetensors") || !fs::exists(dir + "/tokenizer.json")) {
+        GTEST_SKIP() << "safetensors model dir not found: " << dir;
+    }
+
+    serius::hub::EmbeddingManager em;
+    ASSERT_TRUE(em.load_model(dir));
+    ASSERT_TRUE(em.is_model_loaded());
+
+    const auto e = em.compute_embedding("hello world");
+    ASSERT_FALSE(e.empty());
+    // smollm2-135m hidden_size = 576
+    EXPECT_EQ(e.size(), 576u);
+
+    double norm = 0.0;
+    for (float v : e) norm += static_cast<double>(v) * v;
+    EXPECT_NEAR(std::sqrt(norm), 1.0, 1e-4);
+}
+
+TEST(HubSearch, EmbeddingManagerSemanticProbe)
+{
+    // Diagnostic only: token_embd mean-pool (LLM fallback path) has weak
+    // semantics — anisotropic, dominated by frequent tokens. The real
+    // embedding path is the nomic-bert encoder (EmbeddingManagerNomicBert).
+    // We only assert the strongest signal; the rest is printed for info.
+    const std::string gguf = "../models/smollm2-q4/SmolLM2-135M-Instruct-Q4_0.gguf";
+    if (!fs::exists(gguf)) {
+        GTEST_SKIP() << "GGUF model not found: " << gguf;
+    }
+    serius::hub::EmbeddingManager em;
+    ASSERT_TRUE(em.load_model(gguf));
+
+    auto cos = [&](const std::string &a, const std::string &b) {
+        const auto ea = em.compute_embedding(a);
+        const auto eb = em.compute_embedding(b);
+        double dot = 0.0;
+        for (size_t i = 0; i < ea.size(); ++i) dot += static_cast<double>(ea[i]) * eb[i];
+        return dot;  // both L2-normalized -> dot == cosine
+    };
+
+    const double cat_kitten = cos("cat", "kitten");
+    const double cat_quantum = cos("cat", "quantum");
+    const double dog_cat = cos("dog", "cat");
+    const double dog_feline = cos("dog", "feline");
+
+    std::cout << "cos(cat,kitten)=" << cat_kitten
+              << " cos(cat,quantum)=" << cat_quantum
+              << " cos(dog,cat)=" << dog_cat
+              << " cos(dog,feline)=" << dog_feline << "\n";
+
+    EXPECT_GT(cat_kitten, cat_quantum);
+}
+
+TEST(HubSearch, EmbeddingManagerNomicBert)
+{
+    // Real embedding model: nomic-embed-text-v1.5 GGUF (nomic-bert arch).
+    // Path via env var since it's outside the repo.
+    const char *env = std::getenv("SERIUS_TEST_NOMIC_GGUF");
+    if (env == nullptr || !fs::exists(env)) {
+        GTEST_SKIP() << "SERIUS_TEST_NOMIC_GGUF not set or file missing";
+    }
+    const std::string gguf = env;
+
+    serius::hub::EmbeddingManager em;
+    ASSERT_TRUE(em.load_model(gguf));
+    ASSERT_TRUE(em.is_model_loaded());
+
+    const auto e1 = em.compute_embedding("a cat sits on the mat");
+    const auto e2 = em.compute_embedding("quantum chromodynamics");
+    const auto e1b = em.compute_embedding("a cat sits on the mat");
+
+    ASSERT_EQ(e1.size(), 768u);
+    ASSERT_EQ(e1.size(), e1b.size());
+    for (size_t i = 0; i < e1.size(); ++i) EXPECT_FLOAT_EQ(e1[i], e1b[i]);
+
+    double norm = 0.0;
+    for (float v : e1) norm += static_cast<double>(v) * v;
+    EXPECT_NEAR(std::sqrt(norm), 1.0, 1e-3);
+
+    auto cos = [&](const std::string &a, const std::string &b) {
+        const auto ea = em.compute_embedding(a);
+        const auto eb = em.compute_embedding(b);
+        double d = 0.0;
+        for (size_t i = 0; i < ea.size(); ++i) d += static_cast<double>(ea[i]) * eb[i];
+        return d;
+    };
+    const double cat_kitten = cos("a cat sits on the mat", "a kitten plays nearby");
+    const double cat_quantum = cos("a cat sits on the mat", "quantum chromodynamics");
+    const double dog_cat = cos("a dog runs in the park", "a cat sits on the mat");
+    const double dog_feline = cos("a dog runs in the park", "a feline sleeps");
+    const double py_java = cos("python is a programming language", "java is a programming language");
+    const double py_pizza = cos("python is a programming language", "pizza is a food");
+    std::cout << "nomic dim=" << e1.size()
+              << " cat_kitten=" << cat_kitten
+              << " cat_quantum=" << cat_quantum
+              << " dog_cat=" << dog_cat
+              << " dog_feline=" << dog_feline
+              << " py_java=" << py_java
+              << " py_pizza=" << py_pizza << "\n";
+    EXPECT_GT(cat_kitten, cat_quantum);
+    EXPECT_GT(py_java, py_pizza);
+}

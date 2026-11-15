@@ -11,6 +11,7 @@
 
 #include "../tensor/tensor.h"
 #include "../tokenizer/bpe.h"
+#include "nomic_bert.h"
 
 namespace serius::hub {
 
@@ -133,7 +134,13 @@ class EmbeddingManager
     core::Tensor embed_matrix_;
     std::unique_ptr<serius::BPETokenizer> tokenizer_;
 
+    // Full encoder path for embedding-specialized GGUFs (nomic-bert arch):
+    // WordPiece + transformer forward + mean pooling — real sentence
+    // embeddings instead of token-embedding lookup.
+    std::unique_ptr<NomicBertEmbedder> bert_;
+
     bool try_load_gguf(const std::string &path);
+    bool try_load_nomic_gguf(const std::string &path);
     bool try_load_safetensors_dir(const std::string &dir);
 
     // Embedding computation (deterministic hashed bag-of-words fallback when

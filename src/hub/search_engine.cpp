@@ -417,6 +417,9 @@ bool EmbeddingManager::initialize(const std::string &model_path)
 
 std::vector<float> EmbeddingManager::compute_embedding(const std::string &text)
 {
+    if (bert_ != nullptr && bert_->is_loaded()) {
+        return bert_->embed(text);
+    }
     if (embed_matrix_.size() > 0 && tokenizer_ != nullptr) {
         const size_t vocab = embed_matrix_.shape()[0];
         const size_t dim = embed_matrix_.shape()[1];
@@ -470,7 +473,7 @@ bool EmbeddingManager::load_model(const std::string &model_path)
     if (std::filesystem::is_regular_file(p, ec) && p.extension() == ".gguf") {
         if (try_load_gguf(model_path)) {
             model_loaded_ = true;
-            spdlog::info("EmbeddingManager: loaded GGUF embedding matrix from '{}'", model_path);
+            spdlog::info("EmbeddingManager: loaded embedding model from '{}'", model_path);
             return true;
         }
     } else if (std::filesystem::is_directory(p, ec)) {
@@ -484,7 +487,7 @@ bool EmbeddingManager::load_model(const std::string &model_path)
         for (const auto &entry : std::filesystem::directory_iterator(p, ec)) {
             if (entry.path().extension() == ".gguf" && try_load_gguf(entry.path().string())) {
                 model_loaded_ = true;
-                spdlog::info("EmbeddingManager: loaded GGUF embedding matrix from '{}'", entry.path().string());
+                spdlog::info("EmbeddingManager: loaded embedding model from '{}'", entry.path().string());
                 return true;
             }
         }
@@ -502,6 +505,7 @@ void EmbeddingManager::unload_model()
     model_handle_ = nullptr;
     embed_matrix_ = core::Tensor();
     tokenizer_.reset();
+    bert_.reset();
 }
 
 namespace {
@@ -527,6 +531,14 @@ bool store_embedding_matrix(core::Tensor &dst, const float *src, size_t numel,
 
 bool EmbeddingManager::try_load_gguf(const std::string &path)
 {
+    // Embedding-specialized architectures (nomic-bert) need the full
+    // encoder forward, not just the token_embd lookup.
+    const std::string arch = io::gguf_architecture(path);
+    if (arch == "nomic-bert" || arch == "nomic-bert-moe" || arch == "jina-bert-v2" ||
+        arch == "jina-bert-v3") {
+        return try_load_nomic_gguf(path);
+    }
+
     auto tensors = io::load_all_tensors(path);
     auto it = tensors.find("token_embd.weight");
     if (it == tensors.end()) {
@@ -553,6 +565,29 @@ bool EmbeddingManager::try_load_gguf(const std::string &path)
     // dim equals vocab the flat data is dim-major and needs a transpose.
     const bool dim_major = (t.ndim() == 2 && t.shape()[0] == vocab && t.shape()[1] != vocab);
     return store_embedding_matrix(embed_matrix_, t.data(), t.size(), vocab, dim, dim_major);
+}
+
+bool EmbeddingManager::try_load_nomic_gguf(const std::string &path)
+{
+    auto tensors = io::load_all_tensors(path);
+    if (tensors.empty()) {
+        return false;
+    }
+
+    auto tok = io::load_gguf_tokenizer(path);
+    if (!tok.valid || tok.tokens.empty()) {
+        spdlog::warn("EmbeddingManager: nomic-bert GGUF '{}' has no usable tokenizer", path);
+        return false;
+    }
+
+    auto emb = std::make_unique<NomicBertEmbedder>();
+    emb->set_vocab(tok.tokens);
+    if (!emb->load(tensors)) {
+        spdlog::warn("EmbeddingManager: nomic-bert weights incomplete in '{}'", path);
+        return false;
+    }
+    bert_ = std::move(emb);
+    return true;
 }
 
 bool EmbeddingManager::try_load_safetensors_dir(const std::string &dir)

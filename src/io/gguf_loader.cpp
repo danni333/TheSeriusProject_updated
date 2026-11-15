@@ -188,6 +188,53 @@ void dequantize_q4_k(const uint8_t *data, size_t n, float *out)
 
 // ggml block_q6_K: 256 weights per 210-byte superblock.
 // { uint8 ql[128], uint8 qh[64], int8 scales[16], fp16 d } — d is LAST.
+// Q5_K: 256 weights per 176-byte superblock.
+// Layout: d(f16) dmin(f16) scales[12] qh[32] qs[128].
+// x = d*sc*q - min*m  with q in [0,31] (4 low bits + 1 high bit).
+void dequantize_q5_k(const uint8_t *data, size_t n, float *out)
+{
+    const size_t nb = n / 256;
+    for (size_t i = 0; i < nb; ++i) {
+        const uint8_t *blk = data + i * 176;
+        const float d = half_to_float(static_cast<uint16_t>(blk[0] | (blk[1] << 8)));
+        const float dmin = half_to_float(static_cast<uint16_t>(blk[2] | (blk[3] << 8)));
+        const uint8_t *scales = blk + 4;
+        const uint8_t *qh = blk + 16;
+        const uint8_t *ql = blk + 48;
+        float *y = out + i * 256;
+
+        auto scale_min = [&](int j, uint8_t &sc, uint8_t &m) {
+            if (j < 4) {
+                sc = scales[j] & 63;
+                m = scales[j + 4] & 63;
+            } else {
+                sc = (scales[j + 4] & 0xF) | ((scales[j - 4] >> 6) << 4);
+                m = (scales[j + 4] >> 4) | ((scales[j] >> 6) << 4);
+            }
+        };
+
+        int is = 0;
+        uint8_t u1 = 1, u2 = 2;
+        for (int j = 0; j < 256; j += 64) {
+            uint8_t sc, m;
+            scale_min(is + 0, sc, m);
+            const float d1 = d * sc, m1 = dmin * m;
+            scale_min(is + 1, sc, m);
+            const float d2 = d * sc, m2 = dmin * m;
+            for (int l = 0; l < 32; ++l) {
+                *y++ = d1 * ((ql[l] & 0xF) + (qh[l] & u1 ? 16 : 0)) - m1;
+            }
+            for (int l = 0; l < 32; ++l) {
+                *y++ = d2 * ((ql[l] >> 4) + (qh[l] & u2 ? 16 : 0)) - m2;
+            }
+            ql += 32;
+            is += 2;
+            u1 <<= 2;
+            u2 <<= 2;
+        }
+    }
+}
+
 void dequantize_q6_k(const uint8_t *data, size_t n, float *out)
 {
     const size_t nb = n / 256;
@@ -602,6 +649,7 @@ std::optional<uint64_t> gguf_payload_bytes(GGMLType dtype, uint64_t numel)
         case GGMLType::Q8_0:  block_elems = 32;  block_bytes = 34;  break;
         case GGMLType::Q5_0:  block_elems = 32;  block_bytes = 22;  exact = true; break;
         case GGMLType::Q4_K:  block_elems = 256; block_bytes = 144; exact = true; break;
+        case GGMLType::Q5_K:  block_elems = 256; block_bytes = 176; exact = true; break;
         case GGMLType::Q6_K:  block_elems = 256; block_bytes = 210; exact = true; break;
         default: return std::nullopt;
     }
@@ -888,6 +936,12 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
                 }
                 if (qw.valid()) { quant_out->emplace(info.name, std::move(qw)); }
             }
+        } else if (info.dtype == GGMLType::Q5_K) {
+            if (numel % 256 != 0) { continue; }
+            const size_t sb_count = numel / 256;
+            std::vector<uint8_t> packed(sb_count * 176);
+            f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
+            dequantize_q5_k(packed.data(), numel, values.data());
         } else if (info.dtype == GGMLType::Q6_K) {
             if (numel % 256 != 0) { continue; }
             const size_t sb_count = numel / 256;

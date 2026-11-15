@@ -53,7 +53,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 1. **Vulkan Backend** - 4 TODO + availability stub
 2. **Metal Backend** - 2 TODO + availability stub
 3. **Hub Search Engine** - 13 metodi stub (tutti ritornano `{}`)
-4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ `load_model` carica la matrice `token_embd.weight` da GGUF o `model.safetensors` (+`tokenizer.json`/metadati GGUF) e produce embedding reali (mean-pool + L2-normalize); hash embedding resta fallback
+4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ path primario: encoder `nomic-bert` reale (GGUF, `src/hub/nomic_bert.cpp`: token embd + token types + LN + attn non-causale + RoPE + GELU FFN + pooling) — dim 768, ~3.8s/embedding CPU. Fallback: mean-pool su `token_embd.weight` (GGUF/safetensors) o hash deterministico
 5. **Hub Metadata Manager** - SQLite disabled
 
 ### Alti (Funzionalità Core)
@@ -100,7 +100,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 - Refactorer: library loading non integrato
 
 ### RAG (1)
-- ~~Embeddings: hash-based invece di embedding model~~ ✅ mean-pool su token_embd reale (GGUF/safetensors) con fallback hash
+- ~~Embeddings: hash-based invece di embedding model~~ ✅ encoder `nomic-bert` reale su GGUF (Q4_K/Q5_K/Q6_K dequant inclusa `dequantize_q5_k`); fallback mean-pool token_embd, poi hash
 
 ### Transformer (1)
 - FFN: fused_bias_gelu temporary
@@ -212,7 +212,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ### CRITICHE (Fare subito)
 
 1. **Implementare Hub Search Engine** - 13 metodi stub
-2. **~~Implementare Hub Embedding Manager~~** ✅ matrice embedding reale da GGUF/safetensors
+2. **~~Implementare Hub Embedding Manager~~** ✅ encoder nomic-bert reale da GGUF + fallback token_embd/hash
 3. **Implementare Vulkan Backend** - 4 TODO
 4. **Implementare Metal Backend** - 2 TODO
 5. **Integrare SQLite in Hub Metadata Manager**
@@ -240,7 +240,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ### BASSE (Opzionale)
 
 20. **Rimuovere test_placeholder.cpp**
-21. **~~Implementare RAG embedding model reale~~** ✅ mean-pool su `token_embd.weight` (GGUF o safetensors) + BPE tokenizer; hash embedding solo fallback
+21. **~~Implementare RAG embedding model reale~~** ✅ encoder `nomic-bert` completo su GGUF (WordPiece BERT tokenizer, attn non-causale, RoPE, mean pooling); mean-pool `token_embd` e hash come fallback
 22. **Implementare keyword-based verifiers con ML**
 23. **Implementare memory monitoring Linux/macOS**
 24. **Implementare attention block sparse ottimizzato**
