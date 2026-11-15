@@ -15,7 +15,9 @@ MetadataManager CRUD completo (JSON file-based, SQLite resta disabilitata),
 config KV + tokenizer embedding + RoPE perm per arch llama; `serius convert`
 bidirezionale; verificato end-to-end su Qwen2.5-Coder-1.5B reale),
 **B2 Hub server routes + auth** (REST reale: upload/download/search/
-suggest/delete + API key file-based, `test_hub_server` 2/2).
+suggest/delete + API key file-based, `test_hub_server` 2/2),
+**B3 MCP server end-to-end** (`mcp/server.{h,cpp}` + `serius mcp-serve`,
+E2E stdio+HTTP, `test_mcp_server` 11/11).
 
 ---
 
@@ -67,8 +69,17 @@ suggest/delete + API key file-based, `test_hub_server` 2/2).
 - Test: `test_hub_server` (2/2) — register→401→upload→list→get→search→
   download→delete end-to-end.
 
-### B3. MCP client/server end-to-end
-- Dopo A1: test integration JSON-RPC client↔server, audit log (gia' in `audit.cpp`).
+### B3. MCP client/server end-to-end ✅ FATTO
+- `src/mcp/server.{h,cpp}`: `MCPServer` con dispatch JSON-RPC 2.0
+  (`initialize`, `ping`, `tools/list`, `tools/call`), errori spec
+  (-32600/-32601/-32602/-32603), notifiche senza risposta.
+- Trasporti server: `serve_stdio()` (newline-delimited) e
+  `register_http_route()` per `POST /mcp`.
+- CLI `serius mcp-serve [--audit PATH] [--http PORT]` con tool built-in
+  (`echo`, `current_time`, `serius_info`) e audit log via `Audit`.
+- Test `test_mcp_server` (11/11): unit dispatch + E2E HTTP
+  (HttpTransport↔MCPServer) + E2E stdio reale (`serius.exe mcp-serve`
+  spawnato via StdioTransport, audit verificato).
 
 ## Track C — Backend hardware (DEPRIORITIZZATO)
 

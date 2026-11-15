@@ -146,6 +146,7 @@ agent/action_parser.cpp
     mcp/guard.cpp
     mcp/scrubber.cpp
     mcp/audit.cpp
+    mcp/server.cpp
     reasoning/cot.cpp
     reasoning/mcts.cpp
     reasoning/verifier.cpp
@@ -256,6 +257,7 @@ add_executable(serius cli/serius_cli.cpp
     cli/cmd_convert.cpp
     cli/cmd_generate.cpp
     cli/cmd_bench.cpp
-    cli/cmd_stress.cpp)
+    cli/cmd_stress.cpp
+    cli/cmd_mcp.cpp)
 target_link_libraries(serius PRIVATE serius_core serius_server hub)
 target_include_directories(serius PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

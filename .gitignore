@@ -79,3 +79,7 @@ Thumbs.db
 # Model hub runtime state
 hub_users.json
 models_metadata.json*
+
+# MCP audit logs
+mcp_audit.log
+mcp_e2e_audit.log

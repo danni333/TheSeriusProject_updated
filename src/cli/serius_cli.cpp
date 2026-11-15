@@ -7,6 +7,7 @@
 #include "cli/cmd_generate.h"
 #include "cli/cmd_bench.h"
 #include "cli/cmd_stress.h"
+#include "cli/cmd_mcp.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -30,6 +31,7 @@ int main_cli(int argc, char **argv)
     cli.register_command({"generate", "Generate text from a single prompt (non-interactive)", cmd_generate});
     cli.register_command({"bench", "Run performance benchmarks", cmd_bench});
     cli.register_command({"stress", "Run stress tests on the server", cmd_stress});
+    cli.register_command({"mcp-serve", "Serve MCP tools over stdio or HTTP", cmd_mcp_serve});
 
     return cli.run(argc, argv);
 }

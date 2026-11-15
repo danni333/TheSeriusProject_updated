@@ -131,6 +131,22 @@ Run stress tests against the server.
 serius stress [OPTIONS]
 ```
 
+### `serius mcp-serve`
+
+Serve MCP (Model Context Protocol) tools to external clients. Default transport is stdio (newline-delimited JSON-RPC); `--http PORT` exposes `POST /mcp` instead.
+
+```bash
+serius mcp-serve [--audit PATH] [--http PORT]
+```
+
+Built-in tools: `echo`, `current_time`, `serius_info`. Every `tools/call` is recorded in the audit log (`mcp_audit.log` by default, override with `--audit`).
+
+```bash
+serius mcp-serve                          # stdio mode (for MCP clients)
+serius mcp-serve --http 8091              # HTTP mode: POST http://host:8091/mcp
+serius mcp-serve --audit /var/log/mcp.log
+```
+
 ### `serius doctor`
 
 System diagnostics.
