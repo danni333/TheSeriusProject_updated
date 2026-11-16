@@ -238,7 +238,10 @@ else()
         $<$<COMPILE_LANGUAGE:CXX>:-Wall -Wextra -Wpedantic -Werror=return-type>
     )
     set_source_files_properties(blas/matmul_avx2.cpp PROPERTIES COMPILE_FLAGS "-mavx2 -mfma")
-    set_source_files_properties(blas/matmul_avx512.cpp blas/matvec_quant.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mfma")
+    set_source_files_properties(blas/matmul_avx512.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mfma")
+    # matvec_quant uses BW/DQ/VL intrinsics (maddubs, extracti32x8, cvt)
+    # beyond plain AVX512F — GCC requires the extension flags explicitly.
+    set_source_files_properties(blas/matvec_quant.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw -mavx512dq -mavx512vl -mfma")
 endif()
 target_include_directories(serius_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib)
