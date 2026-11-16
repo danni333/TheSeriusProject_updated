@@ -614,12 +614,53 @@ static float kv_dot_f32(const float *q, const uint16_t *p16, const float *p32,
     return s;
 }
 
+/// Grow a KV cache layer's buffers so they hold at least `needed` positions,
+/// preserving existing contents. Called on demand from update_kv_cache so
+/// prompts longer than the initial DEFAULT_MAX_SEQ_LEN capacity don't write
+/// out of bounds (previously a heap overflow that crashed the server).
+static void ensure_kv_capacity(KVCacheLayer *cache_layer, size_t needed, size_t local_kv_dim)
+{
+    const size_t cap16 = cache_layer->k16.empty() ? 0 : cache_layer->k16.size() / local_kv_dim;
+    const size_t cap32 = cache_layer->k.shape().size() >= 2 ? cache_layer->k.shape()[0] : 0;
+    const size_t cap = std::max(cap16, cap32);
+    if (needed <= cap) {
+        return;
+    }
+    size_t new_cap = cap == 0 ? needed : cap;
+    while (new_cap < needed) {
+        new_cap *= 2;
+    }
+
+    std::vector<uint16_t> nk(new_cap * local_kv_dim);
+    std::vector<uint16_t> nv(new_cap * local_kv_dim);
+    if (!cache_layer->k16.empty()) {
+        std::memcpy(nk.data(), cache_layer->k16.data(), cache_layer->k16.size() * sizeof(uint16_t));
+        std::memcpy(nv.data(), cache_layer->v16.data(), cache_layer->v16.size() * sizeof(uint16_t));
+    }
+    cache_layer->k16.swap(nk);
+    cache_layer->v16.swap(nv);
+
+    Tensor new_k({new_cap, local_kv_dim});
+    Tensor new_v({new_cap, local_kv_dim});
+    if (cache_layer->k.size() > 0) {
+        const size_t old_k = std::min(cache_layer->k.size(), new_cap * local_kv_dim);
+        std::memcpy(new_k.data(), cache_layer->k.data(), old_k * sizeof(float));
+    }
+    if (cache_layer->v.size() > 0) {
+        const size_t old_v = std::min(cache_layer->v.size(), new_cap * local_kv_dim);
+        std::memcpy(new_v.data(), cache_layer->v.data(), old_v * sizeof(float));
+    }
+    cache_layer->k = std::move(new_k);
+    cache_layer->v = std::move(new_v);
+}
+
 static void update_kv_cache(KVCacheLayer *cache_layer, const Tensor &key_buf, const Tensor &value_buf, size_t seq_len) {
     if (cache_layer == nullptr) {
         return;
     }
     const size_t local_kv_dim = key_buf.shape()[1];
     const size_t start_pos = cache_layer->current_len;
+    ensure_kv_capacity(cache_layer, start_pos + seq_len, local_kv_dim);
     // FP16 store (halves attention read bandwidth); fp32 copy kept for the
     // CUDA path and any non-fp16 consumer.
     for (size_t i = 0; i < seq_len; ++i) {

@@ -824,6 +824,28 @@ void Server::setup_routes()
         if (max_new > kMaxNewTokens) {
             max_new = kMaxNewTokens;
         }
+
+        // Reject prompts that exceed the model's context window: without this
+        // guard a huge prompt grows the KV cache (and prefill time) without
+        // bound. The KV cache itself grows on demand, so this is a UX/DoS
+        // guard, not a memory-safety one.
+        {
+            std::lock_guard<std::mutex> lock(inference_mutex_);
+            if (LoadedModel *lm = find_model(requested_model)) {
+                if (lm->llama && lm->tokenizer &&
+                    prompt_exceeds_context(*lm->llama, *lm->tokenizer, prompt, max_new)) {
+                    res.status = 400;
+                    res.set_content(
+                        nlohmann::json{{"error", {{"message",
+                                                   "prompt + max_tokens exceeds the model context window"},
+                                               {"type", "invalid_request_error"}}}}
+                            .dump(),
+                        "application/json");
+                    return;
+                }
+            }
+        }
+
         const bool stream = body.value("stream", false);
         const std::string req_id = "chatcmpl-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 
@@ -939,12 +961,23 @@ void Server::setup_routes()
         }
         {
             std::lock_guard<std::mutex> lock(inference_mutex_);
-            if (!find_model(requested_model) &&
-                !(models_.empty() && requested_model == model_name_)) {
+            LoadedModel *lm = find_model(requested_model);
+            if (!lm && !(models_.empty() && requested_model == model_name_)) {
                 res.status = 404;
                 res.set_content(
                     nlohmann::json{{"error", {{"message", "model not found: " + requested_model},
                                                {"type", "invalid_request_error"}}}}
+                        .dump(),
+                    "application/json");
+                return;
+            }
+            if (lm && lm->llama && lm->tokenizer &&
+                prompt_exceeds_context(*lm->llama, *lm->tokenizer, prompt, max_new)) {
+                res.status = 400;
+                res.set_content(
+                    nlohmann::json{{"error", {{"message",
+                                               "prompt + max_tokens exceeds the model context window"},
+                                           {"type", "invalid_request_error"}}}}
                         .dump(),
                     "application/json");
                 return;

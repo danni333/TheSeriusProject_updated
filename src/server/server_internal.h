@@ -31,6 +31,15 @@ struct GenerationResult
 std::string extract_user_prompt(const nlohmann::json &body);
 std::string build_chat_prompt(const nlohmann::json &body, bool chatml);
 
+/// True when tokenized `prompt` + `max_new` exceeds the model's declared
+/// context window (max_position_embeddings). False when the window is
+/// unknown (0). Lets routes reject oversized requests with a 400 instead of
+/// growing the KV cache without bound.
+bool prompt_exceeds_context(const model::LLaMAModel &model,
+                            BPETokenizer &tokenizer,
+                            const std::string &prompt,
+                            size_t max_new);
+
 core::Tensor prefill_llama(const model::LLaMAModel &model,
                            const std::vector<TokenId> &ids,
                            infer::KVCache &cache,

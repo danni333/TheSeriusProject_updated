@@ -224,6 +224,20 @@ core::Tensor prefill_llama(const model::LLaMAModel &model,
     return last_logits;
 }
 
+bool prompt_exceeds_context(const model::LLaMAModel &model,
+                            BPETokenizer &tokenizer,
+                            const std::string &prompt,
+                            size_t max_new)
+{
+    const size_t ctx = model.config().max_position_embeddings;
+    if (ctx == 0) {
+        return false;
+    }
+    // +1 accounts for the BOS id generate_*/stream_* prepend when missing.
+    const size_t prompt_tokens = tokenizer.encode(prompt).size() + 1;
+    return prompt_tokens + max_new > ctx;
+}
+
 /// Build the full prompt for /v1/chat/completions from the messages array.
 /// With chatml=true the whole transcript is rendered as ChatML turns
 /// (<|im_start|>role ... <|im_end|>) ending with an open assistant turn, so
