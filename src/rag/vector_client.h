@@ -34,7 +34,8 @@ public:
         size_t dimension = 768;  // Embedding dimension
     };
 
-    explicit VectorDBClient(const Config& config = Config{});
+    VectorDBClient();
+    explicit VectorDBClient(const Config& config);
     ~VectorDBClient();
 
     /// Search for similar documents.

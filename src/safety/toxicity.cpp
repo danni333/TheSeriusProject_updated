@@ -8,6 +8,11 @@
 namespace serius {
 namespace safety {
 
+ToxicityClassifier::ToxicityClassifier()
+    : ToxicityClassifier(Config{})
+{
+}
+
 ToxicityClassifier::ToxicityClassifier(const Config& config)
     : config_(config), threshold_(config.threshold)
 {

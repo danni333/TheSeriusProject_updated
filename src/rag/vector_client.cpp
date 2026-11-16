@@ -6,6 +6,11 @@
 namespace serius {
 namespace rag {
 
+VectorDBClient::VectorDBClient()
+    : VectorDBClient(Config{})
+{
+}
+
 VectorDBClient::VectorDBClient(const Config& config)
     : config_(config)
 {

@@ -5,6 +5,11 @@
 namespace serius {
 namespace rag {
 
+RAGRetriever::RAGRetriever()
+    : RAGRetriever(Config{})
+{
+}
+
 RAGRetriever::RAGRetriever(const Config& config)
     : config_(config), vector_db_(VectorDBClient::Config{.use_local = true, .dimension = config.embedding_dim})
 {

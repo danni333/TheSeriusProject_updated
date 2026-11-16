@@ -19,7 +19,8 @@ public:
         bool remove_urls = false;
     };
 
-    explicit Sanitizer(const Config& config = Config{});
+    Sanitizer();
+    explicit Sanitizer(const Config& config);
     ~Sanitizer() = default;
 
     /// Sanitize the output text.

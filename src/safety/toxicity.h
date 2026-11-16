@@ -22,7 +22,8 @@ public:
         float threshold = 0.8f;
     };
 
-    explicit ToxicityClassifier(const Config& config = Config{});
+    ToxicityClassifier();
+    explicit ToxicityClassifier(const Config& config);
     ~ToxicityClassifier();
 
     /// Score the toxicity of a token sequence.

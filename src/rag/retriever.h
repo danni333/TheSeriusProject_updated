@@ -23,7 +23,8 @@ public:
         std::string system_prompt = "Rispondi basandoti SOLO sui documenti forniti. Cita le fonti.";
     };
 
-    explicit RAGRetriever(const Config& config = Config{});
+    RAGRetriever();
+    explicit RAGRetriever(const Config& config);
     ~RAGRetriever();
 
     /// Add a document to the knowledge base.

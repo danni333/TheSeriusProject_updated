@@ -5,6 +5,11 @@
 namespace serius {
 namespace safety {
 
+Sanitizer::Sanitizer()
+    : Sanitizer(Config{})
+{
+}
+
 Sanitizer::Sanitizer(const Config& config)
     : config_(config)
 {
