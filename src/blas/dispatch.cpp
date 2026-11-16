@@ -147,7 +147,10 @@ void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
     bool any_on_gpu = (A.is_gpu_dirty() || B.is_gpu_dirty() || C.is_gpu_dirty() || A.location() == Tensor::DataLocation::GPU);
     size_t problem_size = A.shape()[0] * B.shape()[1] * A.shape()[1];
     
-    if (backend && backend->is_available() && (problem_size > 1000000 || any_on_gpu)) {
+    // Non-Float32 dtypes have no CPU kernel: always prefer CUDA when the
+    // backend is available (same rule as matvec/batched_matmul below).
+    if (backend && backend->is_available() &&
+        (problem_size > 1000000 || any_on_gpu || A.dtype() != hal::DType::Float32)) {
         A.syncToDevice();
         B.syncToDevice();
         C.syncToDevice();

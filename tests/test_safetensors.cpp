@@ -11,19 +11,21 @@ using namespace serius;
 using namespace serius::core;
 using namespace serius::io;
 
-namespace {
-const std::string TEST_FILE = "test_output.safetensors";
-
-void cleanup()
-{
-    std::filesystem::remove(TEST_FILE);
-}
-}  // namespace
-
 class SafetensorsTest : public ::testing::Test
 {
    protected:
-    void TearDown() override { cleanup(); }
+    // Unique file per test case: ctest runs each TEST_F as a separate
+    // parallel test, and a shared filename races on create/remove.
+    std::string test_file_;
+
+    void SetUp() override
+    {
+        const auto *info = ::testing::UnitTest::GetInstance()->current_test_info();
+        test_file_ = std::string("test_output_") + info->name() + ".safetensors";
+        std::filesystem::remove(test_file_);
+    }
+
+    void TearDown() override { std::filesystem::remove(test_file_); }
 };
 
 TEST_F(SafetensorsTest, WriteAndReadSingleTensor)
@@ -36,10 +38,10 @@ TEST_F(SafetensorsTest, WriteAndReadSingleTensor)
 
     SafetensorsWriter writer;
     writer.add_tensor("weight", original);
-    writer.save(TEST_FILE);
+    writer.save(test_file_);
 
     // Read
-    SafetensorsReader reader(TEST_FILE);
+    SafetensorsReader reader(test_file_);
     ASSERT_EQ(reader.num_tensors(), 1u);
     ASSERT_TRUE(reader.has_tensor("weight"));
     ASSERT_FALSE(reader.has_tensor("nonexistent"));
@@ -70,9 +72,9 @@ TEST_F(SafetensorsTest, WriteAndReadMultipleTensors)
     SafetensorsWriter writer;
     writer.add_tensor("layer1.weight", w1);
     writer.add_tensor("layer2.weight", w2);
-    writer.save(TEST_FILE);
+    writer.save(test_file_);
 
-    SafetensorsReader reader(TEST_FILE);
+    SafetensorsReader reader(test_file_);
     ASSERT_EQ(reader.num_tensors(), 2u);
 
     Tensor r1 = reader.get_tensor("layer1.weight");
@@ -96,9 +98,9 @@ TEST_F(SafetensorsTest, Metadata)
     writer.add_tensor("data", t);
     writer.add_metadata("format", "serius");
     writer.add_metadata("version", "1.0");
-    writer.save(TEST_FILE);
+    writer.save(test_file_);
 
-    SafetensorsReader reader(TEST_FILE);
+    SafetensorsReader reader(test_file_);
     auto &meta = reader.metadata();
     EXPECT_EQ(meta.at("format"), "serius");
     EXPECT_EQ(meta.at("version"), "1.0");
@@ -114,9 +116,9 @@ TEST_F(SafetensorsTest, RoundTripPreservesData)
 
     SafetensorsWriter writer;
     writer.add_tensor("test", original);
-    writer.save(TEST_FILE);
+    writer.save(test_file_);
 
-    SafetensorsReader reader(TEST_FILE);
+    SafetensorsReader reader(test_file_);
     Tensor loaded = reader.get_tensor("test");
 
     // Bit-exact comparison
@@ -131,9 +133,9 @@ TEST_F(SafetensorsTest, EmptyTensorShape)
 
     SafetensorsWriter writer;
     writer.add_tensor("scalar", t);
-    writer.save(TEST_FILE);
+    writer.save(test_file_);
 
-    SafetensorsReader reader(TEST_FILE);
+    SafetensorsReader reader(test_file_);
     Tensor loaded = reader.get_tensor("scalar");
     EXPECT_EQ(loaded.size(), 1u);
     EXPECT_FLOAT_EQ(loaded.data()[0], 99.0f);
@@ -146,9 +148,9 @@ TEST_F(SafetensorsTest, LargerTensor)
 
     SafetensorsWriter writer;
     writer.add_tensor("big", t);
-    writer.save(TEST_FILE);
+    writer.save(test_file_);
 
-    SafetensorsReader reader(TEST_FILE);
+    SafetensorsReader reader(test_file_);
     Tensor loaded = reader.get_tensor("big");
     ASSERT_EQ(loaded.size(), t.size());
     EXPECT_EQ(std::memcmp(loaded.data(), t.data(), t.size() * sizeof(float)), 0);
