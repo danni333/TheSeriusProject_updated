@@ -28,10 +28,15 @@ namespace blas {
 
 namespace {
 
-// Portable non-empty env check (getenv_s is MSVC-only).
+// Non-empty env check: getenv_s on MSVC, getenv elsewhere.
 bool env_nonempty(const char *name) {
+#if defined(_MSC_VER)
+    size_t n = 0;
+    return getenv_s(&n, nullptr, 0, name) == 0 && n > 0;
+#else
     const char *v = std::getenv(name);
     return v != nullptr && v[0] != '\0';
+#endif
 }
 
 cublasHandle_t g_cublas_handle = nullptr;
