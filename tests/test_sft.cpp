@@ -145,7 +145,7 @@ TEST(SFTTrainer, ConvergenceOnInstructionPairs)
     trainer_cfg.max_steps = 80;
     trainer_cfg.learning_rate = 0.01f;
     trainer_cfg.epochs = 80;               // 1 sample/epoch → 80 steps total
-    trainer_cfg.grad_clip = 0.0f;          // let gradients flow unclipped
+    trainer_cfg.grad_clip = 1.0f;          // clip keeps lr=0.01 stable across compilers
     trainer_cfg.verbose = true;
     trainer_cfg.log_interval = 10;
     finetune::SFTTrainer trainer(model, optimizer, trainer_cfg);
