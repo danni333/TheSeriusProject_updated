@@ -41,8 +41,9 @@ class NomicBertEmbedder
     /// Load weights from a tensor map produced by io::load_all_tensors()
     /// (keys like "token_embd.weight", "blk.N.attn_qkv.weight", ...).
     /// Returns false if required tensors are missing.
+    bool load(const std::unordered_map<std::string, core::Tensor> &tensors);
     bool load(const std::unordered_map<std::string, core::Tensor> &tensors,
-              const Config &cfg = {});
+              const Config &cfg);
 
     /// Vocabulary token strings indexed by token id (from GGUF tokenizer
     /// metadata). Required before tokenize()/embed() produce real ids.

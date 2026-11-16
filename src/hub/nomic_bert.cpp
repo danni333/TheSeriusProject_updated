@@ -96,6 +96,11 @@ bool NomicBertEmbedder::get_tensor_transposed(
     return true;
 }
 
+bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor> &tensors)
+{
+    return load(tensors, Config{});
+}
+
 bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor> &tensors,
                              const Config &cfg)
 {
