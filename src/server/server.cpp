@@ -659,6 +659,15 @@ void Server::setup_routes()
         // HuggingFace Hub. Runs outside any lock: network + disk only.
         if (path.rfind("hf://", 0) == 0) {
             const std::string repo_id = path.substr(5);
+            if (!hub::ModelDownloader::is_valid_repo_id(repo_id)) {
+                res.status = 400;
+                res.set_content(
+                    nlohmann::json{{"error", {{"message", "invalid HuggingFace repo id (expected owner/name)"},
+                                               {"type", "invalid_request_error"}}}}
+                        .dump(),
+                    "application/json");
+                return;
+            }
             hub::ModelDownloader dl;
             std::string local_path, chosen_name;
             if (!dl.resolve_hf_gguf(repo_id, quant, local_path, chosen_name)) {

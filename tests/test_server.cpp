@@ -119,6 +119,30 @@ TEST(ServerTest, ModelsEndpoint)
     server_thread.join();
 }
 
+TEST(ServerTest, ModelsLoadRejectsMalformedHfRepoId)
+{
+    int port = find_free_port();
+    ASSERT_GT(port, 0);
+
+    serius::server::Server server(static_cast<uint16_t>(port));
+    std::thread server_thread([&] { server.run(); });
+
+    httplib::Client client("127.0.0.1", port);
+    wait_for_server(client);
+
+    const std::vector<std::string> payloads = {"hf://x\"; id > /tmp/p; echo \"", "hf://x/$(id)",
+                                               "hf://x/`id`", "hf://../etc"};
+    for (const auto &path : payloads) {
+        auto res = client.Post("/v1/models/load", nlohmann::json{{"path", path}}.dump(), "application/json");
+        ASSERT_TRUE(res);
+        EXPECT_EQ(res->status, 400) << path;
+        EXPECT_NE(res->body.find("invalid HuggingFace repo id"), std::string::npos) << path;
+    }
+
+    server.stop();
+    server_thread.join();
+}
+
 TEST(ServerTest, LiveLLaMAChatCompletion)
 {
     int port = find_free_port();

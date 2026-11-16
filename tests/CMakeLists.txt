@@ -244,6 +244,9 @@ target_link_libraries(test_stress PRIVATE serius_core gtest_main)
 add_executable(test_hub_search test_hub_search.cpp)
 target_link_libraries(test_hub_search PRIVATE hub gtest_main)
 
+add_executable(test_hub_downloader test_hub_downloader.cpp)
+target_link_libraries(test_hub_downloader PRIVATE serius_core gtest_main)
+
 add_executable(test_hub_server test_hub_server.cpp)
 target_link_libraries(test_hub_server PRIVATE hub gtest_main)
 
@@ -338,4 +341,5 @@ gtest_discover_tests(test_knowledge)
 gtest_discover_tests(test_bench)
 gtest_discover_tests(test_stress)
 gtest_discover_tests(test_hub_search)
+gtest_discover_tests(test_hub_downloader)
 gtest_discover_tests(test_hub_server)

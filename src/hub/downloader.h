@@ -65,6 +65,14 @@ class ModelDownloader
                          std::string &local_path, std::string &chosen_name,
                          const std::string &token = "");
 
+    /// True if `repo_id` is a well-formed HuggingFace "owner/name" id
+    /// (alphanumeric first char, then [A-Za-z0-9._-], no "..").
+    static bool is_valid_repo_id(const std::string &repo_id);
+
+    /// True if `path` is a relative repo file path with no "."/".." segments,
+    /// backslashes, colons or control characters.
+    static bool is_safe_repo_path(const std::string &path);
+
    private:
     int timeout_seconds_ = 300;
 
