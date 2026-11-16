@@ -167,9 +167,18 @@ Encoder `nomic-bert` funzionante (commit `a62e1c8`). Stato attuale:
 - **Rimasto per "record"**: batching multi-testo in un solo GEMM,
   pesi GPU persistenti (evitare H2D per chiamata), eventualmente
   kernel attention su GPU.
-- **Test su corpus reale**: embeddare la repo stessa (file markdown/docs)
-  e verificare che la ricerca semantica restituisca documenti rilevanti
-  (es. query "quantization" → file quant, "http server" → server docs).
+- **Test su corpus reale** (2026-11-16): `HubSearch.EmbeddingManagerNomicRepoCorpus`
+  embedd-a 9 doc reali della repo (chunk ~480 char, ~12 chunk/doc, score
+  0.7*cos_top2 + 0.3*jaccard come `semantic_search`). Risultato misurato:
+  query topiche su doc in prosa ranking corretto (gpu-setup #1, huggingface
+  #2), ma doc reference pesanti di codice/tabelle (api-reference, cli-reference,
+  supported-models) non entrano in top-3 — i chunk JSON/command/simboli
+  degradano la rappresentazione WordPiece+mean-pool e doc keyword-dense
+  vincono per overlap lessicale. **Bug trovato e fixato**: `Tensor::free_data`
+  non liberava `data_gpu_` per tensori non-owner → leak VRAM (CUDA OOM dopo
+  ~3k GEMM); ora `data_gpu_` è sempre tensor-owned e liberato sempre.
+  Follow-up qualità: retrieval ibrido BM25-first, chunking semantic-aware,
+  o modello di embedding più adatto a codice.
 
 ## Criteri di "fatto"
 

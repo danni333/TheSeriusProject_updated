@@ -286,17 +286,18 @@ void Tensor::free_data()
             data_ = nullptr;
         }
 
-        if (data_gpu_ != nullptr) {
-            hal::IBackend *backend = hal::get_gpu_backend();
-            if (backend != nullptr) {
-                backend->free(data_gpu_);
-                data_gpu_ = nullptr;
-            }
+    }
+    // data_gpu_ is always tensor-owned (allocated by syncToDevice/copy ctor)
+    // regardless of host ownership — free it even for non-owning views.
+    if (data_gpu_ != nullptr) {
+        hal::IBackend *backend = hal::get_gpu_backend();
+        if (backend != nullptr) {
+            backend->free(data_gpu_);
         }
+        data_gpu_ = nullptr;
     }
     // For non-owners, we just detach
     data_ = nullptr;
-    data_gpu_ = nullptr;
     owns_data_ = false;
 }
 
