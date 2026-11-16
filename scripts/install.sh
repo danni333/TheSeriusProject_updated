@@ -6,7 +6,7 @@ set -e
 
 VERSION="${VERSION:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
-REPO="your-org/serius"
+REPO="danni333/TheSeriusProject_updated"
 
 echo "Installing Serius LLM Engine..."
 
@@ -58,24 +58,18 @@ curl -fsSL "$DOWNLOAD_URL" -o serius.tar.gz
 # Extract
 tar xzf serius.tar.gz
 
-# Install
-if [ "$OS" = "Darwin" ]; then
-    # macOS: may need sudo
-    if [ ! -d "$INSTALL_DIR" ]; then
-        sudo mkdir -p "$INSTALL_DIR"
-    fi
-    sudo cp serius "$INSTALL_DIR/"
+# Install binary and web UI (server resolves ui/ next to the executable)
+if [ -d "$INSTALL_DIR" ] && [ -w "$INSTALL_DIR" ]; then
+    cp serius "$INSTALL_DIR/"
+    [ -d ui ] && cp -r ui "$INSTALL_DIR/ui"
 else
-    # Linux
-    if [ -w "$INSTALL_DIR" ]; then
-        cp serius "$INSTALL_DIR/"
-    else
-        sudo cp serius "$INSTALL_DIR/"
-    fi
+    sudo mkdir -p "$INSTALL_DIR"
+    sudo cp serius "$INSTALL_DIR/"
+    [ -d ui ] && sudo cp -r ui "$INSTALL_DIR/ui"
 fi
 
 # Make executable
-chmod +x "$INSTALL_DIR/serius"
+chmod +x "$INSTALL_DIR/serius" 2>/dev/null || sudo chmod +x "$INSTALL_DIR/serius"
 
 # Cleanup
 cd /

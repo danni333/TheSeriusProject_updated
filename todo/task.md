@@ -151,7 +151,7 @@
 
 ### 🏁 Obiettivo Competitivo (Fase 73)
 
-- [ ] **Fase 73** — [Inferenza Veloce](fase73_inferenza_rapida.md) (Pesi quantizzati a runtime + kernel GEMV dequant-on-the-fly, fusioni QKV/gate_up, threading persistente; target ≥1.2× llama.cpp in tok/s)
+- [x] **Fase 73** — [Inferenza Veloce](fase73_inferenza_rapida.md) (Pesi quantizzati a runtime + kernel GEMV dequant-on-the-fly, fusioni QKV/gate_up, threading persistente; target ≥1.2× llama.cpp in tok/s) — **RAGGIUNTA**: ~183-187 tok/s vs llama.cpp ~127-133 (~1.4-1.5×) su i9-11900H, KV cache FP16, vedi "RISULTATO FINALE" nel doc di fase
 
 ---
 

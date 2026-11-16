@@ -4,7 +4,7 @@ $ErrorActionPreference = "Stop"
 
 $Version = if ($env:VERSION) { $env:VERSION } else { "latest" }
 $InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR } else { "$env:USERPROFILE\.serius\bin" }
-$Repo = "your-org/serius"
+$Repo = "danni333/TheSeriusProject_updated"
 
 Write-Host "Installing Serius LLM Engine..."
 

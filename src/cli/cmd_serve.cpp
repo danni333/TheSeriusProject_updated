@@ -9,8 +9,67 @@
 #include <iostream>
 #include <string>
 
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#else
+#include <unistd.h>
+#endif
+
 namespace serius {
 namespace cli {
+
+namespace {
+
+/// Directory containing the running executable (empty on failure).
+std::filesystem::path executable_dir()
+{
+#if defined(_WIN32)
+    char buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameA(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        return {};
+    }
+    return std::filesystem::path(buf).parent_path();
+#elif defined(__APPLE__)
+    char buf[1024];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) != 0) {
+        return {};
+    }
+    return std::filesystem::weakly_canonical(std::filesystem::path(buf)).parent_path();
+#else
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) {
+        return {};
+    }
+    buf[n] = '\0';
+    return std::filesystem::path(buf).parent_path();
+#endif
+}
+
+/// Resolve the web UI directory: explicit --ui wins; otherwise "ui" next to
+/// the current directory, falling back to "ui" next to the executable so
+/// packaged installs (binary + ui/ side by side) work from any CWD.
+std::string resolve_ui_dir(const std::string &requested)
+{
+    if (!requested.empty()) {
+        return requested;
+    }
+    const std::filesystem::path cwd_ui = std::filesystem::current_path() / "ui";
+    if (std::filesystem::exists(cwd_ui / "index.html")) {
+        return "ui";
+    }
+    const std::filesystem::path exe_ui = executable_dir() / "ui";
+    if (std::filesystem::exists(exe_ui / "index.html")) {
+        return exe_ui.string();
+    }
+    return "ui";
+}
+
+}  // namespace
 
 int cmd_serve(int argc, char **argv)
 {
@@ -92,10 +151,7 @@ int cmd_serve(int argc, char **argv)
     config.default_temperature = parser.get_float("temperature", defaults::kTemperature);
     config.default_top_k = parser.get_int("top-k", defaults::kTopK);
     config.default_top_p = parser.get_float("top-p", defaults::kTopP);
-    const std::string ui_dir = parser.get("ui");
-    if (!ui_dir.empty()) {
-        config.ui_dir = ui_dir;
-    }
+    config.ui_dir = resolve_ui_dir(parser.get("ui"));
     if (gpu == "cpu") {
         config.gpu_mode = server::ServerConfig::GpuMode::kCpu;
         std::cout << "[Serius] CPU inference (--gpu cpu)\n";
