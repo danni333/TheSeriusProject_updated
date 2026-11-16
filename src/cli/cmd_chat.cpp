@@ -298,8 +298,8 @@ int cmd_chat(int argc, char **argv)
 
             std::vector<TokenId> ids = tokenizer.encode(prompt_text);
             {
-                size_t _n = 0;
-                if (getenv_s(&_n, nullptr, 0, "SERIUS_PROF") == 0 && _n > 0) {
+                const char *_prof = std::getenv("SERIUS_PROF");
+                if (_prof != nullptr && _prof[0] != '\0') {
                     std::fprintf(stderr, "[chatprof] prompt_tokens=%zu\n", ids.size());
                 }
             }
@@ -379,10 +379,8 @@ int cmd_chat(int argc, char **argv)
             }
 
             size_t tokens_generated = 0;
-            const bool chat_prof = [] {
-                size_t n = 0;
-                return getenv_s(&n, nullptr, 0, "SERIUS_PROF") == 0 && n > 0;
-            }();
+            const char *_prof_env = std::getenv("SERIUS_PROF");
+            const bool chat_prof = _prof_env != nullptr && _prof_env[0] != '\0';
             double t_dec = 0, t_fwd = 0, t_smp = 0, t_out = 0;
             auto now_s = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
             for (int gen = 0; gen < max_new_tokens; ++gen) {

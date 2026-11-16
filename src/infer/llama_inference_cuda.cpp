@@ -44,6 +44,12 @@ namespace infer {
 
 using core::Tensor;
 
+// Portable non-empty env check (getenv_s is MSVC-only).
+static bool env_nonempty(const char *name) {
+    const char *v = std::getenv(name);
+    return v != nullptr && v[0] != '\0';
+}
+
 [[maybe_unused]] static size_t get_dtype_size(hal::DType dtype) {
     switch (dtype) {
         case hal::DType::Float32:
@@ -79,14 +85,8 @@ struct FusedPrefillW {
 
 static const FusedPrefillW *fused_prefill_weights(const model::LLaMAModel &model,
                                                   hal::DType dtype) {
-    static const bool no_quant = [] {
-        size_t n = 0;
-        return getenv_s(&n, nullptr, 0, "SERIUS_NO_QUANT") == 0 && n > 0;
-    }();
-    static const bool no_fuse = [] {
-        size_t n = 0;
-        return getenv_s(&n, nullptr, 0, "SERIUS_NO_FUSE") == 0 && n > 0;
-    }();
+    static const bool no_quant = env_nonempty("SERIUS_NO_QUANT");
+    static const bool no_fuse = env_nonempty("SERIUS_NO_FUSE");
     if (no_quant || no_fuse || dtype != hal::DType::Float16) return nullptr;
 
     const auto &cfg = model.config();
@@ -168,10 +168,7 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
     hal::DType dtype = model.embed_tokens()->data.dtype();
     const hal::DType stream_dtype = hal::DType::Float32;  // FP32 residual stream
 
-    const bool prof_p = [] {
-        size_t n = 0;
-        return getenv_s(&n, nullptr, 0, "SERIUS_PROF") == 0 && n > 0;
-    }();
+    const bool prof_p = env_nonempty("SERIUS_PROF");
     auto pt_now = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
     const double pt0 = prof_p ? pt_now() : 0.0;
 
@@ -644,8 +641,7 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
                                              size_t pos, KVCache *cache) {
     if (cache == nullptr || pos + 1 > 4096) return Tensor();
     {
-        size_t n = 0;
-        if (getenv_s(&n, nullptr, 0, "SERIUS_NO_GRAPH") == 0 && n > 0) return Tensor();
+        if (env_nonempty("SERIUS_NO_GRAPH")) return Tensor();
     }
     {
         const GraphDisabledKey &dk = graph_disabled();
@@ -761,10 +757,7 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
 #endif
 
 Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache) {
-    static const bool gpu_time = [] {
-        size_t len = 0;
-        return getenv_s(&len, nullptr, 0, "SERIUS_GPU_TIME") == 0 && len > 0;
-    }();
+    static const bool gpu_time = env_nonempty("SERIUS_GPU_TIME");
     cudaEvent_t ev0 = nullptr, ev1 = nullptr;
     if (gpu_time) { cudaEventCreate(&ev0); cudaEventCreate(&ev1); cudaEventRecord(ev0); }
     const auto &cfg = model.config();

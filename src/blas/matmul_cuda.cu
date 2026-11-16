@@ -27,6 +27,13 @@ namespace core {
 namespace blas {
 
 namespace {
+
+// Portable non-empty env check (getenv_s is MSVC-only).
+bool env_nonempty(const char *name) {
+    const char *v = std::getenv(name);
+    return v != nullptr && v[0] != '\0';
+}
+
 cublasHandle_t g_cublas_handle = nullptr;
 
 cublasHandle_t get_cublas_handle()
@@ -177,7 +184,7 @@ bool lt_gemm(const void *A, size_t lda, size_t sa, const void *B, size_t ldb, si
                                                         e->cLay, pref, 1, &res, &nres);
         cublasLtMatmulPreferenceDestroy(pref);
         if (hs != CUBLAS_STATUS_SUCCESS || nres < 1) {
-            static const bool lt_dbg2 = [] { size_t n = 0; return getenv_s(&n, nullptr, 0, "SERIUS_LT_DBG") == 0 && n > 0; }();
+            static const bool lt_dbg2 = env_nonempty("SERIUS_LT_DBG");
             if (lt_dbg2) fprintf(stderr, "[lt] heuristic failed hs=%d nres=%d m=%zu n=%zu k=%zu b=%zu\n",
                                  (int)hs, nres, m, n, k, batch);
             lt_entry_destroy(*e); cache.entries.pop_back(); return false;
@@ -193,7 +200,7 @@ bool lt_gemm(const void *A, size_t lda, size_t sa, const void *B, size_t ldb, si
     (void)key;
 
     const float alpha = 1.0f, beta = 0.0f;
-    static const bool lt_dbg = [] { size_t n = 0; return getenv_s(&n, nullptr, 0, "SERIUS_LT_DBG") == 0 && n > 0; }();
+    static const bool lt_dbg = env_nonempty("SERIUS_LT_DBG");
     cublasStatus_t st = cublasLtMatmul(cache.h, e->opDesc, &alpha, A, e->aLay, B, e->bLay, &beta,
                                      C, e->cLay, C, e->cLay, &e->heur.algo,
                                      e->ws, e->ws_size, stream);
@@ -267,12 +274,8 @@ void matmul_cuda(const void *A, const void *B, void *C, size_t M, size_t N, size
     // Row-major (M,N) = (M,K)@(K,N) maps to col-major (N,M) = (N,K)@(K,M),
     // i.e. operands are swapped with OP_N on both sides.
     const bool contiguous = (lda == K) && (ldb == N) && (ldc == N);
-    static const bool use_cublas = [] {
-        char buf[2];
-        size_t n = 0;
-        return !(getenv_s(&n, buf, sizeof(buf), "SERIUS_NO_CUBLAS") == 0 && n > 0);
-    }();
-    static const bool dbg = [] { size_t n = 0; return getenv_s(&n, nullptr, 0, "SERIUS_CUBLAS_DBG") == 0 && n > 0 ? 1 : 0; }();
+    static const bool use_cublas = !env_nonempty("SERIUS_NO_CUBLAS");
+    static const bool dbg = env_nonempty("SERIUS_CUBLAS_DBG");
     if (dbg && !(contiguous && use_cublas)) {
         fprintf(stderr, "[cublas] skip M=%zu N=%zu K=%zu lda=%zu ldb=%zu ldc=%zu contiguous=%d use=%d\n",
                 M, N, K, lda, ldb, ldc, (int)contiguous, (int)use_cublas);
@@ -282,7 +285,7 @@ void matmul_cuda(const void *A, const void *B, void *C, size_t M, size_t N, size
         // cuBLASLt with cached heuristic: ~10us dispatch vs ~300us for GemmEx.
         // (FP32 stays on GemmEx: the Lt path is only exercised by the FP16/BF16
         // prefill and showed wrong results for CUDA_R_32F.)
-        static const bool no_lt = [] { size_t n = 0; return getenv_s(&n, nullptr, 0, "SERIUS_NO_CUBLASLT") == 0 && n > 0; }();
+        static const bool no_lt = env_nonempty("SERIUS_NO_CUBLASLT");
         if (!no_lt && ty != CUDA_R_32F &&
             lt_gemm(B, (size_t)ldb, 0, A, (size_t)lda, 0, C, (size_t)ldc, 0,
                     (size_t)N, (size_t)M, (size_t)K, 1, ty, cu_stream)) {
@@ -299,7 +302,7 @@ void matmul_cuda(const void *A, const void *B, void *C, size_t M, size_t N, size
             if (st == CUBLAS_STATUS_SUCCESS) {
                 return;
             }
-            static int dbg = [] { size_t n = 0; return getenv_s(&n, nullptr, 0, "SERIUS_CUBLAS_DBG") == 0 && n > 0 ? 1 : 0; }();
+            static int dbg = env_nonempty("SERIUS_CUBLAS_DBG") ? 1 : 0;
             if (dbg) {
                 fprintf(stderr, "[cublas] GemmEx failed st=%d M=%zu N=%zu K=%zu lda=%zu ldb=%zu ldc=%zu\n",
                         (int)st, M, N, K, lda, ldb, ldc);
@@ -339,7 +342,7 @@ void batched_matmul_cuda(const void *A, const void *B, void *C, size_t batch_siz
         const cudaDataType ty = cublas_dtype(dtype);
         // cuBLASLt strided-batch with cached heuristic: one dispatch per call
         // instead of the ~ms-scale heuristic inside GemmStridedBatchedEx.
-        static const bool no_lt_b = [] { size_t n = 0; return getenv_s(&n, nullptr, 0, "SERIUS_NO_CUBLASLT") == 0 && n > 0; }();
+        static const bool no_lt_b = env_nonempty("SERIUS_NO_CUBLASLT");
         if (!no_lt_b && ty != CUDA_R_32F &&
             lt_gemm(B, ldb, stride_b, A, lda, stride_a, C, ldc, stride_c,
                     N, M, K, batch_size, ty, cu_stream)) {
