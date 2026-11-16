@@ -13,7 +13,7 @@ void FederatedAggregator::add_update(size_t user_id, const core::Tensor &delta_n
 core::Tensor FederatedAggregator::aggregate()
 {
     if (updates_.empty()) {
-        return core::Tensor({});
+        return core::Tensor();
     }
 
     auto it = updates_.begin();
