@@ -19,6 +19,7 @@ enum class QuantType : uint8_t
     Q4_1 = 4,   // ggml type 3: fp16 d,m + 32 x 4-bit, w = q*d + m
     Q8_0 = 5,   // ggml type 8: fp16 scale + 32 x int8, w = q*d
     Q4_K = 6,   // ggml type 12: 256 weights / 144B superblock, w = d*sc*nib - dmin*m
+    Q5_K = 7,   // ggml type 13: 256 weights / 176B superblock, w = d*sc*q5 - dmin*m
 };
 
 /// A weight matrix kept in packed quantized form for fast M==1 inference.
@@ -69,6 +70,7 @@ struct QuantWeight
     size_t row_bytes() const
     {
         if (type == QuantType::Q4_K) { return (in / 256) * 144; }
+        if (type == QuantType::Q5_K) { return (in / 256) * 176; }
         return blocks_per_row() * block_bytes(type);
     }
 };

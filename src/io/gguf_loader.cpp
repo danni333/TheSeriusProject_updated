@@ -941,6 +941,15 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
             std::vector<uint8_t> packed(sb_count * 176);
             f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
             dequantize_q5_k(packed.data(), numel, values.data());
+            // Native Q5_K: raw superblocks feed the GEMV kernels directly.
+            if (quant_out != nullptr && shape.size() == 2 && shape[0] % 256 == 0) {
+                quant::QuantWeight qw;
+                qw.type = quant::QuantType::Q5_K;
+                qw.in = shape[0];
+                qw.out = shape[1];
+                qw.bytes = std::move(packed);
+                if (qw.valid()) { quant_out->emplace(info.name, std::move(qw)); }
+            }
         } else if (info.dtype == GGMLType::Q6_K) {
             if (numel % 256 != 0) { continue; }
             const size_t sb_count = numel / 256;

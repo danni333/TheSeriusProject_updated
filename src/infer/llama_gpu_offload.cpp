@@ -201,6 +201,10 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model)
         hal::IBackend *be = hal::get_gpu_backend();
         auto upload_qw = [be](quant::QuantWeight &qw) {
             if (!qw.valid() || qw.gpu_data != nullptr) { return; }
+            // No CUDA GEMV kernel for Q5_K yet: leave gpu_data null so the
+            // decode path falls back to the FP32 weights instead of reading
+            // an unsupported packed layout.
+            if (qw.type == quant::QuantType::Q5_K) { return; }
             // Repack into the aligned layout the vectorized kernel reads.
             quant::repack_quant_for_gpu(qw);
             const std::vector<uint8_t> &src = qw.dev_stride ? qw.dev_bytes : qw.bytes;

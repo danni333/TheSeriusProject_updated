@@ -2,13 +2,24 @@
 
 #include "../quant/quant_weight.h"
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
-#if defined(_MSC_VER)
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
-#elif defined(__GNUC__) || defined(__clang__)
-#include <immintrin.h>
+#endif
+
+#if defined(_M_ARM64)
+#include <arm64_neon.h>
+#elif defined(__ARM_NEON) || defined(__aarch64__)
+#include <arm_neon.h>
+#endif
+
+// x86 SIMD paths require an x86 target; MSVC defines _MSC_VER on ARM64 too,
+// where immintrin.h and AVX intrinsics are unavailable.
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X64) || defined(_M_IX86)
+#define SERIUS_SIMD_X86 1
 #endif
 
 namespace serius {
@@ -36,6 +47,8 @@ inline uint16_t load_fp16(const uint8_t *p)
     return static_cast<uint16_t>(p[0] | (p[1] << 8));
 }
 
+void q4k_scale_min(const uint8_t *sc, int j, int &d6, int &m6);
+
 // Scalar dequant+dot helpers for row tails (in % 32 != 0).
 // Element e of a block: e<16 -> low nibble of qs[e]; e>=16 -> high nibble of qs[e-16].
 inline float q40_elem(const uint8_t *blk, size_t e, float d)
@@ -57,7 +70,7 @@ inline float q80_elem(const uint8_t *blk, size_t e, float d)
     return static_cast<int>(static_cast<int8_t>(blk[2 + e])) * d;
 }
 
-#if defined(__AVX512F__) || defined(_MSC_VER)
+#if defined(__AVX512F__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
 
 // ---------------- AVX-512 kernels ----------------
 
@@ -290,7 +303,7 @@ void q80_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
 
 #endif  // AVX-512
 
-#if defined(__AVX2__) || defined(_MSC_VER)
+#if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
 
 // ---------------- AVX2 kernels ----------------
 
@@ -429,6 +442,157 @@ void q80_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
     }
 }
 
+// Expand 32 packed bytes into four __m256i of 8 i32 lanes each
+// (weights 0..31 in order). Byte j maps to output j.
+inline void bytes32_to_i32x8(const uint8_t *p, __m256i out[4])
+{
+    const __m256i b0 = _mm256_cvtepu8_epi16(_mm_loadu_si128(reinterpret_cast<const __m128i *>(p)));
+    const __m256i b1 = _mm256_cvtepu8_epi16(_mm_loadu_si128(reinterpret_cast<const __m128i *>(p + 16)));
+    out[0] = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(b0));
+    out[1] = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(b0, 1));
+    out[2] = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(b1));
+    out[3] = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(b1, 1));
+}
+
+// Load 32 bytes, keep the low nibble of each (or the high nibble when
+// `high`), and expand to four __m256i of 8 i32 lanes (bytes 0..31 in order).
+inline void nibbles32_to_i32x8(const uint8_t *p, bool high, __m256i out[4])
+{
+    __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(p));
+    if (high) { v = _mm256_srli_epi16(v, 4); }
+    v = _mm256_and_si256(v, _mm256_set1_epi8(0x0F));
+    const __m256i a = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(v));
+    const __m256i b = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(v, 1));
+    out[0] = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(a));
+    out[1] = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(a, 1));
+    out[2] = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(b));
+    out[3] = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(b, 1));
+}
+
+// Q4_K: 256 weights / 144B superblock, 8 sub-blocks of 32.
+// w = d*sc*nib - dmin*m per sub-block; nib from low (even sb) or high (odd sb)
+// nibble of qs[(sb/2)*32 + l].
+void q4k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    const size_t nsb = in / 256;
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
+
+    size_t k = 0;
+    for (size_t s = 0; s < nsb; ++s, k += 256) {
+        const uint8_t *blk = row + s * 144;
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        const uint8_t *sc = blk + 4;
+        const uint8_t *qs = blk + 16;
+        for (int sb = 0; sb < 8; ++sb) {
+            int d6, m6;
+            q4k_scale_min(sc, sb, d6, m6);
+            const __m256 D = _mm256_set1_ps(d * static_cast<float>(d6));
+            const __m256 M = _mm256_set1_ps(-dmin * static_cast<float>(m6));
+            const uint8_t *qb = qs + (sb >> 1) * 32;
+            __m256i nib[4];
+            nibbles32_to_i32x8(qb, (sb & 1) != 0, nib);
+            const size_t xo = k + sb * 32;
+            for (int i = 0; i < 4; ++i) {
+                const __m256 w = _mm256_fmadd_ps(_mm256_cvtepi32_ps(nib[i]), D, M);
+                const __m256 xa = (i == 0) ? acc0 : (i == 1) ? acc1 : (i == 2) ? acc2 : acc3;
+                const __m256 r = _mm256_fmadd_ps(w, _mm256_loadu_ps(x + xo + 8 * i), xa);
+                if (i == 0) acc0 = r; else if (i == 1) acc1 = r; else if (i == 2) acc2 = r; else acc3 = r;
+            }
+        }
+    }
+    alignas(32) float buf[32];
+    _mm256_store_ps(buf + 0,  acc0);
+    _mm256_store_ps(buf + 8,  acc1);
+    _mm256_store_ps(buf + 16, acc2);
+    _mm256_store_ps(buf + 24, acc3);
+    out = 0.0f;
+    for (int i = 0; i < 32; ++i) { out += buf[i]; }
+    for (size_t e = in - (in % 256); e < in; ++e) {
+        // Tail (only reachable if in % 256 != 0): fall back per element.
+        const size_t s = e / 256;
+        const size_t sb = (e % 256) / 32;
+        const uint8_t *blk = row + s * 144;
+        const uint8_t *sc = blk + 4;
+        const uint8_t *qb = blk + 16 + (sb >> 1) * 32;
+        const int l = static_cast<int>(e % 32);
+        const uint8_t byte = qb[l];
+        const int nib = (sb & 1) ? (byte >> 4) : (byte & 0xF);
+        int d6, m6;
+        q4k_scale_min(sc, static_cast<int>(sb), d6, m6);
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        out += (d * d6 * nib - dmin * m6) * x[e];
+    }
+}
+
+// Q5_K: 256 weights / 176B superblock. Same scale packing as Q4_K;
+// q5 = low/high nibble + high bit from qh (bit 2g / 2g+1 of group g).
+void q5k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    const size_t nsb = in / 256;
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    __m256 acc2 = _mm256_setzero_ps();
+    __m256 acc3 = _mm256_setzero_ps();
+
+    size_t k = 0;
+    for (size_t s = 0; s < nsb; ++s, k += 256) {
+        const uint8_t *blk = row + s * 176;
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        const uint8_t *scales = blk + 4;
+        const uint8_t *qh = blk + 16;
+        const uint8_t *ql = blk + 48;
+        // High bits for all 32 qh bytes, expanded once per superblock.
+        __m256i hb_all[4];
+        bytes32_to_i32x8(qh, hb_all);
+        for (int sb = 0; sb < 8; ++sb) {
+            const int g = sb >> 1;
+            const bool hi = (sb & 1) != 0;
+            uint8_t sc8, m8;
+            if (sb < 4) {
+                sc8 = scales[sb] & 63;
+                m8 = scales[sb + 4] & 63;
+            } else {
+                sc8 = (scales[sb + 4] & 0xF) | ((scales[sb - 4] >> 6) << 4);
+                m8 = (scales[sb + 4] >> 4) | ((scales[sb] >> 6) << 4);
+            }
+            const __m256 D = _mm256_set1_ps(d * static_cast<float>(sc8));
+            const __m256 M = _mm256_set1_ps(-dmin * static_cast<float>(m8));
+            const uint8_t *qb = ql + g * 32;
+            const int bitpos = 2 * g + (hi ? 1 : 0);
+            __m256i nib[4];
+            nibbles32_to_i32x8(qb, hi, nib);
+            // High bit: (qh[l] >> bitpos) & 1, *16, added to nibble value.
+            const __m256i bit_mask = _mm256_set1_epi32(1 << bitpos);
+            const __m256i sixteen = _mm256_set1_epi32(16);
+            for (int i = 0; i < 4; ++i) {
+                const __m256i is_set = _mm256_cmpeq_epi32(
+                    _mm256_and_si256(hb_all[i], bit_mask), bit_mask);
+                nib[i] = _mm256_add_epi32(nib[i], _mm256_and_si256(is_set, sixteen));
+            }
+            const size_t xo = k + sb * 32;
+            for (int i = 0; i < 4; ++i) {
+                const __m256 w = _mm256_fmadd_ps(_mm256_cvtepi32_ps(nib[i]), D, M);
+                const __m256 xa = (i == 0) ? acc0 : (i == 1) ? acc1 : (i == 2) ? acc2 : acc3;
+                const __m256 r = _mm256_fmadd_ps(w, _mm256_loadu_ps(x + xo + 8 * i), xa);
+                if (i == 0) acc0 = r; else if (i == 1) acc1 = r; else if (i == 2) acc2 = r; else acc3 = r;
+            }
+        }
+    }
+    alignas(32) float buf[32];
+    _mm256_store_ps(buf + 0,  acc0);
+    _mm256_store_ps(buf + 8,  acc1);
+    _mm256_store_ps(buf + 16, acc2);
+    _mm256_store_ps(buf + 24, acc3);
+    out = 0.0f;
+    for (int i = 0; i < 32; ++i) { out += buf[i]; }
+}
+
 #endif  // AVX2
 
 // ---------------- Integer-dot (Q4_x weights x Q8_1 activation) ----------------
@@ -443,7 +607,7 @@ struct XQuant {
     std::vector<float> c;    // per-block d * sum(x_q)  (for corrections)
 };
 
-#if defined(__AVX2__) || defined(_MSC_VER)
+#if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
 
 inline float hsum256_epi32(__m256i v)
 {
@@ -560,7 +724,7 @@ void q41i_row_avx2(const uint8_t *row, size_t in, const XQuant &xq, float &out)
 
 #endif  // AVX2
 
-#if defined(__AVX512F__) || defined(_MSC_VER)
+#if defined(__AVX512F__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
 
 // Single-block tail helper (AVX2 width): returns full block contribution.
 inline float q40i_blk_tail_avx2(const uint8_t *blk, const XQuant &xq, size_t b)
@@ -688,6 +852,127 @@ void q41i_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out
 
 #endif  // AVX-512
 
+// ---------------- ARM NEON kernels ----------------
+
+#if defined(_M_ARM64) || defined(__ARM_NEON) || defined(__aarch64__)
+
+// Widen 16 u8 lanes to four float32x4_t, preserving order
+// (out[0] = lanes 0..3, ..., out[3] = lanes 12..15).
+inline void u8x16_to_f32x4(uint8x16_t v, float32x4_t out[4])
+{
+    const uint16x8_t lo16 = vmovl_u8(vget_low_u8(v));
+    const uint16x8_t hi16 = vmovl_u8(vget_high_u8(v));
+    out[0] = vcvtq_f32_u32(vmovl_u16(vget_low_u16(lo16)));
+    out[1] = vcvtq_f32_u32(vmovl_u16(vget_high_u16(lo16)));
+    out[2] = vcvtq_f32_u32(vmovl_u16(vget_low_u16(hi16)));
+    out[3] = vcvtq_f32_u32(vmovl_u16(vget_high_u16(hi16)));
+}
+
+// Same widening for 16 signed i8 lanes.
+inline void i8x16_to_f32x4(int8x16_t v, float32x4_t out[4])
+{
+    const int16x8_t lo16 = vmovl_s8(vget_low_s8(v));
+    const int16x8_t hi16 = vmovl_s8(vget_high_s8(v));
+    out[0] = vcvtq_f32_s32(vmovl_s16(vget_low_s16(lo16)));
+    out[1] = vcvtq_f32_s32(vmovl_s16(vget_high_s16(lo16)));
+    out[2] = vcvtq_f32_s32(vmovl_s16(vget_low_s16(hi16)));
+    out[3] = vcvtq_f32_s32(vmovl_s16(vget_high_s16(hi16)));
+}
+
+// Reduce eight float32x4 accumulators (each covering a contiguous
+// 4-lane slice of the row) to a scalar.
+inline float neon_hsum8(const float32x4_t acc[8])
+{
+    alignas(16) float buf[32];
+    for (int i = 0; i < 8; ++i) { vst1q_f32(buf + i * 4, acc[i]); }
+    float s = 0.0f;
+    for (int i = 0; i < 32; ++i) { s += buf[i]; }
+    return s;
+}
+
+void q40_row_neon(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    const size_t full_blocks = in / 32;
+    float32x4_t acc[8];
+    for (int i = 0; i < 8; ++i) { acc[i] = vdupq_n_f32(0.0f); }
+    const uint8x16_t nib_lo = vdupq_n_u8(0x0F);
+    const float32x4_t eight = vdupq_n_f32(8.0f);
+
+    size_t k = 0;
+    for (size_t b = 0; b < full_blocks; ++b, k += 32) {
+        const uint8_t *blk = row + b * 18;
+        const float32x4_t d = vdupq_n_f32(fp16_to_fp32_fast(load_fp16(blk)));
+        const uint8x16_t q = vld1q_u8(blk + 2);
+        float32x4_t w[8];
+        u8x16_to_f32x4(vandq_u8(q, nib_lo), w);                    // weights 0..15
+        u8x16_to_f32x4(vandq_u8(vshrq_n_u8(q, 4), nib_lo), w + 4);  // weights 16..31
+        for (int i = 0; i < 8; ++i) {
+            const float32x4_t wf = vmulq_f32(vsubq_f32(w[i], eight), d);
+            acc[i] = vfmaq_f32(acc[i], wf, vld1q_f32(x + k + i * 4));
+        }
+    }
+    out = neon_hsum8(acc);
+    for (size_t e = in - (in % 32); e < in; ++e) {
+        const uint8_t *blk = row + (e / 32) * 18;
+        out += q40_elem(blk, e % 32, fp16_to_fp32_fast(load_fp16(blk))) * x[e];
+    }
+}
+
+void q41_row_neon(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    const size_t full_blocks = in / 32;
+    float32x4_t acc[8];
+    for (int i = 0; i < 8; ++i) { acc[i] = vdupq_n_f32(0.0f); }
+    const uint8x16_t nib_lo = vdupq_n_u8(0x0F);
+
+    size_t k = 0;
+    for (size_t b = 0; b < full_blocks; ++b, k += 32) {
+        const uint8_t *blk = row + b * 20;
+        const float32x4_t d = vdupq_n_f32(fp16_to_fp32_fast(load_fp16(blk)));
+        const float32x4_t m = vdupq_n_f32(fp16_to_fp32_fast(load_fp16(blk + 2)));
+        const uint8x16_t q = vld1q_u8(blk + 4);
+        float32x4_t w[8];
+        u8x16_to_f32x4(vandq_u8(q, nib_lo), w);
+        u8x16_to_f32x4(vandq_u8(vshrq_n_u8(q, 4), nib_lo), w + 4);
+        for (int i = 0; i < 8; ++i) {
+            const float32x4_t wf = vfmaq_f32(m, w[i], d);  // nib*d + m
+            acc[i] = vfmaq_f32(acc[i], wf, vld1q_f32(x + k + i * 4));
+        }
+    }
+    out = neon_hsum8(acc);
+    for (size_t e = in - (in % 32); e < in; ++e) {
+        const uint8_t *blk = row + (e / 32) * 20;
+        out += q41_elem(blk, e % 32, fp16_to_fp32_fast(load_fp16(blk)), fp16_to_fp32_fast(load_fp16(blk + 2))) * x[e];
+    }
+}
+
+void q80_row_neon(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    const size_t full_blocks = in / 32;
+    float32x4_t acc[8];
+    for (int i = 0; i < 8; ++i) { acc[i] = vdupq_n_f32(0.0f); }
+
+    size_t k = 0;
+    for (size_t b = 0; b < full_blocks; ++b, k += 32) {
+        const uint8_t *blk = row + b * 34;
+        const float32x4_t d = vdupq_n_f32(fp16_to_fp32_fast(load_fp16(blk)));
+        float32x4_t w[8];
+        i8x16_to_f32x4(vld1q_s8(reinterpret_cast<const int8_t *>(blk + 2)), w);       // qs[0..15]
+        i8x16_to_f32x4(vld1q_s8(reinterpret_cast<const int8_t *>(blk + 18)), w + 4); // qs[16..31]
+        for (int i = 0; i < 8; ++i) {
+            const float32x4_t wf = vmulq_f32(w[i], d);
+            acc[i] = vfmaq_f32(acc[i], wf, vld1q_f32(x + k + i * 4));
+        }
+    }
+    out = neon_hsum8(acc);
+    for (size_t e = in - (in % 32); e < in; ++e) {
+        const uint8_t *blk = row + (e / 32) * 34;
+        out += q80_elem(blk, e % 32, fp16_to_fp32_fast(load_fp16(blk))) * x[e];
+    }
+}
+
+#endif  // ARM NEON
+
 // ---------------- Scalar kernels ----------------
 
 void q40_row_scalar(const uint8_t *row, size_t in, const float *x, float &out)
@@ -762,6 +1047,45 @@ void q4k_row_scalar(const uint8_t *row, size_t in, const float *x, float &out)
     }
 }
 
+// Scalar fallback for native Q5_K rows (raw 176B superblocks, in%256==0).
+// w = d*sc*q5 - dmin*m, q5 in [0,31] = low4 + highbit*16.
+void q5k_row_scalar(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    out = 0.0f;
+    const size_t nsb = in / 256;
+    for (size_t s = 0; s < nsb; ++s) {
+        const uint8_t *blk = row + s * 176;
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        const uint8_t *scales = blk + 4;
+        const uint8_t *qh = blk + 16;
+        const uint8_t *ql = blk + 48;
+        const size_t base = s * 256;
+        for (int sb = 0; sb < 8; ++sb) {
+            const int g = sb >> 1;      // 64-weight group (0..3)
+            const bool hi = (sb & 1);   // high nibble within group
+            uint8_t sc, m;
+            if (sb < 4) {
+                sc = scales[sb] & 63;
+                m = scales[sb + 4] & 63;
+            } else {
+                sc = (scales[sb + 4] & 0xF) | ((scales[sb - 4] >> 6) << 4);
+                m = (scales[sb + 4] >> 4) | ((scales[sb] >> 6) << 4);
+            }
+            const float D = d * static_cast<float>(sc);
+            const float M = dmin * static_cast<float>(m);
+            const int bit_lo = 2 * g;
+            const uint8_t *qb = ql + g * 32;
+            for (int l = 0; l < 32; ++l) {
+                const int q4 = hi ? (qb[l] >> 4) : (qb[l] & 0xF);
+                const int hb = (qh[l] >> (hi ? bit_lo + 1 : bit_lo)) & 1;
+                const float w = D * static_cast<float>(q4 + hb * 16) - M;
+                out += w * x[base + sb * 32 + l];
+            }
+        }
+    }
+}
+
 void q80_row_scalar(const uint8_t *row, size_t in, const float *x, float &out)
 {
     out = 0.0f;
@@ -783,7 +1107,7 @@ using RowFn = void (*)(const uint8_t *, size_t, const float *, float &);
 RowFn pick_row_fn(quant::QuantType type)
 {
     const auto info = get_cpu_info();
-#if defined(__AVX512F__) || defined(_MSC_VER)
+#if defined(__AVX512F__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
     static const bool no_avx512 = [] {
 #if defined(_MSC_VER)
         char buf[8];
@@ -802,14 +1126,24 @@ RowFn pick_row_fn(quant::QuantType type)
         }
     }
 #endif
-#if defined(__AVX2__) || defined(_MSC_VER)
+#if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
     if (info.has_avx2) {
         switch (type) {
             case quant::QuantType::Q4_0: return q40_row_avx2;
             case quant::QuantType::Q4_1: return q41_row_avx2;
             case quant::QuantType::Q8_0: return q80_row_avx2;
+            case quant::QuantType::Q4_K: return q4k_row_avx2;
+            case quant::QuantType::Q5_K: return q5k_row_avx2;
             default: break;
         }
+    }
+#endif
+#if defined(_M_ARM64) || defined(__ARM_NEON) || defined(__aarch64__)
+    switch (type) {
+        case quant::QuantType::Q4_0: return q40_row_neon;
+        case quant::QuantType::Q4_1: return q41_row_neon;
+        case quant::QuantType::Q8_0: return q80_row_neon;
+        default: break;
     }
 #endif
     switch (type) {
@@ -817,6 +1151,7 @@ RowFn pick_row_fn(quant::QuantType type)
         case quant::QuantType::Q4_1: return q41_row_scalar;
         case quant::QuantType::Q8_0: return q80_row_scalar;
         case quant::QuantType::Q4_K: return q4k_row_scalar;
+        case quant::QuantType::Q5_K: return q5k_row_scalar;
         default: return nullptr;
     }
 }
@@ -833,7 +1168,7 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
 
     // Integer-dot path (ggml-style): Q4_0/Q4_1 weights x int8-quantized
     // activation. Fewer uops/byte than the fp dequant path.
-#if defined(__AVX2__) || defined(_MSC_VER)
+#if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
     // Integer-dot path (ggml-style) is opt-in: on this CPU it measured
     // parity with the fp dequant kernels (DRAM-bound), with slightly worse
     // precision. Enable with SERIUS_INTDOT=1 to experiment.
@@ -852,7 +1187,7 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
         const auto info = get_cpu_info();
         using IRowFn = void (*)(const uint8_t *, size_t, const XQuant &, float &);
         IRowFn ifn = nullptr;
-#if defined(__AVX512F__) || defined(_MSC_VER)
+#if defined(__AVX512F__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
         static const bool no_avx512 = [] {
 #if defined(_MSC_VER)
             char buf[8];
@@ -895,7 +1230,7 @@ fp_path:
     const uint8_t *base = w.bytes.data();
 
     // Q4_0 + AVX-512: two rows per iteration for more memory-level parallelism.
-#if defined(__AVX512F__) || defined(_MSC_VER)
+#if defined(__AVX512F__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
     if (fn == q40_row_avx512) {
         const int64_t pairs = static_cast<int64_t>(N / 2);
         #pragma omp parallel for schedule(static) if (pairs >= 128)

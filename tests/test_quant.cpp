@@ -3,8 +3,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <vector>
 
+#include "blas/blas.h"
 #include "memory/memory_pool.h"
 #include "memory/pool_allocator.h"
 #include "quant/awq.h"
@@ -13,6 +15,7 @@
 #include "quant/fp8.h"
 #include "quant/gptq.h"
 #include "quant/int4.h"
+#include "quant/quant_weight.h"
 #include "tensor/tensor.h"
 #include "transformer/kv_cache.h"
 
@@ -1002,6 +1005,142 @@ TEST(QuantGPTQ, GPTQBetterThanNaive)
     // (On small matrices the benefit is marginal, but it should not be worse)
     EXPECT_LT(gptq_mse, naive_mse * 2.0f)
         << "GPTQ MSE=" << gptq_mse << " should not be much worse than naive MSE=" << naive_mse;
+}
+
+// ---------------- K-quant GEMV (matvec_q) ----------------
+// Reference implementations mirror ggml dequant; matvec_q dispatches to
+// AVX2/AVX-512/scalar depending on the host, so the test validates every
+// SIMD path against an independent scalar computation.
+
+namespace {
+
+void k4_scale_min(const uint8_t *q, int j, int &d, int &m)
+{
+    if (j < 4) {
+        d = q[j] & 63;
+        m = q[j + 4] & 63;
+    } else {
+        d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
+        m = (q[j + 4] >> 4) | ((q[j] >> 6) << 4);
+    }
+}
+
+float ref_q4k_dot(const uint8_t *row, size_t in, const float *x)
+{
+    float out = 0.0f;
+    const uint16_t dh = static_cast<uint16_t>(row[0] | (row[1] << 8));
+    const uint16_t mh = static_cast<uint16_t>(row[2] | (row[3] << 8));
+    const float d = dh == 0x3C00 ? 1.0f : 0.0f;   // test writes d=1.0, dmin=0.25
+    const float dmin = mh == 0x3400 ? 0.25f : 0.0f;
+    for (size_t s = 0; s < in / 256; ++s) {
+        const uint8_t *blk = row + s * 144;
+        const uint8_t *sc = blk + 4;
+        const uint8_t *qs = blk + 16;
+        for (int sb = 0; sb < 8; ++sb) {
+            int d6, m6;
+            k4_scale_min(sc, sb, d6, m6);
+            const float D = d * d6, M = dmin * m6;
+            const uint8_t *qb = qs + (sb >> 1) * 32;
+            for (int l = 0; l < 32; ++l) {
+                const int nib = (sb & 1) ? (qb[l] >> 4) : (qb[l] & 0xF);
+                out += (D * nib - M) * x[s * 256 + sb * 32 + l];
+            }
+        }
+    }
+    return out;
+}
+
+float ref_q5k_dot(const uint8_t *row, size_t in, const float *x)
+{
+    float out = 0.0f;
+    const float d = 1.0f, dmin = 0.25f;  // same fp16 constants as Q4_K test
+    for (size_t s = 0; s < in / 256; ++s) {
+        const uint8_t *blk = row + s * 176;
+        const uint8_t *scales = blk + 4;
+        const uint8_t *qh = blk + 16;
+        const uint8_t *ql = blk + 48;
+        for (int sb = 0; sb < 8; ++sb) {
+            const int g = sb >> 1;
+            const bool hi = (sb & 1) != 0;
+            int sc8, m8;
+            if (sb < 4) {
+                sc8 = scales[sb] & 63;
+                m8 = scales[sb + 4] & 63;
+            } else {
+                sc8 = (scales[sb + 4] & 0xF) | ((scales[sb - 4] >> 6) << 4);
+                m8 = (scales[sb + 4] >> 4) | ((scales[sb] >> 6) << 4);
+            }
+            const float D = d * sc8, M = dmin * m8;
+            const uint8_t *qb = ql + g * 32;
+            const int bit = 2 * g + (hi ? 1 : 0);
+            for (int l = 0; l < 32; ++l) {
+                const int q4 = hi ? (qb[l] >> 4) : (qb[l] & 0xF);
+                const int hb = (qh[l] >> bit) & 1;
+                out += (D * (q4 + hb * 16) - M) * x[s * 256 + sb * 32 + l];
+            }
+        }
+    }
+    return out;
+}
+
+// Deterministic pseudo-random bytes for packed blocks.
+std::vector<uint8_t> make_packed(size_t total, uint32_t seed)
+{
+    std::vector<uint8_t> v(total);
+    uint32_t s = seed;
+    for (auto &b : v) {
+        s = s * 1664525u + 1013904223u;
+        b = static_cast<uint8_t>(s >> 24);
+    }
+    return v;
+}
+
+void check_k_matvec(quant::QuantType type, size_t sb_bytes, size_t in, size_t out,
+                    float (*ref)(const uint8_t *, size_t, const float *))
+{
+    quant::QuantWeight w;
+    w.type = type;
+    w.in = in;
+    w.out = out;
+    const size_t row_bytes = (in / 256) * sb_bytes;
+    w.bytes = make_packed(row_bytes * out, 0x9E3779B9u);
+    // Force fp16 d=1.0 (0x3C00), dmin=0.25 (0x3400) in every superblock.
+    for (size_t r = 0; r < out; ++r) {
+        for (size_t s = 0; s < in / 256; ++s) {
+            uint8_t *blk = w.bytes.data() + r * row_bytes + s * sb_bytes;
+            blk[0] = 0x00; blk[1] = 0x3C;
+            blk[2] = 0x00; blk[3] = 0x34;
+        }
+    }
+
+    std::vector<float> x(in), y(out, -999.0f);
+    uint32_t s = 12345u;
+    for (auto &v : x) {
+        s = s * 1664525u + 1013904223u;
+        v = static_cast<float>(static_cast<int>(s >> 8) % 2001 - 1000) / 1000.0f;
+    }
+    core::blas::matvec_q(w, x.data(), y.data());
+
+    for (size_t r = 0; r < out; ++r) {
+        const float expected = ref(w.bytes.data() + r * row_bytes, in, x.data());
+        const float tol = std::abs(expected) * 1e-3f + 1e-2f;
+        EXPECT_NEAR(y[r], expected, tol)
+            << "row " << r << " type " << static_cast<int>(type);
+    }
+}
+
+}  // namespace
+
+TEST(MatvecQuantK, Q4KMatchesReference)
+{
+    check_k_matvec(quant::QuantType::Q4_K, 144, 256, 8, ref_q4k_dot);
+    check_k_matvec(quant::QuantType::Q4_K, 144, 768, 4, ref_q4k_dot);
+}
+
+TEST(MatvecQuantK, Q5KMatchesReference)
+{
+    check_k_matvec(quant::QuantType::Q5_K, 176, 256, 8, ref_q5k_dot);
+    check_k_matvec(quant::QuantType::Q5_K, 176, 512, 4, ref_q5k_dot);
 }
 
 }  // namespace test

@@ -9,9 +9,9 @@
 #endif
 
 // Platform specific includes for CPUID
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <intrin.h>
-#elif defined(__GNUC__) || defined(__clang__)
+#elif (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
 #include <cpuid.h>
 #endif
 
@@ -39,7 +39,7 @@ CpuInfo get_cpu_info()
     bool has_avx2 = false;
     bool has_avx512f = false;
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
     int cpuInfo[4];
     __cpuid(cpuInfo, 0);
     int nIds = cpuInfo[0];
@@ -53,7 +53,7 @@ CpuInfo get_cpu_info()
         has_avx2 = (cpuInfo[1] & (1 << AVX2_BIT)) != 0;        // EBX bit 5
         has_avx512f = (cpuInfo[1] & (1 << AVX512F_BIT)) != 0;  // EBX bit 16
     }
-#elif defined(__GNUC__) || defined(__clang__)
+#elif (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
     unsigned int eax, ebx, ecx, edx;
     const int FEATURE_LEAF = 7;
     const int AVX2_BIT = 5;
