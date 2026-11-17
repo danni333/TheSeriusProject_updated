@@ -52,8 +52,20 @@ echo "Downloading from: $DOWNLOAD_URL"
 TMP_DIR=$(mktemp -d)
 cd "$TMP_DIR"
 
-# Download
-curl -fsSL "$DOWNLOAD_URL" -o serius.tar.gz
+# Download checksum and verify integrity
+CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
+echo "Verifying checksum..."
+curl -fsSL "$CHECKSUM_URL" -o serius.tar.gz.sha256
+# Sidecar format is "<hash>  <archive-name>"; verify against our file
+EXPECTED_HASH=$(awk '{print $1}' serius.tar.gz.sha256)
+ACTUAL_HASH=$(sha256sum serius.tar.gz | awk '{print $1}')
+if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+    echo "ERROR: checksum mismatch!"
+    echo "  expected: $EXPECTED_HASH"
+    echo "  actual:   $ACTUAL_HASH"
+    exit 1
+fi
+echo "Checksum verified."
 
 # Extract
 tar xzf serius.tar.gz
