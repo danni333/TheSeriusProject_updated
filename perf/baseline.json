@@ -1,0 +1,8 @@
+{
+  "decode_tps": 60.0250244140625,
+  "prefill_tps": 181.81817626953125,
+  "ttft_ms": 55.0,
+  "requests_per_sec": 13.152007102966309,
+  "total_tokens_per_sec": 841.7284545898438,
+  "p99_latency_ms": 1121.221923828125
+}
