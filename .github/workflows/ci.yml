@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   build-test-cpu:
@@ -24,9 +25,32 @@ jobs:
       - name: Unit Tests (CPU)
         run: ctest --test-dir build --output-on-failure
 
+  # GPU jobs require a self-hosted runner labelled [self-hosted, gpu, linux].
+  # Probe for an online runner first: without this, the jobs would queue
+  # forever (and block the whole run for 24h) when no GPU runner is up.
+  check-gpu-runner:
+    runs-on: ubuntu-latest
+    outputs:
+      available: ${{ steps.probe.outputs.available }}
+    steps:
+      - name: Probe self-hosted GPU runners
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          COUNT=$(gh api "repos/${{ github.repository }}/actions/runners?per_page=100" \
+            --jq '[.runners[] | select(.status == "online") | select(.labels[].name == "gpu")] | length')
+          if [ "$COUNT" -gt 0 ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No online self-hosted GPU runner — skipping GPU jobs."
+          fi
+
   test-gpu:
     runs-on: [self-hosted, gpu, linux]
-    needs: build-test-cpu
+    needs: [build-test-cpu, check-gpu-runner]
+    if: needs.check-gpu-runner.outputs.available == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -50,8 +74,11 @@ jobs:
 
   eval:
     runs-on: [self-hosted, gpu, linux]
-    if: github.ref == 'refs/heads/main'
-    needs: test-gpu
+    if: >-
+      always() && github.ref == 'refs/heads/main' &&
+      needs.check-gpu-runner.outputs.available == 'true' &&
+      needs.test-gpu.result == 'success'
+    needs: [test-gpu, check-gpu-runner]
     steps:
       - uses: actions/checkout@v4
 
