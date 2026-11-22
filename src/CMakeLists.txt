@@ -1,22 +1,8 @@
 add_library(serius_core
-    core/dummy.cpp
     memory/memory_pool.cpp
     memory/dnc.cpp
     memory/compressor.cpp
     memory/persistent.cpp
-    neuro/lif_neuron.cpp
-    neuro/spiking_layer.cpp
-    neuro/event_engine.cpp
-    neuro/encoder.cpp
-    liquid/neural_ode.cpp
-    liquid/ltc.cpp
-    liquid/adaptive.cpp
-    world/world_model.cpp
-    world/imagination.cpp
-    world/jepa.cpp
-    quantum/state.cpp
-    quantum/circuit.cpp
-    quantum/vqe.cpp
     tensor/tensor.cpp
     blas/elementwise.cpp
     blas/matmul_scalar.cpp
@@ -76,25 +62,18 @@ add_library(serius_core
     stability/ema.cpp
     inference/sampler.cpp
     inference/generate.cpp
-    inference/speculative.cpp
     lora/lora_linear.cpp
     lora/lora_adapter.cpp
-transformer/llama_model.cpp
-     ssm/ssm_block.cpp
-     automl/auto_tune.cpp
-     automl/pruner.cpp
-     automl/tune_cache.cpp
-     transformer/qwen_model.cpp
+    transformer/llama_model.cpp
     moe/router.cpp
     moe/expert.cpp
     moe/moe_layer.cpp
     moe/load_balance.cpp
-    model/moe.cpp
     infer/sampler.cpp
+    infer/activation_hook.cpp
     infer/llama_inference.cpp
     infer/llama_inference_cuda.cpp
     infer/llama_gpu_offload.cpp
-    infer/speculative.cpp
     safety/guardrails.cpp
     safety/toxicity.cpp
     safety/sanitizer.cpp
@@ -108,25 +87,21 @@ transformer/llama_model.cpp
     rag/retriever.cpp
     tools/registry.cpp
     tools/parser.cpp
-    vision/patch_embed.cpp
-    vision/vision_encoder.cpp
-    audio/mel.cpp
-    audio/audio_encoder.cpp
-multimodal/cross_attention.cpp
-     multimodal/input_builder.cpp
-    interpret/attention_capture.cpp
-    interpret/activation_probe.cpp
-    interpret/logit_lens.cpp
-    interpret/export.cpp
-    rlhf/reward_model.cpp
-    rlhf/ppo.cpp
-    grounding/self_consistency.cpp
-    grounding/citation_engine.cpp
-    grounding/confidence.cpp
-    eval/eval_suite.cpp
-    eval/perplexity.cpp
-    eval/metrics.cpp
-    eval/report.cpp
+    mcp/client.cpp
+    mcp/transport_stdio.cpp
+    mcp/transport_http.cpp
+    agent/action_parser.cpp
+    agent/context_manager.cpp
+    agent/react.cpp
+    agent/llama_model_adapter.cpp
+    agent/specialist.cpp
+    agent/supervisor.cpp
+    agent/consensus.cpp
+    agent/planner.cpp
+    mcp/guard.cpp
+    mcp/scrubber.cpp
+    mcp/audit.cpp
+    mcp/server.cpp
     server/metrics.cpp
     server/batcher.cpp
     server/logging.cpp
@@ -136,35 +111,6 @@ multimodal/cross_attention.cpp
     data/synthetic.cpp
     safety/red_team.cpp
     safety/bias_scorer.cpp
-    mcp/client.cpp
-    mcp/transport_stdio.cpp
-    mcp/transport_http.cpp
-agent/action_parser.cpp
-     agent/context_manager.cpp
-     agent/react.cpp
-     agent/specialist.cpp
-     agent/supervisor.cpp
-     agent/consensus.cpp
-     agent/planner.cpp
-    mcp/guard.cpp
-    mcp/scrubber.cpp
-    mcp/audit.cpp
-    mcp/server.cpp
-    reasoning/cot.cpp
-    reasoning/mcts.cpp
-    reasoning/verifier.cpp
-    reasoning/budget.cpp
-    federated/dp_noise.cpp
-    federated/aggregator.cpp
-    federated/user_adapter.cpp
-    autoopt/refactorer.cpp
-    autoopt/sandbox.cpp
-    autoopt/hot_swap.cpp
-    autoopt/git_manager.cpp
-    autoopt/llm_client.cpp
-    knowledge/semantic_hash.cpp
-    knowledge/knowledge_fn.cpp
-    knowledge/fact_extractor.cpp
     cli/args_parser.cpp
     cli/cli.cpp
     bench/latency.cpp
@@ -173,9 +119,127 @@ agent/action_parser.cpp
     bench/report.cpp
     stress/stress_runner.cpp
     stress/worker.cpp
-    stress/report.cpp
     stress/leak_detector.cpp
 )
+
+if(SERIUS_EXPERIMENTAL_NEURO)
+    target_sources(serius_core PRIVATE
+        neuro/lif_neuron.cpp
+        neuro/spiking_layer.cpp
+        neuro/event_engine.cpp
+        neuro/encoder.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_LIQUID)
+    target_sources(serius_core PRIVATE
+        liquid/neural_ode.cpp
+        liquid/ltc.cpp
+        liquid/adaptive.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_WORLD)
+    target_sources(serius_core PRIVATE
+        world/world_model.cpp
+        world/imagination.cpp
+        world/jepa.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_QUANTUM)
+    target_sources(serius_core PRIVATE
+        quantum/state.cpp
+        quantum/circuit.cpp
+        quantum/vqe.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_SSM)
+    target_sources(serius_core PRIVATE
+        ssm/ssm_block.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_AUTOML)
+    target_sources(serius_core PRIVATE
+        automl/auto_tune.cpp
+        automl/pruner.cpp
+        automl/tune_cache.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_MULTIMODAL)
+    target_sources(serius_core PRIVATE
+        vision/patch_embed.cpp
+        vision/vision_encoder.cpp
+        audio/mel.cpp
+        audio/audio_encoder.cpp
+        multimodal/cross_attention.cpp
+        multimodal/input_builder.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_INTERPRET)
+    target_sources(serius_core PRIVATE
+        interpret/attention_capture.cpp
+        interpret/activation_probe.cpp
+        interpret/inference_capture.cpp
+        interpret/logit_lens.cpp
+        interpret/export.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_RLHF)
+    target_sources(serius_core PRIVATE
+        rlhf/reward_model.cpp
+        rlhf/ppo.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_GROUNDING)
+    target_sources(serius_core PRIVATE
+        grounding/self_consistency.cpp
+        grounding/citation_engine.cpp
+        grounding/confidence.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_EVAL)
+    target_sources(serius_core PRIVATE
+        eval/eval_suite.cpp
+        eval/perplexity.cpp
+        eval/perplexity_runner.cpp
+        eval/metrics.cpp
+        eval/report.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_REASONING)
+    target_sources(serius_core PRIVATE
+        reasoning/cot.cpp
+        reasoning/mcts.cpp
+        reasoning/verifier.cpp
+        reasoning/budget.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_FEDERATED)
+    target_sources(serius_core PRIVATE
+        federated/dp_noise.cpp
+        federated/aggregator.cpp
+        federated/user_adapter.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_KNOWLEDGE)
+    target_sources(serius_core PRIVATE
+        knowledge/semantic_hash.cpp
+        knowledge/knowledge_fn.cpp
+        knowledge/fact_extractor.cpp
+        knowledge/knowledge_base.cpp
+    )
+endif()
 
 if(SERIUS_USE_CUDA)
     target_sources(serius_core PRIVATE
@@ -193,17 +257,10 @@ if(SERIUS_USE_CUDA)
     target_link_libraries(serius_core PUBLIC CUDA::cublas)
 endif()
 
-if(SERIUS_USE_VULKAN)
-    target_sources(serius_core PRIVATE 
-        hal/vulkan_backend.cpp
-    )
-endif()
-
 if(SERIUS_USE_NCCL)
     target_sources(serius_core PRIVATE
         distributed/nccl_comm.cpp
     )
-    # Link NCCL library
     target_link_libraries(serius_core PUBLIC nccl)
 endif()
 
@@ -212,12 +269,6 @@ if(SERIUS_USE_MPI)
         distributed/mpi_comm.cpp
     )
     target_link_libraries(serius_core PUBLIC MPI::MPI_CXX)
-endif()
-
-if(SERIUS_USE_METAL)
-    target_sources(serius_core PRIVATE 
-        hal/metal_backend.cpp
-    )
 endif()
 
 if(OpenMP_CXX_FOUND)
@@ -244,7 +295,7 @@ else()
     set_source_files_properties(blas/matvec_quant.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw -mavx512dq -mavx512vl -mfma")
 endif()
 target_include_directories(serius_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib)
+target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib ${CMAKE_DL_LIBS})
 
 # --- Server library ---
 add_library(serius_server STATIC server/server.cpp server/server_generation.cpp server/static_files.cpp)
@@ -257,6 +308,10 @@ add_subdirectory(hub)
 # --- CLI executable (serve, chat, doctor, import, bench, stress) ---
 add_executable(serius cli/serius_cli.cpp
     cli/cmd_chat.cpp
+    cli/cmd_eval.cpp
+    cli/cmd_inspect.cpp
+    cli/cmd_think.cpp
+    cli/llama_loader.cpp
     cli/cmd_serve.cpp
     cli/cmd_doctor.cpp
     cli/cmd_import.cpp
