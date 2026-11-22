@@ -623,6 +623,7 @@ bool gguf_dtype_supported(GGMLType dtype)
         case GGMLType::Q8_0:
         case GGMLType::Q5_0:
         case GGMLType::Q4_K:
+        case GGMLType::Q5_K:
         case GGMLType::Q6_K:
             return true;
         default:
@@ -669,6 +670,25 @@ std::optional<uint64_t> gguf_payload_bytes(GGMLType dtype, uint64_t numel)
 }
 
 }  // namespace
+
+// Tensors that are critical for model functionality — loading must fail if
+// their quantization is unsupported. Embedding/lm_head can sometimes fall back
+// (tied weights), but attention/FFN weights are essential.
+bool is_critical_tensor(const std::string &name)
+{
+    // Critical: attention projections, FFN weights, output norm
+    return name.find("attn_q.weight") != std::string::npos ||
+           name.find("attn_k.weight") != std::string::npos ||
+           name.find("attn_v.weight") != std::string::npos ||
+           name.find("attn_output.weight") != std::string::npos ||
+           name.find("ffn_gate.weight") != std::string::npos ||
+           name.find("ffn_up.weight") != std::string::npos ||
+           name.find("ffn_down.weight") != std::string::npos ||
+           name.find("ffn_norm.weight") != std::string::npos ||
+           name.find("attn_norm.weight") != std::string::npos ||
+           name.find("output_norm.weight") != std::string::npos ||
+           name.find("norm.weight") != std::string::npos;
+}
 
 GGUFMeta load_gguf_metadata(const std::string &path)
 {
@@ -982,9 +1002,16 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
             dequantize_q5_0(packed.data(), numel, values.data());
             // No Q5_0 quant kernel yet — dense FP16 path only.
         } else {
-            // Unsupported quantization (K-quants, etc.): skip the tensor
-            // entirely so callers can fall back (e.g. tied-embedding lm_head)
-            // instead of silently loading an all-zero matrix.
+            // Unsupported quantization (K-quants, IQ types, etc.)
+            // For critical tensors (attention/FFN weights), fail explicitly
+            // instead of silently skipping which leads to zero-weight models.
+            if (is_critical_tensor(info.name)) {
+                throw std::runtime_error(
+                    "[GGUF] critical tensor '" + info.name + "' uses unsupported quantization " +
+                    std::to_string(static_cast<unsigned>(info.dtype)) +
+                    ". Supported: F32, F16, BF16, Q4_0, Q4_1, Q8_0, Q5_0, Q4_K, Q5_K, Q6_K");
+            }
+            // Non-critical (e.g., token_embd.weight with tied lm_head fallback): warn and skip
             std::fprintf(stderr, "[GGUF] unsupported dtype %u for tensor %s — skipped\n",
                          static_cast<unsigned>(info.dtype), info.name.c_str());
             continue;
