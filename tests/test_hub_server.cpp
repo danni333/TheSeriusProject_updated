@@ -13,19 +13,29 @@ using namespace serius::hub;
 
 namespace {
 
-constexpr int kPort = 18099;
-constexpr const char *kBase = "http://127.0.0.1:18099";
+int find_free_port()
+{
+    httplib::Server port_probe;
+    int port = port_probe.bind_to_any_port("127.0.0.1");
+    bool probe_result = false;
+    std::thread port_probe_thread([&] { probe_result = port_probe.listen_after_bind(); });
+    port_probe.wait_until_ready();
+    port_probe.stop();
+    port_probe_thread.join();
+    return probe_result ? port : 0;
+}
 
 struct ServerGuard
 {
-    ModelHubServer server{kPort};
+    ModelHubServer server;
     std::thread thread;
     std::filesystem::path old_cwd;
     std::filesystem::path workdir;
+    int port;
 
-    explicit ServerGuard()
+    explicit ServerGuard() : server(find_free_port()), port(server.get_port())
     {
-        workdir = std::filesystem::temp_directory_path() / "serius_hub_server_test";
+        workdir = std::filesystem::temp_directory_path() / ("serius_hub_server_test_" + std::to_string(port));
         std::filesystem::remove_all(workdir);
         std::filesystem::create_directories(workdir);
         old_cwd = std::filesystem::current_path();
@@ -40,12 +50,13 @@ struct ServerGuard
         std::filesystem::current_path(old_cwd);
         std::filesystem::remove_all(workdir);
     }
+
+    int get_port() const { return port; }
 };
 
-httplib::Result get(httplib::Client &cli, const std::string &path,
-                    const httplib::Headers &headers = {})
+httplib::Client make_client(int port)
 {
-    return cli.Get(path, headers);
+    return httplib::Client("127.0.0.1", port);
 }
 
 }  // namespace
@@ -53,12 +64,12 @@ httplib::Result get(httplib::Client &cli, const std::string &path,
 TEST(ModelHubServer, HealthAndEmptyList)
 {
     ServerGuard g;
-    httplib::Client cli(kBase);
+    httplib::Client cli = make_client(g.get_port());
 
     // wait for server to come up
     httplib::Result res;
     for (int i = 0; i < 100; ++i) {
-        res = get(cli, "/health");
+        res = cli.Get("/health");
         if (res && res->status == 200) { break; }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -68,7 +79,7 @@ TEST(ModelHubServer, HealthAndEmptyList)
     EXPECT_EQ(j["status"], "ok");
     EXPECT_EQ(j["models"], 0);
 
-    res = get(cli, "/v1/models");
+    res = cli.Get("/v1/models");
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 200);
     EXPECT_EQ(nlohmann::json::parse(res->body)["total"], 0);
@@ -77,11 +88,11 @@ TEST(ModelHubServer, HealthAndEmptyList)
 TEST(ModelHubServer, RegisterUploadSearchDownloadDelete)
 {
     ServerGuard g;
-    httplib::Client cli(kBase);
+    httplib::Client cli = make_client(g.get_port());
 
     httplib::Result res;
     for (int i = 0; i < 100; ++i) {
-        res = get(cli, "/health");
+        res = cli.Get("/health");
         if (res && res->status == 200) { break; }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
@@ -130,39 +141,39 @@ TEST(ModelHubServer, RegisterUploadSearchDownloadDelete)
     EXPECT_EQ(up["file_size"], 23);
 
     // list + get
-    res = get(cli, "/v1/models");
+    res = cli.Get("/v1/models");
     ASSERT_TRUE(res);
     EXPECT_EQ(nlohmann::json::parse(res->body)["total"], 1);
 
-    res = get(cli, "/v1/models/" + model_id);
+    res = cli.Get("/v1/models/" + model_id);
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 200);
     EXPECT_EQ(nlohmann::json::parse(res->body)["name"], "test-model");
 
-    res = get(cli, "/v1/models/nonexistent");
+    res = cli.Get("/v1/models/nonexistent");
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 404);
 
     // search
-    res = get(cli, "/v1/models/search?q=tiny");
+    res = cli.Get("/v1/models/search?q=tiny");
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 200);
     auto search_j = nlohmann::json::parse(res->body);
     EXPECT_GE(search_j["total"], 1);
     EXPECT_EQ(search_j["data"][0]["model_id"], model_id);
 
-    res = get(cli, "/v1/models/search?tags=llm");
+    res = cli.Get("/v1/models/search?tags=llm");
     ASSERT_TRUE(res);
     EXPECT_GE(nlohmann::json::parse(res->body)["total"], 1);
 
     // download
-    res = get(cli, "/v1/models/" + model_id + "/download");
+    res = cli.Get("/v1/models/" + model_id + "/download");
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 200);
     EXPECT_EQ(res->body, "GGUFfakebytes0123456789");
 
     // download count incremented
-    res = get(cli, "/v1/models/" + model_id);
+    res = cli.Get("/v1/models/" + model_id);
     ASSERT_TRUE(res);
     EXPECT_GE(nlohmann::json::parse(res->body)["download_count"].get<int>(), 1);
 
@@ -176,7 +187,7 @@ TEST(ModelHubServer, RegisterUploadSearchDownloadDelete)
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 200);
 
-    res = get(cli, "/v1/models/" + model_id);
+    res = cli.Get("/v1/models/" + model_id);
     ASSERT_TRUE(res);
     EXPECT_EQ(res->status, 404);
 }

@@ -6,6 +6,12 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
 #include "../src/memory/compressor.h"
 #include "../src/memory/persistent.h"
 
@@ -175,7 +181,12 @@ class PersistentMemoryTest : public ::testing::Test {
 
     void SetUp() override
     {
-        root = (fs::temp_directory_path() / "serius_test_persistent").string();
+#ifdef _WIN32
+        DWORD pid = GetCurrentProcessId();
+#else
+        pid_t pid = getpid();
+#endif
+        root = (fs::temp_directory_path() / ("serius_test_persistent_" + std::to_string(pid) + "_" + std::to_string(reinterpret_cast<uintptr_t>(this)))).string();
         std::error_code ec;
         fs::remove_all(root, ec);
         fs::create_directories(root, ec);

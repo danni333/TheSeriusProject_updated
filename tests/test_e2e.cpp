@@ -56,7 +56,7 @@ int find_free_port()
     return probe_result ? port : 0;
 }
 
-void wait_for_server(httplib::Client &client, int timeout_seconds = 30)
+void wait_for_server(httplib::Client &client, int timeout_seconds = 60)
 {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeout_seconds);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -64,8 +64,9 @@ void wait_for_server(httplib::Client &client, int timeout_seconds = 30)
         if (res && res->status == 200) {
             return;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    FAIL() << "Server did not become ready within " << timeout_seconds << " seconds";
 }
 
 #ifdef _WIN32
@@ -147,7 +148,7 @@ protected:
 
         server_thread_ = std::thread([this] { server_->run(); });
         client_ = std::make_unique<httplib::Client>("127.0.0.1", port_);
-        wait_for_server(*client_, 30);
+        wait_for_server(*client_, 60);
     }
 
     void TearDown() override

@@ -29,6 +29,8 @@ class ModelHubServer
     void stop();
     void setup_routes();
 
+    int get_port() const { return port_; }
+
     // Model management
     bool upload_model(const std::string &model_path, const ModelMetadata &metadata);
     bool download_model(const std::string &model_id, const std::string &output_path);
