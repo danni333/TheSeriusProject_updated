@@ -17,8 +17,7 @@ class Audit
     ~Audit();
 
     /// Log an action.
-    void log(const std::string &tool, const std::string &args,
-             const std::string &outcome);
+    void log(const std::string &tool, const std::string &args, const std::string &outcome);
 
    private:
     std::ofstream log_file_;

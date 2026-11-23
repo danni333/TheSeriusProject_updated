@@ -1,8 +1,8 @@
 #pragma once
 
-#include <nlohmann/json.hpp>
 #include <functional>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <string>
 
 #include "../mcp/client.h"
@@ -12,12 +12,7 @@ namespace mcp {
 
 using json = nlohmann::json;
 
-enum class RiskLevel
-{
-    SAFE,
-    MODERATE,
-    DANGEROUS
-};
+enum class RiskLevel { SAFE, MODERATE, DANGEROUS };
 
 /// MCPGuard intercepts tool calls, classifies risk, and enforces human approval
 /// for dangerous operations.
@@ -32,8 +27,7 @@ class MCPGuard
     static RiskLevel risk_level(const std::string &tool);
 
     /// Call a tool through the guard. Dangerous tools require approval.
-    json guarded_call(MCPClient &mcp, const std::string &tool, const json &args,
-                      ApprovalCallback approval = nullptr);
+    json guarded_call(MCPClient &mcp, const std::string &tool, const json &args, ApprovalCallback approval = nullptr);
 
     /// Set a custom risk level for a tool.
     void set_risk(const std::string &tool, RiskLevel level);

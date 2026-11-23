@@ -1,11 +1,11 @@
 #include "nomic_bert.h"
 
-#include "../blas/blas.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <unordered_set>
+
+#include "../blas/blas.h"
 
 namespace serius::hub {
 
@@ -13,7 +13,10 @@ namespace {
 
 constexpr float kSilkEps = 1e-12f;
 
-inline float silu(float x) { return x / (1.0f + std::exp(-x)); }
+inline float silu(float x)
+{
+    return x / (1.0f + std::exp(-x));
+}
 
 /// Transpose a row-major [rows, cols] matrix in place-equivalent fashion:
 /// returns a new vector holding the [cols, rows] layout so that
@@ -84,9 +87,9 @@ bool NomicBertEmbedder::get_tensor(const std::unordered_map<std::string, core::T
     return true;
 }
 
-bool NomicBertEmbedder::get_tensor_transposed(
-    const std::unordered_map<std::string, core::Tensor> &tensors, const std::string &name,
-    size_t out_dim, size_t in_dim, std::vector<float> *out)
+bool NomicBertEmbedder::get_tensor_transposed(const std::unordered_map<std::string, core::Tensor> &tensors,
+                                              const std::string &name, size_t out_dim, size_t in_dim,
+                                              std::vector<float> *out)
 {
     std::vector<float> flat;
     if (!get_tensor(tensors, name, &flat) || flat.size() != out_dim * in_dim) {
@@ -101,8 +104,7 @@ bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor>
     return load(tensors, Config{});
 }
 
-bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor> &tensors,
-                             const Config &cfg)
+bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor> &tensors, const Config &cfg)
 {
     cfg_ = cfg;
     const int H = cfg_.hidden;
@@ -138,10 +140,8 @@ bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor>
         if (!get_tensor(tensors, p + "layer_output_norm.weight", &w.out_norm_w)) return false;
         if (!get_tensor(tensors, p + "layer_output_norm.bias", &w.out_norm_b)) return false;
         // sanity: expected flat sizes
-        if (w.qkv.size() != static_cast<size_t>(3 * H) * H ||
-            w.wo.size() != static_cast<size_t>(H) * H ||
-            w.up.size() != static_cast<size_t>(F) * H ||
-            w.gate.size() != static_cast<size_t>(F) * H ||
+        if (w.qkv.size() != static_cast<size_t>(3 * H) * H || w.wo.size() != static_cast<size_t>(H) * H ||
+            w.up.size() != static_cast<size_t>(F) * H || w.gate.size() != static_cast<size_t>(F) * H ||
             w.down.size() != static_cast<size_t>(H) * F) {
             return false;
         }
@@ -158,8 +158,7 @@ bool is_wordpiece_punct(char c)
 {
     // BERT basic tokenization: ASCII punctuation splits tokens.
     const unsigned char u = static_cast<unsigned char>(c);
-    return (u >= 33 && u <= 47) || (u >= 58 && u <= 64) ||
-           (u >= 91 && u <= 96) || (u >= 123 && u <= 126);
+    return (u >= 33 && u <= 47) || (u >= 58 && u <= 64) || (u >= 91 && u <= 96) || (u >= 123 && u <= 126);
 }
 
 }  // namespace
@@ -179,7 +178,10 @@ std::vector<int> NomicBertEmbedder::tokenize(const std::string &text) const
     std::vector<std::string> words;
     std::string cur;
     auto flush = [&]() {
-        if (!cur.empty()) { words.push_back(cur); cur.clear(); }
+        if (!cur.empty()) {
+            words.push_back(cur);
+            cur.clear();
+        }
     };
     for (char ch : text) {
         const unsigned char u = static_cast<unsigned char>(ch);
@@ -216,7 +218,10 @@ std::vector<int> NomicBertEmbedder::tokenize(const std::string &text) const
                 failed = true;
                 break;
             }
-            if (best_tok.empty()) { failed = true; break; }
+            if (best_tok.empty()) {
+                failed = true;
+                break;
+            }
             ids.push_back(vocab_.at(best_tok));
             start = best;
         }
@@ -293,8 +298,8 @@ std::vector<float> NomicBertEmbedder::forward_hidden(const std::vector<int> &ids
             }
         };
         for (int t = 0; t < T; ++t) {
-            rope(0, t);                    // Q at offset 0
-            rope(H, t);                    // K at offset H
+            rope(0, t);  // Q at offset 0
+            rope(H, t);  // K at offset H
         }
 
         // Attention (non-causal, mean over all positions)

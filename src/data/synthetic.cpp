@@ -1,13 +1,11 @@
 #include "synthetic.h"
 
-#include <cctype>
 #include <algorithm>
 
 namespace serius {
 namespace data {
 
-float HeuristicJudge::score(const std::string &instruction,
-                            const std::string &output)
+float HeuristicJudge::score(const std::string &instruction, const std::string &output)
 {
     (void)instruction;
     if (output.empty()) {
@@ -18,8 +16,7 @@ float HeuristicJudge::score(const std::string &instruction,
     size_t len = output.size();
     score += std::min(static_cast<float>(len) / 200.0f, 0.5f);
     // Ends with sentence punctuation.
-    if (!output.empty() && (output.back() == '.' || output.back() == '!' ||
-                            output.back() == '?')) {
+    if (!output.empty() && (output.back() == '.' || output.back() == '!' || output.back() == '?')) {
         score += 0.2f;
     }
     // Contains at least one space (multi-word).
@@ -41,9 +38,7 @@ float HeuristicJudge::score(const std::string &instruction,
     return std::min(score, 1.0f);
 }
 
-SyntheticGenerator::SyntheticGenerator(InstructionGen gen_instruction,
-                                       OutputGen gen_output,
-                                       QualityJudge &judge,
+SyntheticGenerator::SyntheticGenerator(InstructionGen gen_instruction, OutputGen gen_output, QualityJudge &judge,
                                        float quality_threshold)
     : gen_instruction_(std::move(gen_instruction)),
       gen_output_(std::move(gen_output)),

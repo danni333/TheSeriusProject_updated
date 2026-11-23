@@ -1,5 +1,4 @@
 #include "cpu_backend.h"
-#include "fused_kernels.h"
 
 #include <condition_variable>
 #include <cstdlib>
@@ -10,6 +9,8 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
+
+#include "fused_kernels.h"
 
 namespace serius {
 namespace hal {
@@ -38,8 +39,8 @@ size_t dtype_size(DType dtype)
 }  // namespace
 
 #ifndef SERIUS_USE_CUDA
-void copy_layout(void *dst, const void *src, const size_t *shape, const size_t *src_strides, size_t dims,
-                 DType dtype, cudaStream_t stream)
+void copy_layout(void *dst, const void *src, const size_t *shape, const size_t *src_strides, size_t dims, DType dtype,
+                 cudaStream_t stream)
 {
     (void)stream;
     if (dst == nullptr || src == nullptr || dims == 0) {
@@ -151,7 +152,9 @@ struct CpuStream
                 {
                     std::unique_lock<std::mutex> lk(mutex);
                     cv.wait(lk, [this] { return stop || !queue.empty(); });
-                    if (stop && queue.empty()) { return; }
+                    if (stop && queue.empty()) {
+                        return;
+                    }
                     task = std::move(queue.front());
                     queue.pop();
                 }
@@ -167,7 +170,9 @@ struct CpuStream
             stop = true;
         }
         cv.notify_all();
-        if (worker.joinable()) { worker.join(); }
+        if (worker.joinable()) {
+            worker.join();
+        }
     }
 
     void enqueue(std::function<void()> task)
@@ -215,7 +220,9 @@ void *CpuBackend::create_stream()
 
 void CpuBackend::destroy_stream(void *stream)
 {
-    if (stream == nullptr) { return; }
+    if (stream == nullptr) {
+        return;
+    }
     {
         std::lock_guard<std::mutex> lk(g_stream_registry_mutex);
         g_cpu_streams.erase(stream);
@@ -290,7 +297,9 @@ IBackend *get_gpu_backend()
 
 bool is_cpu_stream(void *stream)
 {
-    if (stream == nullptr) { return false; }
+    if (stream == nullptr) {
+        return false;
+    }
     std::lock_guard<std::mutex> lk(g_stream_registry_mutex);
     return g_cpu_streams.count(stream) != 0;
 }

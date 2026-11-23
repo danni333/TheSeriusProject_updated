@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../tensor/tensor.h"
 #include "../quant/quant_weight.h"
+#include "../tensor/tensor.h"
 
 namespace serius {
 namespace core {

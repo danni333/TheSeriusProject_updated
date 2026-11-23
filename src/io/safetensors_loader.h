@@ -11,7 +11,7 @@ namespace io {
 /// Metadata for one tensor in a safetensors file.
 struct SafetensorTensorMeta
 {
-    std::string dtype;   // "F32", "F16", "BF16", etc.
+    std::string dtype;  // "F32", "F16", "BF16", etc.
     std::vector<int64_t> shape;
     int64_t data_start;  // byte offset in data section
     int64_t data_end;    // byte offset (exclusive)

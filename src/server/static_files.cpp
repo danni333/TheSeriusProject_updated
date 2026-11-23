@@ -76,8 +76,7 @@ void setup_static_routes(httplib::Server &server, const std::string &ui_dir)
         }
         const fs::path target = fs::weakly_canonical(root / fs::path(filename), ec);
         const std::string root_str = root.string() + static_cast<char>(fs::path::preferred_separator);
-        if (ec || target.string().compare(0, root_str.size(), root_str) != 0 ||
-            !fs::is_regular_file(target)) {
+        if (ec || target.string().compare(0, root_str.size(), root_str) != 0 || !fs::is_regular_file(target)) {
             res.status = 404;
             res.set_content("File not found", "text/plain");
             return;
@@ -96,5 +95,3 @@ void setup_static_routes(httplib::Server &server, const std::string &ui_dir)
 
 }  // namespace server
 }  // namespace serius
-
-

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../tensor/tensor.h"
-
 #include <string>
 #include <vector>
+
+#include "../tensor/tensor.h"
 
 namespace serius {
 namespace debug {

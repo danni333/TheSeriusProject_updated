@@ -1,8 +1,7 @@
 #include "guard.h"
 
-#include <nlohmann/json.hpp>
-
 #include <iostream>
+#include <nlohmann/json.hpp>
 
 namespace serius {
 namespace mcp {
@@ -11,15 +10,9 @@ using json = nlohmann::json;
 
 namespace {
 const std::map<std::string, RiskLevel> kDefaultRisks = {
-    {"read_file", RiskLevel::SAFE},
-    {"search", RiskLevel::SAFE},
-    {"list_files", RiskLevel::SAFE},
-    {"write_file", RiskLevel::MODERATE},
-    {"edit_file", RiskLevel::MODERATE},
-    {"run_command", RiskLevel::DANGEROUS},
-    {"send_email", RiskLevel::DANGEROUS},
-    {"delete_file", RiskLevel::DANGEROUS},
-    {"format_disk", RiskLevel::DANGEROUS},
+    {"read_file", RiskLevel::SAFE},       {"search", RiskLevel::SAFE},           {"list_files", RiskLevel::SAFE},
+    {"write_file", RiskLevel::MODERATE},  {"edit_file", RiskLevel::MODERATE},    {"run_command", RiskLevel::DANGEROUS},
+    {"send_email", RiskLevel::DANGEROUS}, {"delete_file", RiskLevel::DANGEROUS}, {"format_disk", RiskLevel::DANGEROUS},
 };
 }  // namespace
 
@@ -39,8 +32,7 @@ RiskLevel MCPGuard::risk_level(const std::string &tool)
     return it->second;
 }
 
-json MCPGuard::guarded_call(MCPClient &mcp, const std::string &tool,
-                            const json &args, ApprovalCallback approval)
+json MCPGuard::guarded_call(MCPClient &mcp, const std::string &tool, const json &args, ApprovalCallback approval)
 {
     RiskLevel risk = risk_level(tool);
 
@@ -50,9 +42,7 @@ json MCPGuard::guarded_call(MCPClient &mcp, const std::string &tool,
             approved = approval(tool, args);
         }
         if (!approved) {
-            return json{{"error", "Operazione rifiutata dall'utente"},
-                        {"tool", tool},
-                        {"risk", "dangerous"}};
+            return json{{"error", "Operazione rifiutata dall'utente"}, {"tool", tool}, {"risk", "dangerous"}};
         }
     }
 

@@ -29,9 +29,8 @@ TransformerModel::TransformerModel(const ModelConfig &config) : config_(config)
     for (size_t layer = 0; layer < config.n_layers; ++layer) {
         const unsigned layer_seed = 44U + static_cast<unsigned>(layer) * 16U;
         const bool use_moe = config_.has_moe();
-        blocks.push_back(new TransformerBlock(config_.d_model, config_.n_heads, config_.d_ff,
-                                              layer_seed, config_.num_experts, config_.top_k,
-                                              config_.shared_experts, use_moe));
+        blocks.push_back(new TransformerBlock(config_.d_model, config_.n_heads, config_.d_ff, layer_seed,
+                                              config_.num_experts, config_.top_k, config_.shared_experts, use_moe));
     }
 
     // Final layernorm

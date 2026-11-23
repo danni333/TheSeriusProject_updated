@@ -51,7 +51,10 @@ namespace detail {
 /// full-size tensors (e.g. cross_entropy's probabilities) that would be
 /// needlessly deep-copied on every execute().
 inline thread_local int replay_depth = 0;
-inline bool in_replay() { return replay_depth > 0; }
+inline bool in_replay()
+{
+    return replay_depth > 0;
+}
 struct ReplayGuard
 {
     ReplayGuard() { ++replay_depth; }

@@ -14,7 +14,7 @@ namespace infer {
 
 class DraftModel
 {
-public:
+   public:
     using ForwardFn = std::function<core::Tensor(const std::vector<int> &)>;
 
     DraftModel() = default;
@@ -23,13 +23,13 @@ public:
     core::Tensor forward(const std::vector<int> &sequence) const;
     bool valid() const noexcept { return static_cast<bool>(forward_fn_); }
 
-private:
+   private:
     ForwardFn forward_fn_;
 };
 
 class SpeculativeDecoder
 {
-public:
+   public:
     using ForwardFn = std::function<core::Tensor(const std::vector<int> &)>;
 
     struct Metrics
@@ -51,7 +51,7 @@ public:
     int gamma() const noexcept { return gamma_; }
     const Metrics &metrics() const noexcept { return metrics_; }
 
-private:
+   private:
     static core::Tensor logits_to_last_row(const core::Tensor &logits);
     static core::Tensor softmax_distribution(const core::Tensor &logits);
     static int sample_from_distribution(const core::Tensor &probs, std::mt19937 &rng);

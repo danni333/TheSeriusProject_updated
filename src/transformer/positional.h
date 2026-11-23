@@ -17,13 +17,10 @@ constexpr float DEFAULT_ROPE_BASE = 10000.0F;
 float compute_rope_base(float base, size_t d_head, size_t training_ctx = 0, size_t target_ctx = 0);
 
 /// Applies Rotary Position Embedding (RoPE) in-place to Queries and Keys.
-/// Expects Q and K to be of shape (seq_len, d_model) or (seq_len, d_head) where d = last dim.
+/// Expects Q and K to be of shape (seq_len, d_model) or (batch, seq_len, d_model).
 /// Generates frequencies on the fly based on the sequence index.
-void apply_rope(Tensor &q, Tensor &k, size_t d_head,
-                float rope_base = DEFAULT_ROPE_BASE,
-                size_t pos_offset = 0,
-                size_t training_ctx = 0,
-                size_t target_ctx = 0);
+void apply_rope(Tensor &q, Tensor &k, size_t d_head, float rope_base = DEFAULT_ROPE_BASE, size_t pos_offset = 0,
+                size_t training_ctx = 0, size_t target_ctx = 0);
 
 }  // namespace model
 }  // namespace serius

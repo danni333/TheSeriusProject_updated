@@ -10,7 +10,6 @@
 
 #include "../tensor/tensor.h"
 
-
 namespace serius {
 namespace core {
 namespace autograd {

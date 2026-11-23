@@ -2,9 +2,9 @@
 
 #ifdef SERIUS_USE_MPI
 
-#include "comm.h"
-
 #include <mpi.h>
+
+#include "comm.h"
 
 namespace serius {
 namespace distributed {

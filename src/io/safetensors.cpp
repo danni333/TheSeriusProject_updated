@@ -2,10 +2,9 @@
 
 #include <cstring>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <stdexcept>
-
-#include <nlohmann/json.hpp>
 
 namespace serius {
 namespace io {
@@ -30,7 +29,9 @@ void SafetensorsReader::parse_header()
     uint64_t header_size = 0;
     std::memcpy(&header_size, raw, sizeof(uint64_t));
 
-    if (8 + header_size > file_.size()) {
+    // Compare against file_.size() - 8 to avoid overflow when header_size
+    // is close to UINT64_MAX.
+    if (header_size > file_.size() - 8) {
         throw std::runtime_error("SafetensorsReader: header size exceeds file size");
     }
 
@@ -38,6 +39,7 @@ void SafetensorsReader::parse_header()
     std::string header_str(reinterpret_cast<const char *>(raw + 8), header_size);
     auto header = nlohmann::json::parse(header_str);
 
+    const uint64_t data_size = file_.size() - 8 - header_size;
     data_start_ = raw + 8 + header_size;
 
     for (auto &[key, value] : header.items()) {
@@ -60,8 +62,20 @@ void SafetensorsReader::parse_header()
         }
 
         auto &offsets = value.at("data_offsets");
-        info.data_offset_start = offsets[0].get<size_t>();
-        info.data_offset_end = offsets[1].get<size_t>();
+        if (!offsets.is_array() || offsets.size() != 2 || !offsets[0].is_number_unsigned() ||
+            !offsets[1].is_number_unsigned()) {
+            throw std::runtime_error("SafetensorsReader: invalid data_offsets for tensor: " + key);
+        }
+        const uint64_t off_start = offsets[0].get<uint64_t>();
+        const uint64_t off_end = offsets[1].get<uint64_t>();
+        // Every tensor's byte range must lie inside the data blob; without
+        // this a crafted header could point raw_data()/get_tensor() outside
+        // the mmap'd file.
+        if (off_start > off_end || off_end > data_size) {
+            throw std::runtime_error("SafetensorsReader: data_offsets out of bounds for tensor: " + key);
+        }
+        info.data_offset_start = static_cast<size_t>(off_start);
+        info.data_offset_end = static_cast<size_t>(off_end);
 
         tensors_[key] = std::move(info);
     }
@@ -175,12 +189,18 @@ core::Tensor SafetensorsReader::get_tensor(const std::string &name) const
 static std::string dtype_to_string(hal::DType dtype)
 {
     switch (dtype) {
-        case hal::DType::Float32: return "F32";
-        case hal::DType::Float16: return "F16";
-        case hal::DType::BFloat16: return "BF16";
-        case hal::DType::Int8: return "I8";
-        case hal::DType::Int4: return "I4";
-        default: return "F32";
+        case hal::DType::Float32:
+            return "F32";
+        case hal::DType::Float16:
+            return "F16";
+        case hal::DType::BFloat16:
+            return "BF16";
+        case hal::DType::Int8:
+            return "I8";
+        case hal::DType::Int4:
+            return "I4";
+        default:
+            return "F32";
     }
 }
 

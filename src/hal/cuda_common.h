@@ -3,6 +3,7 @@
 #ifdef SERIUS_USE_CUDA
 
 #include <cuda_runtime.h>
+
 #include <iostream>
 #include <stdexcept>
 
@@ -16,4 +17,4 @@
         }                                                                                            \
     } while (0)
 
-#endif // SERIUS_USE_CUDA
+#endif  // SERIUS_USE_CUDA

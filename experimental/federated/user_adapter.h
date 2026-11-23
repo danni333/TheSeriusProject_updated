@@ -4,7 +4,7 @@
 
 #include <string>
 
-#include "../lora/lora_adapter.h"
+#include "lora/lora_adapter.h"
 
 namespace serius {
 namespace federated {

@@ -15,8 +15,7 @@ class Transport
     virtual ~Transport() = default;
 
     /// Send a JSON-RPC request and return the parsed response.
-    virtual json send_request(const std::string &method,
-                              const json &params = json::object()) = 0;
+    virtual json send_request(const std::string &method, const json &params = json::object()) = 0;
 };
 
 }  // namespace mcp

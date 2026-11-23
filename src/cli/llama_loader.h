@@ -26,10 +26,8 @@ struct LlamaCliModel
 /// `gpu_layers` > 0 requests partial offload of that many leading layers
 /// (--gpu-layers N); <= 0 keeps the auto/cpu/cuda decision.
 /// Returns nullptr on failure (reason printed to stderr).
-std::unique_ptr<LlamaCliModel> load_llama_cli_model(const std::string &model_path,
-                                                    const std::string &gpu_mode,
-                                                    const std::string &quant_tag = "",
-                                                    int gpu_layers = -1);
+std::unique_ptr<LlamaCliModel> load_llama_cli_model(const std::string &model_path, const std::string &gpu_mode,
+                                                    const std::string &quant_tag = "", int gpu_layers = -1);
 
 }  // namespace cli
 }  // namespace serius

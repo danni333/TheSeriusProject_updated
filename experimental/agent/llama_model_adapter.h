@@ -2,10 +2,10 @@
 
 #include "model_interface.h"
 
-#include "../infer/llama_inference.h"
-#include "../infer/sampler.h"
-#include "../tokenizer/bpe.h"
-#include "../transformer/llama_model.h"
+#include "infer/llama_inference.h"
+#include "infer/sampler.h"
+#include "tokenizer/bpe.h"
+#include "transformer/llama_model.h"
 
 namespace serius {
 namespace agent {

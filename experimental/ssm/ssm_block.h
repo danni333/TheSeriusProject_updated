@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 
 #include <vector>
 

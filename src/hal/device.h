@@ -39,7 +39,6 @@ class IBackend
     virtual void memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream) = 0;
     virtual void memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream) = 0;
 
-
     // Initialization check
     virtual bool is_available() const = 0;
 

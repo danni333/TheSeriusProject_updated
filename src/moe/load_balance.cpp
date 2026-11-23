@@ -7,10 +7,8 @@
 namespace serius {
 namespace model {
 
-float load_balance_loss(const core::Tensor &router_probs,
-                        const std::vector<std::vector<size_t>> &assignments,
-                        size_t n_experts,
-                        float alpha)
+float load_balance_loss(const core::Tensor &router_probs, const std::vector<std::vector<size_t>> &assignments,
+                        size_t n_experts, float alpha)
 {
     if (n_experts == 0) {
         return 0.0f;
@@ -62,10 +60,8 @@ float load_balance_loss(const core::Tensor &router_probs,
     return alpha * static_cast<float>(n_experts) * loss;
 }
 
-float load_balance_loss(const core::Tensor &router_probs,
-                        const std::vector<std::vector<int>> &assignments,
-                        size_t n_experts,
-                        float alpha)
+float load_balance_loss(const core::Tensor &router_probs, const std::vector<std::vector<int>> &assignments,
+                        size_t n_experts, float alpha)
 {
     std::vector<std::vector<size_t>> normalized(assignments.size());
     for (size_t token = 0; token < assignments.size(); ++token) {

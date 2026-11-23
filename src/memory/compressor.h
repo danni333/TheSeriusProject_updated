@@ -12,7 +12,7 @@ namespace memory {
 /// Result of a compression operation.
 struct CompressionResult
 {
-    core::Tensor compressed;   // (summary_tokens, d_model) summary vectors
+    core::Tensor compressed;  // (summary_tokens, d_model) summary vectors
     float information_ratio;  // compressed_size / original_size
 };
 

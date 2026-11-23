@@ -1,6 +1,5 @@
 #include "dequant_matmul.h"
 
-#include "int4.h"
 #include "quant_matmul.h"
 
 namespace serius {

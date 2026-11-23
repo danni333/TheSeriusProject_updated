@@ -2,8 +2,6 @@
 // Contains the cuBLAS prefill, fused prefill weights, CUDA-graph decode
 // step and single-token CUDA forward. Everything is inside
 // SERIUS_USE_CUDA guards, matching the original layout.
-#include "llama_inference.h"
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -14,8 +12,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include "llama_inference.h"
+
 #ifdef SERIUS_USE_CUDA
 #include <cuda_runtime.h>
+
 #include <iostream>
 #include <stdexcept>
 
@@ -45,7 +46,8 @@ namespace infer {
 using core::Tensor;
 
 // Non-empty env check: getenv_s on MSVC, getenv elsewhere.
-[[maybe_unused]] static bool env_nonempty(const char *name) {
+[[maybe_unused]] static bool env_nonempty(const char *name)
+{
 #if defined(_MSC_VER)
     size_t n = 0;
     return getenv_s(&n, nullptr, 0, name) == 0 && n > 0;
@@ -55,7 +57,8 @@ using core::Tensor;
 #endif
 }
 
-[[maybe_unused]] static size_t get_dtype_size(hal::DType dtype) {
+[[maybe_unused]] static size_t get_dtype_size(hal::DType dtype)
+{
     switch (dtype) {
         case hal::DType::Float32:
             return 4;
@@ -74,7 +77,6 @@ using core::Tensor;
 // last_only: compute logits for the final position only ({1, vocab} instead of
 // {seq_len, vocab}) — chat/server callers only ever read the last row, and the
 // full logits tensor is seq_len*vocab*4 bytes of host memset + D2H copy.
-#ifdef SERIUS_USE_CUDA
 
 // Initial per-layer GPU KV capacity. Grows on demand via
 // ensure_kv_capacity_gpu — sizing to the real context instead of a fixed
@@ -87,20 +89,22 @@ constexpr size_t KV_INIT_CAP = 1024;
 /// callers embedding raw KV pointers (the decode graph) must re-capture.
 /// Works for both arena-backed views and standalone tensors: the old storage
 /// is simply dropped (arena slabs are owned by KVCache::gpu_arena).
-bool ensure_kv_capacity_gpu(KVCacheLayer &cl, size_t needed, size_t kv_dim,
-                            hal::DType dtype) {
+bool ensure_kv_capacity_gpu(KVCacheLayer &cl, size_t needed, size_t kv_dim, hal::DType dtype)
+{
     const size_t cap = cl.k.shape().empty() ? 0 : cl.k.shape()[0];
-    if (needed <= cap) { return false; }
+    if (needed <= cap) {
+        return false;
+    }
     const size_t new_cap = std::max({needed, cap * 2, KV_INIT_CAP});
     Tensor nk = Tensor::gpu_only({new_cap, kv_dim}, dtype);
     Tensor nv = Tensor::gpu_only({new_cap, kv_dim}, dtype);
     const size_t esz = get_dtype_size(dtype);
     const size_t rows = std::min(cl.current_len, cap);
     if (cl.k.raw_data_gpu() != nullptr && cl.v.raw_data_gpu() != nullptr && rows > 0) {
-        CHECK_CUDA(cudaMemcpyAsync(nk.raw_data_gpu(), cl.k.raw_data_gpu(),
-                                   rows * kv_dim * esz, cudaMemcpyDeviceToDevice, 0));
-        CHECK_CUDA(cudaMemcpyAsync(nv.raw_data_gpu(), cl.v.raw_data_gpu(),
-                                   rows * kv_dim * esz, cudaMemcpyDeviceToDevice, 0));
+        CHECK_CUDA(
+            cudaMemcpyAsync(nk.raw_data_gpu(), cl.k.raw_data_gpu(), rows * kv_dim * esz, cudaMemcpyDeviceToDevice, 0));
+        CHECK_CUDA(
+            cudaMemcpyAsync(nv.raw_data_gpu(), cl.v.raw_data_gpu(), rows * kv_dim * esz, cudaMemcpyDeviceToDevice, 0));
     }
     cl.k = std::move(nk);
     cl.v = std::move(nv);
@@ -109,11 +113,14 @@ bool ensure_kv_capacity_gpu(KVCacheLayer &cl, size_t needed, size_t kv_dim,
 
 // All-zero attention mask for decode, grown on demand: the eager path needs
 // `effective_len` floats and contexts can now exceed the old fixed 4096.
-float *decode_mask_for(size_t len) {
+float *decode_mask_for(size_t len)
+{
     static float *p = nullptr;
     static size_t cap = 0;
     if (len > cap) {
-        if (p != nullptr) { cudaFree(p); }
+        if (p != nullptr) {
+            cudaFree(p);
+        }
         cap = std::max(len, (size_t)4096);
         CHECK_CUDA(cudaMalloc(&p, cap * sizeof(float)));
         CHECK_CUDA(cudaMemset(p, 0, cap * sizeof(float)));
@@ -126,16 +133,17 @@ float *decode_mask_for(size_t len) {
 // on GPU; the separate dense q/k/v/gate/up tensors are then released — decode
 // uses the quantized weights whenever all four quant tensors are resident
 // (same gate as the decode `use_quant` path), so the dense copies are dead.
-struct FusedPrefillW {
-    std::vector<core::Tensor> qkv;    // {hidden, hidden + 2*kv_dim} per layer
-    std::vector<core::Tensor> gu;     // {hidden, 2*inter} per layer
-    std::vector<char> fused;          // per-layer flag
+struct FusedPrefillW
+{
+    std::vector<core::Tensor> qkv;  // {hidden, hidden + 2*kv_dim} per layer
+    std::vector<core::Tensor> gu;   // {hidden, 2*inter} per layer
+    std::vector<char> fused;        // per-layer flag
     size_t hidden = 0, kv_dim = 0, inter = 0;
     const void *fingerprint = nullptr;
 };
 
-static const FusedPrefillW *fused_prefill_weights(const model::LLaMAModel &model,
-                                                  hal::DType dtype) {
+static const FusedPrefillW *fused_prefill_weights(const model::LLaMAModel &model, hal::DType dtype)
+{
     static const bool no_quant = env_nonempty("SERIUS_NO_QUANT");
     static const bool no_fuse = env_nonempty("SERIUS_NO_FUSE");
     if (no_quant || no_fuse || dtype != hal::DType::Float16) return nullptr;
@@ -150,22 +158,25 @@ static const FusedPrefillW *fused_prefill_weights(const model::LLaMAModel &model
     static std::unordered_map<const model::LLaMAModel *, FusedPrefillW> cache;
     if (cache.size() > 2) cache.clear();  // bound VRAM (~1.7 GB fused per model)
     auto it = cache.find(&model);
-    if (it != cache.end() && it->second.fingerprint == fp &&
-        it->second.hidden == hidden && it->second.kv_dim == kv_dim &&
-        it->second.inter == inter && it->second.qkv.size() == model.layers().size()) {
+    if (it != cache.end() && it->second.fingerprint == fp && it->second.hidden == hidden &&
+        it->second.kv_dim == kv_dim && it->second.inter == inter && it->second.qkv.size() == model.layers().size()) {
         return &it->second;
     }
     cache.erase(&model);
 
     auto ok_shape = [](const core::Tensor &t, size_t r, size_t c) {
-        return t.dtype() == hal::DType::Float16 && t.shape().size() == 2 &&
-               t.shape()[0] == r && t.shape()[1] == c && t.raw_data_gpu() != nullptr;
+        return t.dtype() == hal::DType::Float16 && t.shape().size() == 2 && t.shape()[0] == r && t.shape()[1] == c &&
+               t.raw_data_gpu() != nullptr;
     };
 
     FusedPrefillW w;
-    w.hidden = hidden; w.kv_dim = kv_dim; w.inter = inter; w.fingerprint = fp;
+    w.hidden = hidden;
+    w.kv_dim = kv_dim;
+    w.inter = inter;
+    w.fingerprint = fp;
     const auto &layers = model.layers();
-    w.qkv.resize(layers.size()); w.gu.resize(layers.size());
+    w.qkv.resize(layers.size());
+    w.gu.resize(layers.size());
     w.fused.assign(layers.size(), 0);
 
     size_t built = 0;
@@ -173,23 +184,20 @@ static const FusedPrefillW *fused_prefill_weights(const model::LLaMAModel &model
         auto *blk = layers[i].get();  // mutable: unique_ptr yields LLaMABlock*
         // Decode must be able to run fully quantized before we drop the dense
         // originals (mirrors the use_quant gate in llama_forward_single_token_cuda).
-        const bool quant_resident = blk->qkv_w.gpu_data && blk->gate_up_w.gpu_data &&
-                                    blk->o_w.gpu_data && blk->down_w.gpu_data;
+        const bool quant_resident =
+            blk->qkv_w.gpu_data && blk->gate_up_w.gpu_data && blk->o_w.gpu_data && blk->down_w.gpu_data;
         if (!quant_resident) continue;
-        if (!ok_shape(blk->q_proj->data, hidden, hidden) ||
-            !ok_shape(blk->k_proj->data, hidden, kv_dim) ||
-            !ok_shape(blk->v_proj->data, hidden, kv_dim) ||
-            !ok_shape(blk->gate_proj->data, hidden, inter) ||
-            !ok_shape(blk->up_proj->data, hidden, inter)) continue;
+        if (!ok_shape(blk->q_proj->data, hidden, hidden) || !ok_shape(blk->k_proj->data, hidden, kv_dim) ||
+            !ok_shape(blk->v_proj->data, hidden, kv_dim) || !ok_shape(blk->gate_proj->data, hidden, inter) ||
+            !ok_shape(blk->up_proj->data, hidden, inter))
+            continue;
 
         auto qkv_t = core::Tensor::gpu_only({hidden, hidden + 2 * kv_dim}, dtype);
-        hal::concat_rows_f16(qkv_t.raw_data_gpu(), blk->q_proj->data.raw_data_gpu(),
-                             blk->k_proj->data.raw_data_gpu(), blk->v_proj->data.raw_data_gpu(),
-                             hidden, hidden, kv_dim, kv_dim, 0);
+        hal::concat_rows_f16(qkv_t.raw_data_gpu(), blk->q_proj->data.raw_data_gpu(), blk->k_proj->data.raw_data_gpu(),
+                             blk->v_proj->data.raw_data_gpu(), hidden, hidden, kv_dim, kv_dim, 0);
         auto gu_t = core::Tensor::gpu_only({hidden, 2 * inter}, dtype);
         hal::concat_rows_f16(gu_t.raw_data_gpu(), blk->gate_proj->data.raw_data_gpu(),
-                             blk->up_proj->data.raw_data_gpu(), nullptr,
-                             hidden, inter, inter, 0, 0);
+                             blk->up_proj->data.raw_data_gpu(), nullptr, hidden, inter, inter, 0, 0);
         w.qkv[i] = std::move(qkv_t);
         w.gu[i] = std::move(gu_t);
         w.fused[i] = 1;
@@ -200,14 +208,16 @@ static const FusedPrefillW *fused_prefill_weights(const model::LLaMAModel &model
         blk->gate_proj->data = core::Tensor();
         blk->up_proj->data = core::Tensor();
     }
-    if (built == 0) { cache.erase(&model); return nullptr; }
+    if (built == 0) {
+        cache.erase(&model);
+        return nullptr;
+    }
     // The dense tensors freed above land in the backend's 1 GiB free-list
     // cache instead of returning to the driver — flush it so fused weights
     // don't stack on top of them and overcommit VRAM.
     if (hal::IBackend *be = hal::get_gpu_backend()) be->flush_cache();
     return &cache.emplace(&model, std::move(w)).first->second;
 }
-#endif
 
 // Batched prefill straight from packed quantized weights: when every layer
 // projection is resident on the GPU in the repacked QuantWeight layout, each
@@ -233,10 +243,11 @@ static bool quant_prefill_ready(const model::LLaMAModel &model)
 // Grow-only scratch for the dequant -> transpose -> GEMM prefill path, sized
 // to the largest single fused weight (gate|up). Reused across layers, calls
 // and models (a bigger model simply grows it once).
-struct QuantPrefillScratch {
-    core::Tensor dq;     // [out, in] FP16 dequant output
-    core::Tensor dq_t;   // [in, out] FP16 weight layout cuBLAS expects
-    size_t cap = 0;      // element capacity of each buffer
+struct QuantPrefillScratch
+{
+    core::Tensor dq;    // [out, in] FP16 dequant output
+    core::Tensor dq_t;  // [in, out] FP16 weight layout cuBLAS expects
+    size_t cap = 0;     // element capacity of each buffer
 };
 
 static QuantPrefillScratch &quant_prefill_scratch()
@@ -247,8 +258,8 @@ static QuantPrefillScratch &quant_prefill_scratch()
 
 // Dequantize qw ([out,in] packed) into scratch, transpose to [in,out], and
 // run x[*,in] @ w^T -> out[*,out] through cuBLAS (FP16 in, FP32 compute).
-static void quant_prefill_gemm(const quant::QuantWeight &qw, const core::Tensor &x,
-                               core::Tensor &out, hal::DType dtype, QuantPrefillScratch &sc)
+static void quant_prefill_gemm(const quant::QuantWeight &qw, const core::Tensor &x, core::Tensor &out, hal::DType dtype,
+                               QuantPrefillScratch &sc)
 {
     const size_t elems = qw.in * qw.out;
     if (sc.cap < elems) {
@@ -256,9 +267,8 @@ static void quant_prefill_gemm(const quant::QuantWeight &qw, const core::Tensor 
         sc.dq_t = core::Tensor::gpu_only({elems}, hal::DType::Float16);
         sc.cap = elems;
     }
-    hal::dequant_qw_f16(qw.gpu_data, qw.dev_kind, (int)qw.in, (int)qw.out,
-                        (int)qw.dev_stride, (int)qw.dev_qs, (int)qw.dev_d, (int)qw.dev_m,
-                        sc.dq.raw_data_gpu());
+    hal::dequant_qw_f16(qw.gpu_data, qw.dev_kind, (int)qw.in, (int)qw.out, (int)qw.dev_stride, (int)qw.dev_qs,
+                        (int)qw.dev_d, (int)qw.dev_m, sc.dq.raw_data_gpu());
     // Transpose [out,in] -> [in,out] with the layout-copy kernel.
     core::Tensor dq_view = core::Tensor::gpu_view(sc.dq.raw_data_gpu(), {qw.out, qw.in}, dtype);
     core::Tensor dq_t_view = dq_view.transpose(0, 1);  // {in,out}, strides {1,in}
@@ -269,8 +279,8 @@ static void quant_prefill_gemm(const quant::QuantWeight &qw, const core::Tensor 
 }
 
 // Split a fused [q | k | v] GEMM output into the three projection buffers.
-static void split_qkv_f16(void *q, void *k, void *v, const void *qkv, size_t seq,
-                          size_t qkv_total, size_t hidden, size_t kv_dim)
+static void split_qkv_f16(void *q, void *k, void *v, const void *qkv, size_t seq, size_t qkv_total, size_t hidden,
+                          size_t kv_dim)
 {
     hal::extract_cols_f16(q, qkv, seq, qkv_total, 0, hidden);
     hal::extract_cols_f16(k, qkv, seq, qkv_total, hidden, kv_dim);
@@ -284,8 +294,9 @@ static void split_gu_f16(void *gate, void *up, const void *gu, size_t seq, size_
     hal::extract_cols_f16(up, gu, seq, 2 * inter, inter, inter);
 }
 
-static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tensor &token_ids,
-                                      KVCache *cache, bool last_only) {
+static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache,
+                                      bool last_only)
+{
     const auto &cfg = model.config();
     const size_t seq_len = token_ids.size(), hidden = cfg.hidden_size, n_heads = cfg.num_attention_heads;
     const size_t n_kv_heads = cfg.num_key_value_heads, head_dim = hidden / n_heads, kv_dim = n_kv_heads * head_dim;
@@ -295,16 +306,20 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
     const hal::DType stream_dtype = hal::DType::Float32;  // FP32 residual stream
 
     const bool prof_p = env_nonempty("SERIUS_PROF");
-    auto pt_now = [] { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+    auto pt_now = [] {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
     const double pt0 = prof_p ? pt_now() : 0.0;
 
     Tensor hidden_states_gpu = Tensor::gpu_only({seq_len, hidden}, stream_dtype);
-    std::vector<int> ids(seq_len); for(size_t i=0; i<seq_len; ++i) ids[i] = (int)token_ids[i];
-    int *ids_gpu = nullptr; 
+    std::vector<int> ids(seq_len);
+    for (size_t i = 0; i < seq_len; ++i) ids[i] = (int)token_ids[i];
+    int *ids_gpu = nullptr;
     CHECK_CUDA(cudaMalloc(&ids_gpu, seq_len * sizeof(int)));
     CHECK_CUDA(cudaMemcpy(ids_gpu, ids.data(), seq_len * sizeof(int), cudaMemcpyHostToDevice));
-    hal::gather_mixed(hidden_states_gpu.raw_data_gpu(), model.embed_tokens()->data.raw_data_gpu(), ids_gpu, seq_len, hidden, dtype, stream_dtype);
-    hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU); 
+    hal::gather_mixed(hidden_states_gpu.raw_data_gpu(), model.embed_tokens()->data.raw_data_gpu(), ids_gpu, seq_len,
+                      hidden, dtype, stream_dtype);
+    hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
     CHECK_CUDA(cudaFree(ids_gpu));
     const double pt_embed = prof_p ? pt_now() : 0.0;
 
@@ -369,31 +384,37 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
     for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
         const double seg0 = prof_p ? pt_now() : 0.0;
         const auto *blk = layers[layer_idx].get();
-        hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), blk->input_layernorm_weight->data.raw_data_gpu(), hidden, seq_len, eps, dtype);
+        hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(),
+                           blk->input_layernorm_weight->data.raw_data_gpu(), hidden, seq_len, eps, dtype);
         normed_buf.mark_dirty(Tensor::DataLocation::GPU);
         if (qpf) {
             // Quantized prefill: dequant qkv_w -> [in,out] -> fused GEMM.
             quant_prefill_gemm(blk->qkv_w, normed_buf, qkv_buf, dtype, qps);
-            split_qkv_f16(query_buf.raw_data_gpu(), key_buf.raw_data_gpu(),
-                          value_buf.raw_data_gpu(), qkv_buf.raw_data_gpu(),
-                          seq_len, hidden + 2 * kv_dim, hidden, kv_dim);
+            split_qkv_f16(query_buf.raw_data_gpu(), key_buf.raw_data_gpu(), value_buf.raw_data_gpu(),
+                          qkv_buf.raw_data_gpu(), seq_len, hidden + 2 * kv_dim, hidden, kv_dim);
         } else if (fpw && fpw->fused[layer_idx]) {
             // One fused GEMM {seq,in}x{in,hidden+2kv} then split q|k|v columns.
             core::blas::matmul(normed_buf, fpw->qkv[layer_idx], qkv_buf);
-            split_qkv_f16(query_buf.raw_data_gpu(), key_buf.raw_data_gpu(),
-                          value_buf.raw_data_gpu(), qkv_buf.raw_data_gpu(),
-                          seq_len, hidden + 2 * kv_dim, hidden, kv_dim);
+            split_qkv_f16(query_buf.raw_data_gpu(), key_buf.raw_data_gpu(), value_buf.raw_data_gpu(),
+                          qkv_buf.raw_data_gpu(), seq_len, hidden + 2 * kv_dim, hidden, kv_dim);
         } else {
             core::blas::matmul(normed_buf, blk->q_proj->data, query_buf);
             core::blas::matmul(normed_buf, blk->k_proj->data, key_buf);
             core::blas::matmul(normed_buf, blk->v_proj->data, value_buf);
         }
-        if (blk->q_bias) { hal::add_row_bias(query_buf.raw_data_gpu(), blk->q_bias->data.raw_data_gpu(), seq_len, hidden, dtype); }
-        if (blk->k_bias) { hal::add_row_bias(key_buf.raw_data_gpu(), blk->k_bias->data.raw_data_gpu(), seq_len, kv_dim, dtype); }
-        if (blk->v_bias) { hal::add_row_bias(value_buf.raw_data_gpu(), blk->v_bias->data.raw_data_gpu(), seq_len, kv_dim, dtype); }
+        if (blk->q_bias) {
+            hal::add_row_bias(query_buf.raw_data_gpu(), blk->q_bias->data.raw_data_gpu(), seq_len, hidden, dtype);
+        }
+        if (blk->k_bias) {
+            hal::add_row_bias(key_buf.raw_data_gpu(), blk->k_bias->data.raw_data_gpu(), seq_len, kv_dim, dtype);
+        }
+        if (blk->v_bias) {
+            hal::add_row_bias(value_buf.raw_data_gpu(), blk->v_bias->data.raw_data_gpu(), seq_len, kv_dim, dtype);
+        }
         hal::rope(query_buf.raw_data_gpu(), head_dim, seq_len, n_heads, rope_base, 0, dtype);
         hal::rope(key_buf.raw_data_gpu(), head_dim, seq_len, n_kv_heads, rope_base, 0, dtype);
-        query_buf.mark_dirty(Tensor::DataLocation::GPU); key_buf.mark_dirty(Tensor::DataLocation::GPU);
+        query_buf.mark_dirty(Tensor::DataLocation::GPU);
+        key_buf.mark_dirty(Tensor::DataLocation::GPU);
         // Pre-scale Q by 1/sqrt(head_dim): keeps attention scores inside the
         // reduced-precision range (Qwen logits can exceed FP16 max otherwise).
         const float q_scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
@@ -405,10 +426,10 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         if (cache) {
             KVCacheLayer &cl = cache->layers[layer_idx];
             size_t bytes = seq_len * kv_dim * get_dtype_size(dtype);
-            CHECK_CUDA(cudaMemcpyAsync((char*)cl.k.raw_data_gpu() + cl.current_len * kv_dim * get_dtype_size(dtype), 
-                       key_buf.raw_data_gpu(), bytes, cudaMemcpyDeviceToDevice, 0));
-            CHECK_CUDA(cudaMemcpyAsync((char*)cl.v.raw_data_gpu() + cl.current_len * kv_dim * get_dtype_size(dtype), 
-                       value_buf.raw_data_gpu(), bytes, cudaMemcpyDeviceToDevice, 0));
+            CHECK_CUDA(cudaMemcpyAsync((char *)cl.k.raw_data_gpu() + cl.current_len * kv_dim * get_dtype_size(dtype),
+                                       key_buf.raw_data_gpu(), bytes, cudaMemcpyDeviceToDevice, 0));
+            CHECK_CUDA(cudaMemcpyAsync((char *)cl.v.raw_data_gpu() + cl.current_len * kv_dim * get_dtype_size(dtype),
+                                       value_buf.raw_data_gpu(), bytes, cudaMemcpyDeviceToDevice, 0));
             cl.current_len += seq_len;
         }
 
@@ -418,32 +439,32 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         {
             // Q: {seq, n_heads, hd} -> {n_heads, seq, hd} in q_hs_buf
             Tensor qv = query_buf.reshape({seq_len, n_heads, head_dim}).transpose(0, 1);
-            hal::copy_layout(q_hs_buf.raw_data_gpu(), qv.raw_data_gpu(), qv.shape().data(),
-                             qv.strides().data(), qv.ndim(), dtype);
+            hal::copy_layout(q_hs_buf.raw_data_gpu(), qv.raw_data_gpu(), qv.shape().data(), qv.strides().data(),
+                             qv.ndim(), dtype);
 
             // K/V: expand GQA into {seq, n_heads, hd} rep buffers, then copy
             // to the {n_heads, seq, hd} (v) and {n_heads, hd, seq} (k) layouts
             // the batched GEMMs expect.
             if (n_kv_heads < n_heads) {
-                hal::repeat_kv(k_rep_buf.raw_data_gpu(), key_buf.raw_data_gpu(), seq_len,
-                               n_heads, n_kv_heads, head_dim, dtype);
-                hal::repeat_kv(v_rep_buf.raw_data_gpu(), value_buf.raw_data_gpu(), seq_len,
-                               n_heads, n_kv_heads, head_dim, dtype);
-                Tensor kt = k_rep_buf.transpose(0, 1);   // {nh, seq, hd}
+                hal::repeat_kv(k_rep_buf.raw_data_gpu(), key_buf.raw_data_gpu(), seq_len, n_heads, n_kv_heads, head_dim,
+                               dtype);
+                hal::repeat_kv(v_rep_buf.raw_data_gpu(), value_buf.raw_data_gpu(), seq_len, n_heads, n_kv_heads,
+                               head_dim, dtype);
+                Tensor kt = k_rep_buf.transpose(0, 1);  // {nh, seq, hd}
                 Tensor vt = v_rep_buf.transpose(0, 1);
-                hal::copy_layout(v_hs_buf.raw_data_gpu(), vt.raw_data_gpu(), vt.shape().data(),
-                                 vt.strides().data(), vt.ndim(), dtype);
-                Tensor ktt = kt.transpose(1, 2);         // {nh, hd, seq}
-                hal::copy_layout(kT_buf.raw_data_gpu(), ktt.raw_data_gpu(), ktt.shape().data(),
-                                 ktt.strides().data(), ktt.ndim(), dtype);
+                hal::copy_layout(v_hs_buf.raw_data_gpu(), vt.raw_data_gpu(), vt.shape().data(), vt.strides().data(),
+                                 vt.ndim(), dtype);
+                Tensor ktt = kt.transpose(1, 2);  // {nh, hd, seq}
+                hal::copy_layout(kT_buf.raw_data_gpu(), ktt.raw_data_gpu(), ktt.shape().data(), ktt.strides().data(),
+                                 ktt.ndim(), dtype);
             } else {
                 Tensor kt = key_buf.reshape({seq_len, n_heads, head_dim}).transpose(0, 1);
                 Tensor vt = value_buf.reshape({seq_len, n_heads, head_dim}).transpose(0, 1);
-                hal::copy_layout(v_hs_buf.raw_data_gpu(), vt.raw_data_gpu(), vt.shape().data(),
-                                 vt.strides().data(), vt.ndim(), dtype);
+                hal::copy_layout(v_hs_buf.raw_data_gpu(), vt.raw_data_gpu(), vt.shape().data(), vt.strides().data(),
+                                 vt.ndim(), dtype);
                 Tensor ktt = kt.transpose(1, 2);
-                hal::copy_layout(kT_buf.raw_data_gpu(), ktt.raw_data_gpu(), ktt.shape().data(),
-                                 ktt.strides().data(), ktt.ndim(), dtype);
+                hal::copy_layout(kT_buf.raw_data_gpu(), ktt.raw_data_gpu(), ktt.shape().data(), ktt.strides().data(),
+                                 ktt.ndim(), dtype);
             }
         }
 
@@ -462,8 +483,8 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
             core::blas::batched_matmul(scores, v_t, ctx_t);
             // context {nh, seq, hd} -> attention_out {seq, hidden}
             Tensor cv = ctx_hs_buf.transpose(0, 1);
-            hal::copy_layout(attention_out.raw_data_gpu(), cv.raw_data_gpu(), cv.shape().data(),
-                             cv.strides().data(), cv.ndim(), dtype);
+            hal::copy_layout(attention_out.raw_data_gpu(), cv.raw_data_gpu(), cv.shape().data(), cv.strides().data(),
+                             cv.ndim(), dtype);
         }
         attention_out.mark_dirty(Tensor::DataLocation::GPU);
         const double seg2 = prof_p ? pt_now() : 0.0;
@@ -472,18 +493,18 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         } else {
             core::blas::matmul(attention_out, blk->o_proj->data, mlp_down);
         }
-        hal::add_inplace_mixed(hidden_states_gpu.raw_data_gpu(), mlp_down.raw_data_gpu(), seq_len * hidden, stream_dtype, dtype);
+        hal::add_inplace_mixed(hidden_states_gpu.raw_data_gpu(), mlp_down.raw_data_gpu(), seq_len * hidden,
+                               stream_dtype, dtype);
         hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
-        hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), blk->post_attention_layernorm_weight->data.raw_data_gpu(), hidden, seq_len, eps, dtype);
+        hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(),
+                           blk->post_attention_layernorm_weight->data.raw_data_gpu(), hidden, seq_len, eps, dtype);
         normed_buf.mark_dirty(Tensor::DataLocation::GPU);
         if (qpf) {
             quant_prefill_gemm(blk->gate_up_w, normed_buf, gu_buf, dtype, qps);
-            split_gu_f16(mlp_gate.raw_data_gpu(), mlp_up.raw_data_gpu(),
-                         gu_buf.raw_data_gpu(), seq_len, inter);
+            split_gu_f16(mlp_gate.raw_data_gpu(), mlp_up.raw_data_gpu(), gu_buf.raw_data_gpu(), seq_len, inter);
         } else if (fpw && fpw->fused[layer_idx]) {
             core::blas::matmul(normed_buf, fpw->gu[layer_idx], gu_buf);
-            split_gu_f16(mlp_gate.raw_data_gpu(), mlp_up.raw_data_gpu(),
-                         gu_buf.raw_data_gpu(), seq_len, inter);
+            split_gu_f16(mlp_gate.raw_data_gpu(), mlp_up.raw_data_gpu(), gu_buf.raw_data_gpu(), seq_len, inter);
         } else {
             core::blas::matmul(normed_buf, blk->gate_proj->data, mlp_gate);
             core::blas::matmul(normed_buf, blk->up_proj->data, mlp_up);
@@ -495,23 +516,28 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         } else {
             core::blas::matmul(mlp_gate, blk->down_proj->data, mlp_down);
         }
-        hal::add_inplace_mixed(hidden_states_gpu.raw_data_gpu(), mlp_down.raw_data_gpu(), seq_len * hidden, stream_dtype, dtype);
+        hal::add_inplace_mixed(hidden_states_gpu.raw_data_gpu(), mlp_down.raw_data_gpu(), seq_len * hidden,
+                               stream_dtype, dtype);
         hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
         if (prof_p) {
             const double seg3 = pt_now();
-            acc_proj += seg1 - seg0; acc_attn += seg2 - seg1; acc_mlp += seg3 - seg2;
+            acc_proj += seg1 - seg0;
+            acc_attn += seg2 - seg1;
+            acc_mlp += seg3 - seg2;
         }
     }
-    if (prof_p) std::fprintf(stderr, "[prefillprof] proj=%.1fms attn=%.1fms mlp=%.1fms cache=%.1fms mask=%.1fms\n",
-                             acc_proj * 1e3, acc_attn * 1e3, acc_mlp * 1e3,
-                             (pt_cache - pt_loop0) * 1e3, (pt_mask - pt_cache) * 1e3);
+    if (prof_p)
+        std::fprintf(stderr, "[prefillprof] proj=%.1fms attn=%.1fms mlp=%.1fms cache=%.1fms mask=%.1fms\n",
+                     acc_proj * 1e3, acc_attn * 1e3, acc_mlp * 1e3, (pt_cache - pt_loop0) * 1e3,
+                     (pt_mask - pt_cache) * 1e3);
     const double pt_loop1 = prof_p ? pt_now() : 0.0;
-    hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), model.norm_weight()->data.raw_data_gpu(), hidden, seq_len, eps, dtype);
+    hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(),
+                       model.norm_weight()->data.raw_data_gpu(), hidden, seq_len, eps, dtype);
     normed_buf.mark_dirty(Tensor::DataLocation::GPU);
 
     if (prof_p) {
-        std::fprintf(stderr, "[prefillprof] embed=%.1fms setup=%.1fms layers=%.1fms\n",
-                     (pt_embed - pt0) * 1e3, (pt_loop0 - pt_embed) * 1e3, (pt_loop1 - pt_loop0) * 1e3);
+        std::fprintf(stderr, "[prefillprof] embed=%.1fms setup=%.1fms layers=%.1fms\n", (pt_embed - pt0) * 1e3,
+                     (pt_loop0 - pt_embed) * 1e3, (pt_loop1 - pt_loop0) * 1e3);
     }
     const double pt_head0 = prof_p ? pt_now() : 0.0;
 
@@ -529,9 +555,8 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
     // exact layout logits_gemm_mixed_cublas wants, so no transpose is needed
     // and no persistent vocab×hidden FP16 copy is kept.
     if (const quant::QuantWeight *lq = model.lm_head_q();
-        lq != nullptr && lq->gpu_data != nullptr && lq->dev_stride != 0 &&
-        lq->out == cfg.vocab_size && lq->in == hidden && (lq->in % 32) == 0 &&
-        dtype == hal::DType::Float16) {
+        lq != nullptr && lq->gpu_data != nullptr && lq->dev_stride != 0 && lq->out == cfg.vocab_size &&
+        lq->in == hidden && (lq->in % 32) == 0 && dtype == hal::DType::Float16) {
         Tensor logits({log_rows, cfg.vocab_size}, hal::DType::Float32);
         logits.alloc_gpu();
         constexpr size_t TILE_V = 8192;
@@ -544,17 +569,13 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         }
         for (size_t v0 = 0; v0 < cfg.vocab_size; v0 += TILE_V) {
             const size_t nv = std::min(TILE_V, cfg.vocab_size - v0);
-            const uint8_t *w_row = static_cast<const uint8_t *>(lq->gpu_data) +
-                                   v0 * lq->dev_stride;
-            hal::dequant_qw_f16(w_row, lq->dev_kind, (int)hidden, (int)nv,
-                                (int)lq->dev_stride, (int)lq->dev_qs, (int)lq->dev_d,
-                                (int)lq->dev_m, lm_tile.raw_data_gpu());
+            const uint8_t *w_row = static_cast<const uint8_t *>(lq->gpu_data) + v0 * lq->dev_stride;
+            hal::dequant_qw_f16(w_row, lq->dev_kind, (int)hidden, (int)nv, (int)lq->dev_stride, (int)lq->dev_qs,
+                                (int)lq->dev_d, (int)lq->dev_m, lm_tile.raw_data_gpu());
             // Tiles cover disjoint vocab columns of an uninitialized buffer:
             // beta must be 0 on every tile (nothing to accumulate onto).
-            core::blas::logits_gemm_mixed_cublas(norm_ptr, lm_tile.raw_data_gpu(),
-                                                 logits.raw_data_gpu(), log_rows,
-                                                 cfg.vocab_size, v0, nv, hidden,
-                                                 0.0f);
+            core::blas::logits_gemm_mixed_cublas(norm_ptr, lm_tile.raw_data_gpu(), logits.raw_data_gpu(), log_rows,
+                                                 cfg.vocab_size, v0, nv, hidden, 0.0f);
         }
         logits.mark_dirty(Tensor::DataLocation::GPU);
         logits.syncToHost();
@@ -564,27 +585,26 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
 
     if (dtype == hal::DType::Float16) {
         if (const core::Tensor *lhead16 = model.lm_head_fp16_t()) {
-        // FP16 weights + FP32 cuBLAS accumulation for the logits GEMV.
-        Tensor logits({log_rows, cfg.vocab_size}, hal::DType::Float32);
-        logits.alloc_gpu();
-        core::blas::logits_gemv_mixed_cublas(norm_ptr, lhead16->raw_data_gpu(),
-                                             logits.raw_data_gpu(), log_rows, cfg.vocab_size, hidden);
-        logits.mark_dirty(Tensor::DataLocation::GPU);
-        logits.syncToHost();
-        if (prof_p) std::fprintf(stderr, "[prefillprof] head=%.1fms\n", (pt_now() - pt_head0) * 1e3);
-        return logits;
+            // FP16 weights + FP32 cuBLAS accumulation for the logits GEMV.
+            Tensor logits({log_rows, cfg.vocab_size}, hal::DType::Float32);
+            logits.alloc_gpu();
+            core::blas::logits_gemv_mixed_cublas(norm_ptr, lhead16->raw_data_gpu(), logits.raw_data_gpu(), log_rows,
+                                                 cfg.vocab_size, hidden);
+            logits.mark_dirty(Tensor::DataLocation::GPU);
+            logits.syncToHost();
+            if (prof_p) std::fprintf(stderr, "[prefillprof] head=%.1fms\n", (pt_now() - pt_head0) * 1e3);
+            return logits;
         }
     }
     if (const core::Tensor *lhead = model.lm_head_fp32()) {
         // FP32 logits via transposed-lm_head GEMV: lm_head_fp32 is [vocab, hidden].
         Tensor normed_f32({log_rows, hidden}, hal::DType::Float32);
         normed_f32.alloc_gpu();
-        hal::convert_dtype(normed_f32.raw_data_gpu(), norm_ptr, log_rows * hidden, dtype,
-                           hal::DType::Float32);
+        hal::convert_dtype(normed_f32.raw_data_gpu(), norm_ptr, log_rows * hidden, dtype, hal::DType::Float32);
         Tensor logits({log_rows, cfg.vocab_size}, hal::DType::Float32);
         logits.alloc_gpu();
-        hal::logits_gemv_f32(normed_f32.raw_data_gpu(), lhead->raw_data_gpu(), logits.raw_data_gpu(),
-                             log_rows, cfg.vocab_size, hidden);
+        hal::logits_gemv_f32(normed_f32.raw_data_gpu(), lhead->raw_data_gpu(), logits.raw_data_gpu(), log_rows,
+                             cfg.vocab_size, hidden);
         logits.mark_dirty(Tensor::DataLocation::GPU);
         logits.syncToHost();
         return logits;
@@ -600,15 +620,16 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
     return logits.cast(hal::DType::Float32);
 }
 
-Tensor llama_forward_cuda(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache) {
+Tensor llama_forward_cuda(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache)
+{
     return llama_forward_cuda_impl(model, token_ids, cache, false);
 }
 
-Tensor llama_forward_cuda_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache) {
+Tensor llama_forward_cuda_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache)
+{
     return llama_forward_cuda_impl(model, token_ids, cache, true);
 }
 
-#ifdef SERIUS_USE_CUDA
 // --- CUDA Graph decode path ---
 // The single-token decode step is a fixed sequence of ~700 kernels whose only
 // per-token variation is the token id and the position. Both are written to
@@ -617,9 +638,10 @@ Tensor llama_forward_cuda_last(const model::LLaMAModel &model, const Tensor &tok
 // overhead and inter-kernel gaps.
 namespace {
 
-struct GraphDecodeCtx {
-    bool ready = false;          // tensors allocated, dims cached
-    bool captured = false;       // graph instantiated
+struct GraphDecodeCtx
+{
+    bool ready = false;     // tensors allocated, dims cached
+    bool captured = false;  // graph instantiated
     const model::LLaMAModel *model = nullptr;
     const KVCache *cache = nullptr;
     // dims (for staleness check)
@@ -629,17 +651,18 @@ struct GraphDecodeCtx {
     Tensor hidden_states_gpu, normed_buf, query_buf, key_buf, value_buf;
     Tensor attention_out, mlp_down;
     Tensor qf32_normed, qf32_attn, qf32_gu, qf32_sx, qkv_buf, gu_buf, qacc, logits_dev;
-    Tensor logits_host;       // persistent D2H target for the logits view
-    int *io_gpu = nullptr;    // single 2-int device buffer: [token_id, pos]
-    int *tid_gpu = nullptr;   // aliases into io_gpu
+    Tensor logits_host;      // persistent D2H target for the logits view
+    int *io_gpu = nullptr;   // single 2-int device buffer: [token_id, pos]
+    int *tid_gpu = nullptr;  // aliases into io_gpu
     int *pos_gpu = nullptr;
-    uint64_t cache_inst = 0;    // KVCache::instance_id the graph was captured for
+    uint64_t cache_inst = 0;  // KVCache::instance_id the graph was captured for
     cudaGraph_t graph = nullptr;
     cudaGraphExec_t exec = nullptr;
     cudaStream_t cap_stream = nullptr;
 };
 
-GraphDecodeCtx &graph_ctx() {
+GraphDecodeCtx &graph_ctx()
+{
     static GraphDecodeCtx c;
     return c;
 }
@@ -647,19 +670,37 @@ GraphDecodeCtx &graph_ctx() {
 // (model, cache-instance) pairs whose graph capture already failed — don't
 // retry every token; the eager path handles them. Uses instance_id because
 // stack addresses are reused across turns.
-struct GraphDisabledKey { const void *model; uint64_t cache_inst; };
-GraphDisabledKey &graph_disabled() {
+struct GraphDisabledKey
+{
+    const void *model;
+    uint64_t cache_inst;
+};
+GraphDisabledKey &graph_disabled()
+{
     static GraphDisabledKey k{nullptr, 0};
     return k;
 }
 
-void graph_ctx_destroy(GraphDecodeCtx &c) {
-    if (c.exec) { cudaGraphExecDestroy(c.exec); c.exec = nullptr; }
-    if (c.graph) { cudaGraphDestroy(c.graph); c.graph = nullptr; }
-    if (c.io_gpu) { cudaFree(c.io_gpu); c.io_gpu = nullptr; }
+void graph_ctx_destroy(GraphDecodeCtx &c)
+{
+    if (c.exec) {
+        cudaGraphExecDestroy(c.exec);
+        c.exec = nullptr;
+    }
+    if (c.graph) {
+        cudaGraphDestroy(c.graph);
+        c.graph = nullptr;
+    }
+    if (c.io_gpu) {
+        cudaFree(c.io_gpu);
+        c.io_gpu = nullptr;
+    }
     c.tid_gpu = nullptr;
     c.pos_gpu = nullptr;
-    if (c.cap_stream) { cudaStreamDestroy(c.cap_stream); c.cap_stream = nullptr; }
+    if (c.cap_stream) {
+        cudaStreamDestroy(c.cap_stream);
+        c.cap_stream = nullptr;
+    }
     c.ready = false;
     c.captured = false;
     c.model = nullptr;
@@ -671,8 +712,8 @@ void graph_ctx_destroy(GraphDecodeCtx &c) {
 // through ctx.tid_gpu / ctx.pos_gpu on device; no host-side pos math, no
 // allocations, no synchronization — capture-safe. Only the quantized FP16
 // path is supported (eligibility is checked by the caller).
-void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
-                        KVCache *cache, cudaStream_t s) {
+void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model, KVCache *cache, cudaStream_t s)
+{
     const auto &cfg = model.config();
     const auto &layers = model.layers();
     const size_t hidden = ctx.hidden, kv_dim = ctx.kv_dim, inter = ctx.inter;
@@ -683,39 +724,33 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
     const hal::DType stream_dtype = hal::DType::Float32;
     const float q_scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
 
-    hal::gather_mixed(ctx.hidden_states_gpu.raw_data_gpu(),
-                      model.embed_tokens()->data.raw_data_gpu(), ctx.tid_gpu, 1, hidden,
-                      dtype, stream_dtype, s);
+    hal::gather_mixed(ctx.hidden_states_gpu.raw_data_gpu(), model.embed_tokens()->data.raw_data_gpu(), ctx.tid_gpu, 1,
+                      hidden, dtype, stream_dtype, s);
     ctx.hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
 
     float *qacc_ptr = static_cast<float *>(ctx.qacc.raw_data_gpu());
-    auto qproj = [&](const quant::QuantWeight &qw, const core::Tensor &x_f16, core::Tensor &out,
-                     core::Tensor &x_f32) {
+    auto qproj = [&](const quant::QuantWeight &qw, const core::Tensor &x_f16, core::Tensor &out, core::Tensor &x_f32) {
         if (dtype == hal::DType::Float16 && qw.dev_stride != 0) {
             // Fused FP16-in/FP16-out GEMV: skips both convert_dtype launches.
             const void *sx = nullptr;
             if (qw.dev_kind == 3 || qw.dev_kind == 4 || qw.dev_kind == 6) {
-                hal::block_sums16_f16(x_f16.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(),
-                                      (int)(qw.in / 16), s);
+                hal::block_sums16_f16(x_f16.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(), (int)(qw.in / 16), s);
                 sx = ctx.qf32_sx.raw_data_gpu();
             }
-            hal::gemv_quant_vec_f16io(x_f16.raw_data_gpu(), sx, qw.gpu_data, qw.dev_kind, qw.in,
-                                      qw.out, (int)qw.dev_stride, (int)qw.dev_qs, (int)qw.dev_d,
-                                      (int)qw.dev_m, out.raw_data_gpu(), true, s);
+            hal::gemv_quant_vec_f16io(x_f16.raw_data_gpu(), sx, qw.gpu_data, qw.dev_kind, qw.in, qw.out,
+                                      (int)qw.dev_stride, (int)qw.dev_qs, (int)qw.dev_d, (int)qw.dev_m,
+                                      out.raw_data_gpu(), true, s);
             out.mark_dirty(Tensor::DataLocation::GPU);
             return;
         }
-        hal::convert_dtype(x_f32.raw_data_gpu(), x_f16.raw_data_gpu(), qw.in, dtype,
-                           hal::DType::Float32, s);
+        hal::convert_dtype(x_f32.raw_data_gpu(), x_f16.raw_data_gpu(), qw.in, dtype, hal::DType::Float32, s);
         const void *sx = nullptr;
         if (qw.dev_kind == 3 || qw.dev_kind == 4 || qw.dev_kind == 6) {
-            hal::block_sums16_f32(x_f32.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(),
-                                  (int)(qw.in / 16), s);
+            hal::block_sums16_f32(x_f32.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(), (int)(qw.in / 16), s);
             sx = ctx.qf32_sx.raw_data_gpu();
         }
-        hal::gemv_quant_vec_f32(x_f32.raw_data_gpu(), sx, qw.gpu_data, qw.dev_kind, qw.in,
-                                qw.out, (int)qw.dev_stride, (int)qw.dev_qs, (int)qw.dev_d,
-                                (int)qw.dev_m, qacc_ptr, s);
+        hal::gemv_quant_vec_f32(x_f32.raw_data_gpu(), sx, qw.gpu_data, qw.dev_kind, qw.in, qw.out, (int)qw.dev_stride,
+                                (int)qw.dev_qs, (int)qw.dev_d, (int)qw.dev_m, qacc_ptr, s);
         hal::convert_dtype(out.raw_data_gpu(), qacc_ptr, qw.out, hal::DType::Float32, dtype, s);
         out.mark_dirty(Tensor::DataLocation::GPU);
     };
@@ -728,14 +763,12 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
     for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
         const auto *blk = layers[layer_idx].get();
         if (pending_delta != nullptr) {
-            hal::rmsnorm_residual_mixed(ctx.normed_buf.raw_data_gpu(),
-                                        ctx.hidden_states_gpu.raw_data_gpu(), pending_delta,
-                                        blk->input_layernorm_weight->data.raw_data_gpu(),
-                                        hidden, 1, eps, dtype, dtype, s);
+            hal::rmsnorm_residual_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(),
+                                        pending_delta, blk->input_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps,
+                                        dtype, dtype, s);
         } else {
             hal::rmsnorm_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(),
-                               blk->input_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps,
-                               dtype, s);
+                               blk->input_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps, dtype, s);
         }
         ctx.normed_buf.mark_dirty(Tensor::DataLocation::GPU);
 
@@ -749,34 +782,29 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
 
         // Fused bias+RoPE(+scale) for Q and K in a single launch; V bias is
         // folded into the cache write.
-        hal::rope_bias_devpos_qk(qptr, kptr, head_dim, n_heads, n_kv_heads, rope_base,
-                                 ctx.pos_gpu,
+        hal::rope_bias_devpos_qk(qptr, kptr, head_dim, n_heads, n_kv_heads, rope_base, ctx.pos_gpu,
                                  blk->q_bias ? blk->q_bias->data.raw_data_gpu() : nullptr,
                                  blk->k_bias ? blk->k_bias->data.raw_data_gpu() : nullptr,
-                                 (dtype != hal::DType::Float32) ? q_scale : 1.0F, 1.0F,
-                                 dtype, s);
+                                 (dtype != hal::DType::Float32) ? q_scale : 1.0F, 1.0F, dtype, s);
 
         // Fused K+V cache write at the device-side position.
         KVCacheLayer &cl = cache->layers[layer_idx];
         hal::kv_write_kv_devpos(cl.k.raw_data_gpu(), cl.v.raw_data_gpu(), kptr, vptr,
-                                blk->v_bias ? blk->v_bias->data.raw_data_gpu() : nullptr,
-                                kv_dim, ctx.pos_gpu, kv_dim, dtype, s);
+                                blk->v_bias ? blk->v_bias->data.raw_data_gpu() : nullptr, kv_dim, ctx.pos_gpu, kv_dim,
+                                dtype, s);
         cl.k.mark_dirty(Tensor::DataLocation::GPU);
         cl.v.mark_dirty(Tensor::DataLocation::GPU);
 
         // Fused GQA decode attention: pos+1 valid rows read from device.
-        hal::gqa_decode_attention_f16_devpos(
-            qptr, cl.k.raw_data_gpu(), cl.v.raw_data_gpu(),
-            ctx.attention_out.raw_data_gpu(), ctx.pos_gpu,
-            (int)n_heads, (int)n_kv_heads, (int)head_dim, (int)kv_dim, s);
+        hal::gqa_decode_attention_f16_devpos(qptr, cl.k.raw_data_gpu(), cl.v.raw_data_gpu(),
+                                             ctx.attention_out.raw_data_gpu(), ctx.pos_gpu, (int)n_heads,
+                                             (int)n_kv_heads, (int)head_dim, (int)kv_dim, s);
         ctx.attention_out.mark_dirty(Tensor::DataLocation::GPU);
 
         qproj(blk->o_w, ctx.attention_out, ctx.mlp_down, ctx.qf32_attn);
-        hal::rmsnorm_residual_mixed(ctx.normed_buf.raw_data_gpu(),
-                                    ctx.hidden_states_gpu.raw_data_gpu(),
-                                    ctx.mlp_down.raw_data_gpu(),
-                                    blk->post_attention_layernorm_weight->data.raw_data_gpu(),
-                                    hidden, 1, eps, dtype, dtype, s);
+        hal::rmsnorm_residual_mixed(
+            ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(), ctx.mlp_down.raw_data_gpu(),
+            blk->post_attention_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps, dtype, dtype, s);
         ctx.hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
         ctx.normed_buf.mark_dirty(Tensor::DataLocation::GPU);
 
@@ -791,10 +819,8 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
 
     // Final norm + quantized lm_head straight into ctx.logits_dev (FP32).
     if (pending_delta != nullptr) {
-        hal::rmsnorm_residual_mixed(ctx.normed_buf.raw_data_gpu(),
-                                    ctx.hidden_states_gpu.raw_data_gpu(), pending_delta,
-                                    model.norm_weight()->data.raw_data_gpu(),
-                                    hidden, 1, eps, dtype, dtype, s);
+        hal::rmsnorm_residual_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(), pending_delta,
+                                    model.norm_weight()->data.raw_data_gpu(), hidden, 1, eps, dtype, dtype, s);
     } else {
         hal::rmsnorm_mixed(ctx.normed_buf.raw_data_gpu(), ctx.hidden_states_gpu.raw_data_gpu(),
                            model.norm_weight()->data.raw_data_gpu(), hidden, 1, eps, dtype, s);
@@ -804,13 +830,11 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
     // FP16 x in, FP32 logits out — still skips the input convert_dtype.
     const void *sx = nullptr;
     if (lq->dev_kind == 3 || lq->dev_kind == 4 || lq->dev_kind == 6) {
-        hal::block_sums16_f16(ctx.normed_buf.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(),
-                              (int)(lq->in / 16), s);
+        hal::block_sums16_f16(ctx.normed_buf.raw_data_gpu(), ctx.qf32_sx.raw_data_gpu(), (int)(lq->in / 16), s);
         sx = ctx.qf32_sx.raw_data_gpu();
     }
-    hal::gemv_quant_vec_f16io(ctx.normed_buf.raw_data_gpu(), sx, lq->gpu_data, lq->dev_kind,
-                              lq->in, lq->out, (int)lq->dev_stride, (int)lq->dev_qs,
-                              (int)lq->dev_d, (int)lq->dev_m,
+    hal::gemv_quant_vec_f16io(ctx.normed_buf.raw_data_gpu(), sx, lq->gpu_data, lq->dev_kind, lq->in, lq->out,
+                              (int)lq->dev_stride, (int)lq->dev_qs, (int)lq->dev_d, (int)lq->dev_m,
                               ctx.logits_dev.raw_data_gpu(), false, s);
     ctx.logits_dev.mark_dirty(Tensor::DataLocation::GPU);
 }
@@ -822,8 +846,8 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model,
 // eager CUDA path). The view aliases ctx.logits_dev / ctx.logits_host: valid
 // until the next decode call or graph_ctx rebuild, so callers must consume it
 // immediately (sample, don't store).
-Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id,
-                                             size_t pos, KVCache *cache) {
+Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache)
+{
     if (cache == nullptr || pos + 1 > 4096) return Tensor();
     {
         if (env_nonempty("SERIUS_NO_GRAPH")) return Tensor();
@@ -842,8 +866,8 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
     // Eligibility: FP16 activations, every projection packed on GPU, quantized
     // lm_head — anything else falls back to the eager path.
     if (dtype != hal::DType::Float16 || model.embed_tokens()->data.raw_data_gpu() == nullptr ||
-        model.lm_head_q() == nullptr || model.lm_head_q()->gpu_data == nullptr ||
-        model.lm_head_q()->dev_stride == 0 || model.lm_head_q()->out != cfg.vocab_size) {
+        model.lm_head_q() == nullptr || model.lm_head_q()->gpu_data == nullptr || model.lm_head_q()->dev_stride == 0 ||
+        model.lm_head_q()->out != cfg.vocab_size) {
         return Tensor();
     }
     for (const auto &blk : model.layers()) {
@@ -876,38 +900,57 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
     for (auto &cl : cache->layers) {
         kv_grew |= ensure_kv_capacity_gpu(cl, pos + 1, kv_dim, dtype);
     }
-    if (kv_grew) { graph_ctx_destroy(graph_ctx()); }
+    if (kv_grew) {
+        graph_ctx_destroy(graph_ctx());
+    }
 
     GraphDecodeCtx &ctx = graph_ctx();
     const bool stale = !ctx.ready || ctx.model != &model || ctx.cache != cache ||
-                       ctx.cache_inst != cache->instance_id ||
-                       ctx.hidden != hidden || ctx.inter != inter || ctx.kv_dim != kv_dim ||
-                       ctx.n_layers != n_layers || ctx.vocab != cfg.vocab_size || ctx.dtype != dtype;
+                       ctx.cache_inst != cache->instance_id || ctx.hidden != hidden || ctx.inter != inter ||
+                       ctx.kv_dim != kv_dim || ctx.n_layers != n_layers || ctx.vocab != cfg.vocab_size ||
+                       ctx.dtype != dtype;
     if (stale) {
         graph_ctx_destroy(ctx);
         ctx.model = &model;
         ctx.cache = cache;
         ctx.cache_inst = cache->instance_id;
-        ctx.hidden = hidden; ctx.inter = inter; ctx.kv_dim = kv_dim;
-        ctx.qkv_total = qkv_total; ctx.n_layers = n_layers; ctx.vocab = cfg.vocab_size;
+        ctx.hidden = hidden;
+        ctx.inter = inter;
+        ctx.kv_dim = kv_dim;
+        ctx.qkv_total = qkv_total;
+        ctx.n_layers = n_layers;
+        ctx.vocab = cfg.vocab_size;
         ctx.dtype = dtype;
 
-        ctx.hidden_states_gpu = Tensor({1, hidden}, hal::DType::Float32); ctx.hidden_states_gpu.alloc_gpu();
-        ctx.normed_buf = Tensor({1, hidden}, dtype); ctx.normed_buf.alloc_gpu();
-        ctx.query_buf = Tensor({1, hidden}, dtype); ctx.query_buf.alloc_gpu();
-        ctx.key_buf = Tensor({1, kv_dim}, dtype); ctx.key_buf.alloc_gpu();
-        ctx.value_buf = Tensor({1, kv_dim}, dtype); ctx.value_buf.alloc_gpu();
-        ctx.attention_out = Tensor({1, hidden}, dtype); ctx.attention_out.alloc_gpu();
-        ctx.mlp_down = Tensor({1, hidden}, dtype); ctx.mlp_down.alloc_gpu();
-        ctx.qf32_normed = Tensor({hidden}, hal::DType::Float32); ctx.qf32_normed.alloc_gpu();
-        ctx.qf32_attn = Tensor({hidden}, hal::DType::Float32); ctx.qf32_attn.alloc_gpu();
-        ctx.qf32_gu = Tensor({inter}, hal::DType::Float32); ctx.qf32_gu.alloc_gpu();
+        ctx.hidden_states_gpu = Tensor({1, hidden}, hal::DType::Float32);
+        ctx.hidden_states_gpu.alloc_gpu();
+        ctx.normed_buf = Tensor({1, hidden}, dtype);
+        ctx.normed_buf.alloc_gpu();
+        ctx.query_buf = Tensor({1, hidden}, dtype);
+        ctx.query_buf.alloc_gpu();
+        ctx.key_buf = Tensor({1, kv_dim}, dtype);
+        ctx.key_buf.alloc_gpu();
+        ctx.value_buf = Tensor({1, kv_dim}, dtype);
+        ctx.value_buf.alloc_gpu();
+        ctx.attention_out = Tensor({1, hidden}, dtype);
+        ctx.attention_out.alloc_gpu();
+        ctx.mlp_down = Tensor({1, hidden}, dtype);
+        ctx.mlp_down.alloc_gpu();
+        ctx.qf32_normed = Tensor({hidden}, hal::DType::Float32);
+        ctx.qf32_normed.alloc_gpu();
+        ctx.qf32_attn = Tensor({hidden}, hal::DType::Float32);
+        ctx.qf32_attn.alloc_gpu();
+        ctx.qf32_gu = Tensor({inter}, hal::DType::Float32);
+        ctx.qf32_gu.alloc_gpu();
         ctx.qf32_sx = Tensor({(std::max(hidden, inter) + 15) / 16 + 16}, hal::DType::Float32);
         ctx.qf32_sx.alloc_gpu();
-        ctx.qkv_buf = Tensor({1, qkv_total}, dtype); ctx.qkv_buf.alloc_gpu();
-        ctx.gu_buf = Tensor({1, 2 * inter}, dtype); ctx.gu_buf.alloc_gpu();
+        ctx.qkv_buf = Tensor({1, qkv_total}, dtype);
+        ctx.qkv_buf.alloc_gpu();
+        ctx.gu_buf = Tensor({1, 2 * inter}, dtype);
+        ctx.gu_buf.alloc_gpu();
         const size_t qacc_cap = std::max({cfg.vocab_size, qkv_total, 2 * inter, hidden, inter});
-        ctx.qacc = Tensor({qacc_cap}, hal::DType::Float32); ctx.qacc.alloc_gpu();
+        ctx.qacc = Tensor({qacc_cap}, hal::DType::Float32);
+        ctx.qacc.alloc_gpu();
         ctx.logits_dev = Tensor({1, cfg.vocab_size}, hal::DType::Float32);
         ctx.logits_dev.alloc_gpu();
         ctx.logits_host = Tensor({1, cfg.vocab_size}, hal::DType::Float32);
@@ -922,8 +965,7 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
     // Device inputs updated before every launch (outside the graph): one
     // 8-byte H2D copy fills both [token_id, pos].
     const int io_host[2] = {token_id, static_cast<int>(pos)};
-    CHECK_CUDA(cudaMemcpyAsync(ctx.io_gpu, io_host, sizeof(io_host),
-                               cudaMemcpyHostToDevice, 0));
+    CHECK_CUDA(cudaMemcpyAsync(ctx.io_gpu, io_host, sizeof(io_host), cudaMemcpyHostToDevice, 0));
 
     if (!ctx.captured) {
         // Capture on a side stream; any failure falls back to the eager path.
@@ -933,7 +975,8 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
             CHECK_CUDA(cudaStreamBeginCapture(ctx.cap_stream, cudaStreamCaptureModeGlobal));
             issue_decode_graph(ctx, model, cache, ctx.cap_stream);
             cap_err = cudaStreamEndCapture(ctx.cap_stream, &ctx.graph);
-        } catch (...) {
+        }
+        catch (...) {
             cudaStreamEndCapture(ctx.cap_stream, &ctx.graph);
             cudaGetLastError();
             graph_ctx_destroy(ctx);
@@ -957,23 +1000,27 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
 
     // The blocking D2H copy is ordered after the graph on stream 0, so it
     // doubles as the completion wait — no separate stream sync needed.
-    CHECK_CUDA(cudaMemcpy(ctx.logits_host.data(), ctx.logits_dev.raw_data_gpu(),
-                          cfg.vocab_size * sizeof(float), cudaMemcpyDeviceToHost));
-    return Tensor::host_gpu_view(ctx.logits_host.data(), ctx.logits_dev.raw_data_gpu(),
-                                 {1, cfg.vocab_size}, hal::DType::Float32);
+    CHECK_CUDA(cudaMemcpy(ctx.logits_host.data(), ctx.logits_dev.raw_data_gpu(), cfg.vocab_size * sizeof(float),
+                          cudaMemcpyDeviceToHost));
+    return Tensor::host_gpu_view(ctx.logits_host.data(), ctx.logits_dev.raw_data_gpu(), {1, cfg.vocab_size},
+                                 hal::DType::Float32);
 }
-#endif
 
 // layer_begin/layer_end restrict the transformer loop (partial offload runs
 // only the GPU-resident prefix). When hidden_host_out != nullptr the final
 // norm + lm_head are skipped and the {1,hidden} FP32 residual stream is
 // copied back to the host instead of producing logits.
-static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache,
-                                                   size_t layer_begin, size_t layer_end,
-                                                   float *hidden_host_out, size_t hidden_out_size) {
+static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &model, int token_id, size_t pos,
+                                                   KVCache *cache, size_t layer_begin, size_t layer_end,
+                                                   float *hidden_host_out, size_t hidden_out_size)
+{
     static const bool gpu_time = env_nonempty("SERIUS_GPU_TIME");
     cudaEvent_t ev0 = nullptr, ev1 = nullptr;
-    if (gpu_time) { cudaEventCreate(&ev0); cudaEventCreate(&ev1); cudaEventRecord(ev0); }
+    if (gpu_time) {
+        cudaEventCreate(&ev0);
+        cudaEventCreate(&ev1);
+        cudaEventRecord(ev0);
+    }
     const auto &cfg = model.config();
     const size_t n_layers = cfg.num_hidden_layers, hidden = cfg.hidden_size, n_heads = cfg.num_attention_heads;
     const size_t n_kv_heads = cfg.num_key_value_heads, head_dim = hidden / n_heads, kv_dim = n_kv_heads * head_dim;
@@ -982,7 +1029,8 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
     hal::DType dtype = model.embed_tokens()->data.dtype();
     const hal::DType stream_dtype = hal::DType::Float32;
 
-    Tensor hidden_states_gpu({1, hidden}, stream_dtype); hidden_states_gpu.alloc_gpu();
+    Tensor hidden_states_gpu({1, hidden}, stream_dtype);
+    hidden_states_gpu.alloc_gpu();
     // Persistent device buffer for the token id: avoids a cudaMalloc +
     // cudaDeviceSynchronize + cudaFree round-trip on every decode step.
     static int *tid_gpu = [] {
@@ -992,22 +1040,34 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
     }();
     int tid = token_id;
     CHECK_CUDA(cudaMemcpyAsync(tid_gpu, &tid, sizeof(int), cudaMemcpyHostToDevice, 0));
-    hal::gather_mixed(hidden_states_gpu.raw_data_gpu(), model.embed_tokens()->data.raw_data_gpu(), tid_gpu, 1, hidden, dtype, stream_dtype);
+    hal::gather_mixed(hidden_states_gpu.raw_data_gpu(), model.embed_tokens()->data.raw_data_gpu(), tid_gpu, 1, hidden,
+                      dtype, stream_dtype);
     hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
 
-    Tensor normed_buf({1, hidden}, dtype); normed_buf.alloc_gpu();
-    Tensor query_buf({1, hidden}, dtype); query_buf.alloc_gpu();
-    Tensor key_buf({1, kv_dim}, dtype); key_buf.alloc_gpu();
-    Tensor value_buf({1, kv_dim}, dtype); value_buf.alloc_gpu();
-    Tensor attention_out({1, hidden}, dtype); attention_out.alloc_gpu();
-    Tensor mlp_gate({1, inter}, dtype); mlp_gate.alloc_gpu();
-    Tensor mlp_up({1, inter}, dtype); mlp_up.alloc_gpu();
-    Tensor mlp_down({1, hidden}, dtype); mlp_down.alloc_gpu();
+    Tensor normed_buf({1, hidden}, dtype);
+    normed_buf.alloc_gpu();
+    Tensor query_buf({1, hidden}, dtype);
+    query_buf.alloc_gpu();
+    Tensor key_buf({1, kv_dim}, dtype);
+    key_buf.alloc_gpu();
+    Tensor value_buf({1, kv_dim}, dtype);
+    value_buf.alloc_gpu();
+    Tensor attention_out({1, hidden}, dtype);
+    attention_out.alloc_gpu();
+    Tensor mlp_gate({1, inter}, dtype);
+    mlp_gate.alloc_gpu();
+    Tensor mlp_up({1, inter}, dtype);
+    mlp_up.alloc_gpu();
+    Tensor mlp_down({1, hidden}, dtype);
+    mlp_down.alloc_gpu();
     // FP32 scratch inputs for the quantized decode GEMVs (converted once per
     // projection source instead of once per weight row).
-    Tensor qf32_normed({hidden}, hal::DType::Float32); qf32_normed.alloc_gpu();
-    Tensor qf32_attn({hidden}, hal::DType::Float32); qf32_attn.alloc_gpu();
-    Tensor qf32_gu({inter}, hal::DType::Float32); qf32_gu.alloc_gpu();
+    Tensor qf32_normed({hidden}, hal::DType::Float32);
+    qf32_normed.alloc_gpu();
+    Tensor qf32_attn({hidden}, hal::DType::Float32);
+    qf32_attn.alloc_gpu();
+    Tensor qf32_gu({inter}, hal::DType::Float32);
+    qf32_gu.alloc_gpu();
     // Per-16-element sums of the FP32 GEMV inputs (Q4_0/Q4_1 affine fold).
     // Largest `in` is max(hidden, inter); in/16 floats suffice.
     Tensor qf32_sx({(std::max(hidden, inter) + 15) / 16 + 16}, hal::DType::Float32);
@@ -1016,8 +1076,10 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
     // device allocations per generated token (they were previously created
     // inside the layer loop and inside every qproj call).
     const size_t qkv_total = hidden + 2 * kv_dim;
-    Tensor qkv_buf({1, qkv_total}, dtype); qkv_buf.alloc_gpu();
-    Tensor gu_buf({1, 2 * inter}, dtype); gu_buf.alloc_gpu();
+    Tensor qkv_buf({1, qkv_total}, dtype);
+    qkv_buf.alloc_gpu();
+    Tensor gu_buf({1, 2 * inter}, dtype);
+    gu_buf.alloc_gpu();
     const size_t qacc_cap = std::max({cfg.vocab_size, qkv_total, 2 * inter, hidden, inter});
     Tensor qacc({qacc_cap}, hal::DType::Float32);
     qacc.alloc_gpu();
@@ -1049,14 +1111,16 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
 
     for (size_t layer_idx = layer_begin; layer_idx < layer_end && layer_idx < layers.size(); ++layer_idx) {
         const auto *blk = layers[layer_idx].get();
-        hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), blk->input_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps, dtype);
+        hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(),
+                           blk->input_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps, dtype);
         normed_buf.mark_dirty(Tensor::DataLocation::GPU);
         // M==1 projections as custom streaming GEMVs (one kernel each, weight
         // read exactly once) — much faster than cuBLAS heuristics for GEMV.
         auto proj = [&](const core::Tensor &x, const core::Tensor &w, core::Tensor &out, size_t K, size_t N) {
             if (dtype == hal::DType::Float16 && w.is_contiguous() && w.raw_data_gpu() != nullptr) {
                 // Split-K FP16 GEMV with FP32 accumulation.
-                Tensor acc({N}, hal::DType::Float32); acc.alloc_gpu();
+                Tensor acc({N}, hal::DType::Float32);
+                acc.alloc_gpu();
                 CHECK_CUDA(cudaMemsetAsync(acc.raw_data_gpu(), 0, N * sizeof(float), 0));
                 hal::gemv_kn_sk_f16(x.raw_data_gpu(), w.raw_data_gpu(), acc.raw_data_gpu(), K, N);
                 hal::convert_dtype(out.raw_data_gpu(), acc.raw_data_gpu(), N, hal::DType::Float32, dtype);
@@ -1070,10 +1134,9 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
         // dev_stride != 0 guarantees the repacked layout the vec GEMV reads;
         // gpu_data is only ever set for that layout, but check both so a
         // future raw-layout upload can't silently feed an unsupported kernel.
-        const bool use_quant = (dtype == hal::DType::Float16) && blk->qkv_w.gpu_data &&
-            blk->qkv_w.dev_stride != 0 && blk->gate_up_w.gpu_data &&
-            blk->gate_up_w.dev_stride != 0 && blk->o_w.gpu_data && blk->o_w.dev_stride != 0 &&
-            blk->down_w.gpu_data && blk->down_w.dev_stride != 0;
+        const bool use_quant = (dtype == hal::DType::Float16) && blk->qkv_w.gpu_data && blk->qkv_w.dev_stride != 0 &&
+                               blk->gate_up_w.gpu_data && blk->gate_up_w.dev_stride != 0 && blk->o_w.gpu_data &&
+                               blk->o_w.dev_stride != 0 && blk->down_w.gpu_data && blk->down_w.dev_stride != 0;
         // Quantized GEMV consumes FP32 x (converted once per projection input
         // into the provided scratch buffer) and writes FP32 y directly.
         auto qproj = [&](const quant::QuantWeight &qw, const core::Tensor &x_f16, core::Tensor &out,
@@ -1082,33 +1145,27 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
                 // Fused FP16-in/FP16-out GEMV: skips both convert_dtype launches.
                 const void *sx = nullptr;
                 if (qw.dev_kind == 3 || qw.dev_kind == 4 || qw.dev_kind == 6) {
-                    hal::block_sums16_f16(x_f16.raw_data_gpu(), qf32_sx.raw_data_gpu(),
-                                          (int)(qw.in / 16));
+                    hal::block_sums16_f16(x_f16.raw_data_gpu(), qf32_sx.raw_data_gpu(), (int)(qw.in / 16));
                     sx = qf32_sx.raw_data_gpu();
                 }
-                hal::gemv_quant_vec_f16io(x_f16.raw_data_gpu(), sx, qw.gpu_data, qw.dev_kind,
-                                          qw.in, qw.out, (int)qw.dev_stride, (int)qw.dev_qs,
-                                          (int)qw.dev_d, (int)qw.dev_m, out.raw_data_gpu(),
-                                          true);
+                hal::gemv_quant_vec_f16io(x_f16.raw_data_gpu(), sx, qw.gpu_data, qw.dev_kind, qw.in, qw.out,
+                                          (int)qw.dev_stride, (int)qw.dev_qs, (int)qw.dev_d, (int)qw.dev_m,
+                                          out.raw_data_gpu(), true);
                 out.mark_dirty(Tensor::DataLocation::GPU);
                 return;
             }
-            hal::convert_dtype(x_f32.raw_data_gpu(), x_f16.raw_data_gpu(), qw.in, dtype,
-                               hal::DType::Float32);
+            hal::convert_dtype(x_f32.raw_data_gpu(), x_f16.raw_data_gpu(), qw.in, dtype, hal::DType::Float32);
             float *acc_ptr = static_cast<float *>(qacc.raw_data_gpu());
             if (qw.dev_stride != 0) {
                 const void *sx = nullptr;
                 if (qw.dev_kind == 3 || qw.dev_kind == 4 || qw.dev_kind == 6) {
-                    hal::block_sums16_f32(x_f32.raw_data_gpu(), qf32_sx.raw_data_gpu(),
-                                          (int)(qw.in / 16));
+                    hal::block_sums16_f32(x_f32.raw_data_gpu(), qf32_sx.raw_data_gpu(), (int)(qw.in / 16));
                     sx = qf32_sx.raw_data_gpu();
                 }
-                hal::gemv_quant_vec_f32(x_f32.raw_data_gpu(), sx, qw.gpu_data, qw.dev_kind, qw.in,
-                                        qw.out, (int)qw.dev_stride, (int)qw.dev_qs, (int)qw.dev_d,
-                                        (int)qw.dev_m, acc_ptr);
+                hal::gemv_quant_vec_f32(x_f32.raw_data_gpu(), sx, qw.gpu_data, qw.dev_kind, qw.in, qw.out,
+                                        (int)qw.dev_stride, (int)qw.dev_qs, (int)qw.dev_d, (int)qw.dev_m, acc_ptr);
             } else {
-                hal::gemv_quant_f32(x_f32.raw_data_gpu(), qw.gpu_data, (int)qw.type, qw.in, qw.out,
-                                    acc_ptr);
+                hal::gemv_quant_f32(x_f32.raw_data_gpu(), qw.gpu_data, (int)qw.type, qw.in, qw.out, acc_ptr);
             }
             hal::convert_dtype(out.raw_data_gpu(), acc_ptr, qw.out, hal::DType::Float32, dtype);
             out.mark_dirty(Tensor::DataLocation::GPU);
@@ -1117,14 +1174,13 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
             // Fused QKV: rows are [q | k | v], slice into the RoPE inputs.
             const size_t esz = get_dtype_size(dtype);
             qproj(blk->qkv_w, normed_buf, qkv_buf, qf32_normed);
-            CHECK_CUDA(cudaMemcpyAsync(query_buf.raw_data_gpu(), qkv_buf.raw_data_gpu(),
-                                       hidden * esz, cudaMemcpyDeviceToDevice, 0));
-            CHECK_CUDA(cudaMemcpyAsync(key_buf.raw_data_gpu(),
-                                       (char *)qkv_buf.raw_data_gpu() + hidden * esz,
+            CHECK_CUDA(cudaMemcpyAsync(query_buf.raw_data_gpu(), qkv_buf.raw_data_gpu(), hidden * esz,
+                                       cudaMemcpyDeviceToDevice, 0));
+            CHECK_CUDA(cudaMemcpyAsync(key_buf.raw_data_gpu(), (char *)qkv_buf.raw_data_gpu() + hidden * esz,
                                        kv_dim * esz, cudaMemcpyDeviceToDevice, 0));
             CHECK_CUDA(cudaMemcpyAsync(value_buf.raw_data_gpu(),
-                                       (char *)qkv_buf.raw_data_gpu() + (hidden + kv_dim) * esz,
-                                       kv_dim * esz, cudaMemcpyDeviceToDevice, 0));
+                                       (char *)qkv_buf.raw_data_gpu() + (hidden + kv_dim) * esz, kv_dim * esz,
+                                       cudaMemcpyDeviceToDevice, 0));
             query_buf.mark_dirty(Tensor::DataLocation::GPU);
             key_buf.mark_dirty(Tensor::DataLocation::GPU);
             value_buf.mark_dirty(Tensor::DataLocation::GPU);
@@ -1133,12 +1189,19 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
             proj(normed_buf, blk->k_proj->data, key_buf, hidden, kv_dim);
             proj(normed_buf, blk->v_proj->data, value_buf, hidden, kv_dim);
         }
-        if (blk->q_bias) { hal::add_row_bias(query_buf.raw_data_gpu(), blk->q_bias->data.raw_data_gpu(), 1, hidden, dtype); }
-        if (blk->k_bias) { hal::add_row_bias(key_buf.raw_data_gpu(), blk->k_bias->data.raw_data_gpu(), 1, kv_dim, dtype); }
-        if (blk->v_bias) { hal::add_row_bias(value_buf.raw_data_gpu(), blk->v_bias->data.raw_data_gpu(), 1, kv_dim, dtype); }
+        if (blk->q_bias) {
+            hal::add_row_bias(query_buf.raw_data_gpu(), blk->q_bias->data.raw_data_gpu(), 1, hidden, dtype);
+        }
+        if (blk->k_bias) {
+            hal::add_row_bias(key_buf.raw_data_gpu(), blk->k_bias->data.raw_data_gpu(), 1, kv_dim, dtype);
+        }
+        if (blk->v_bias) {
+            hal::add_row_bias(value_buf.raw_data_gpu(), blk->v_bias->data.raw_data_gpu(), 1, kv_dim, dtype);
+        }
         hal::rope(query_buf.raw_data_gpu(), head_dim, 1, n_heads, rope_base, static_cast<int>(pos), dtype);
         hal::rope(key_buf.raw_data_gpu(), head_dim, 1, n_kv_heads, rope_base, static_cast<int>(pos), dtype);
-        query_buf.mark_dirty(Tensor::DataLocation::GPU); key_buf.mark_dirty(Tensor::DataLocation::GPU);
+        query_buf.mark_dirty(Tensor::DataLocation::GPU);
+        key_buf.mark_dirty(Tensor::DataLocation::GPU);
         const float q_scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
         if (dtype != hal::DType::Float32) {
             hal::scale_inplace(query_buf.raw_data_gpu(), hidden, q_scale, dtype);
@@ -1149,10 +1212,10 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
             KVCacheLayer &cl = cache->layers[layer_idx];
             ensure_kv_capacity_gpu(cl, effective_len, kv_dim, dtype);
             size_t bytes = kv_dim * get_dtype_size(dtype);
-            CHECK_CUDA(cudaMemcpyAsync((char*)cl.k.raw_data_gpu() + pos * kv_dim * get_dtype_size(dtype), 
-                       key_buf.raw_data_gpu(), bytes, cudaMemcpyDeviceToDevice, 0));
-            CHECK_CUDA(cudaMemcpyAsync((char*)cl.v.raw_data_gpu() + pos * kv_dim * get_dtype_size(dtype), 
-                       value_buf.raw_data_gpu(), bytes, cudaMemcpyDeviceToDevice, 0));
+            CHECK_CUDA(cudaMemcpyAsync((char *)cl.k.raw_data_gpu() + pos * kv_dim * get_dtype_size(dtype),
+                                       key_buf.raw_data_gpu(), bytes, cudaMemcpyDeviceToDevice, 0));
+            CHECK_CUDA(cudaMemcpyAsync((char *)cl.v.raw_data_gpu() + pos * kv_dim * get_dtype_size(dtype),
+                                       value_buf.raw_data_gpu(), bytes, cudaMemcpyDeviceToDevice, 0));
             cl.k.mark_dirty(Tensor::DataLocation::GPU);
             cl.v.mark_dirty(Tensor::DataLocation::GPU);
             cl.current_len = effective_len;
@@ -1161,61 +1224,66 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
         if (dtype == hal::DType::Float16 && cache && effective_len <= 4096) {
             // Fused GQA decode attention: single kernel reads the KV cache
             // directly (query already RoPE'd and pre-scaled above).
-            hal::gqa_decode_attention_f16(
-                query_buf.raw_data_gpu(),
-                cache->layers[layer_idx].k.raw_data_gpu(),
-                cache->layers[layer_idx].v.raw_data_gpu(),
-                attention_out.raw_data_gpu(),
-                (int)effective_len, (int)n_heads, (int)n_kv_heads, (int)head_dim,
-                (int)kv_dim);
+            hal::gqa_decode_attention_f16(query_buf.raw_data_gpu(), cache->layers[layer_idx].k.raw_data_gpu(),
+                                          cache->layers[layer_idx].v.raw_data_gpu(), attention_out.raw_data_gpu(),
+                                          (int)effective_len, (int)n_heads, (int)n_kv_heads, (int)head_dim,
+                                          (int)kv_dim);
             attention_out.mark_dirty(Tensor::DataLocation::GPU);
         } else {
-        Tensor q_hs = query_buf.reshape({1, n_heads, head_dim}).transpose(0, 1).contiguous();
-        q_hs.alloc_gpu();
+            Tensor q_hs = query_buf.reshape({1, n_heads, head_dim}).transpose(0, 1).contiguous();
+            q_hs.alloc_gpu();
 
-        Tensor k_full({0}, dtype), v_full({0}, dtype);
-        if (cache) {
-            k_full = cache->layers[layer_idx].k.slice(0, 0, effective_len);
-            v_full = cache->layers[layer_idx].v.slice(0, 0, effective_len);
-        } else {
-            k_full = key_buf;
-            v_full = value_buf;
-        }
+            Tensor k_full({0}, dtype), v_full({0}, dtype);
+            if (cache) {
+                k_full = cache->layers[layer_idx].k.slice(0, 0, effective_len);
+                v_full = cache->layers[layer_idx].v.slice(0, 0, effective_len);
+            } else {
+                k_full = key_buf;
+                v_full = value_buf;
+            }
 
-        Tensor k_hs({0}, dtype), v_hs({0}, dtype);
-        if (n_kv_heads < n_heads) {
-            // repeat_kv kernel expects (batch_seq, heads, head_dim)
-            Tensor k_in = k_full.reshape({effective_len, n_kv_heads, head_dim}).contiguous();
-            Tensor v_in = v_full.reshape({effective_len, n_kv_heads, head_dim}).contiguous();
+            Tensor k_hs({0}, dtype), v_hs({0}, dtype);
+            if (n_kv_heads < n_heads) {
+                // repeat_kv kernel expects (batch_seq, heads, head_dim)
+                Tensor k_in = k_full.reshape({effective_len, n_kv_heads, head_dim}).contiguous();
+                Tensor v_in = v_full.reshape({effective_len, n_kv_heads, head_dim}).contiguous();
 
-            Tensor k_rep({effective_len, n_heads, head_dim}, dtype);
-            Tensor v_rep({effective_len, n_heads, head_dim}, dtype);
-            k_rep.alloc_gpu(); v_rep.alloc_gpu();
+                Tensor k_rep({effective_len, n_heads, head_dim}, dtype);
+                Tensor v_rep({effective_len, n_heads, head_dim}, dtype);
+                k_rep.alloc_gpu();
+                v_rep.alloc_gpu();
 
-            hal::repeat_kv(k_rep.raw_data_gpu(), k_in.raw_data_gpu(), effective_len, n_heads, n_kv_heads, head_dim, dtype);
-            hal::repeat_kv(v_rep.raw_data_gpu(), v_in.raw_data_gpu(), effective_len, n_heads, n_kv_heads, head_dim, dtype);
+                hal::repeat_kv(k_rep.raw_data_gpu(), k_in.raw_data_gpu(), effective_len, n_heads, n_kv_heads, head_dim,
+                               dtype);
+                hal::repeat_kv(v_rep.raw_data_gpu(), v_in.raw_data_gpu(), effective_len, n_heads, n_kv_heads, head_dim,
+                               dtype);
 
-            // Transpose to (n_heads, batch_seq, head_dim) for batched_matmul
-            k_hs = k_rep.transpose(0, 1).contiguous();
-            v_hs = v_rep.transpose(0, 1).contiguous();
-            k_hs.alloc_gpu(); v_hs.alloc_gpu();
-        } else {
-            k_hs = k_full.reshape({effective_len, n_heads, head_dim}).transpose(0, 1).contiguous();
-            v_hs = v_full.reshape({effective_len, n_heads, head_dim}).transpose(0, 1).contiguous();
-            k_hs.alloc_gpu(); v_hs.alloc_gpu();
-        }
+                // Transpose to (n_heads, batch_seq, head_dim) for batched_matmul
+                k_hs = k_rep.transpose(0, 1).contiguous();
+                v_hs = v_rep.transpose(0, 1).contiguous();
+                k_hs.alloc_gpu();
+                v_hs.alloc_gpu();
+            } else {
+                k_hs = k_full.reshape({effective_len, n_heads, head_dim}).transpose(0, 1).contiguous();
+                v_hs = v_full.reshape({effective_len, n_heads, head_dim}).transpose(0, 1).contiguous();
+                k_hs.alloc_gpu();
+                v_hs.alloc_gpu();
+            }
 
-        Tensor scores({n_heads, 1, effective_len}, dtype); scores.alloc_gpu();
-        core::blas::batched_matmul(q_hs, k_hs.transpose(1, 2), scores);
+            Tensor scores({n_heads, 1, effective_len}, dtype);
+            scores.alloc_gpu();
+            core::blas::batched_matmul(q_hs, k_hs.transpose(1, 2), scores);
 
-        float scale = (dtype == hal::DType::Float32) ? (1.0F / std::sqrt(static_cast<float>(head_dim))) : 1.0F;
-        hal::fused_masked_softmax(scores.raw_data_gpu(), decode_mask_for(effective_len), n_heads, 1, effective_len, dtype, scale);
-        scores.mark_dirty(Tensor::DataLocation::GPU);
+            float scale = (dtype == hal::DType::Float32) ? (1.0F / std::sqrt(static_cast<float>(head_dim))) : 1.0F;
+            hal::fused_masked_softmax(scores.raw_data_gpu(), decode_mask_for(effective_len), n_heads, 1, effective_len,
+                                      dtype, scale);
+            scores.mark_dirty(Tensor::DataLocation::GPU);
 
-        Tensor context_heads({n_heads, 1, head_dim}, dtype); context_heads.alloc_gpu();
-        core::blas::batched_matmul(scores, v_hs, context_heads);
-        attention_out = context_heads.transpose(0, 1).contiguous().reshape({1, hidden});
-        attention_out.alloc_gpu();
+            Tensor context_heads({n_heads, 1, head_dim}, dtype);
+            context_heads.alloc_gpu();
+            core::blas::batched_matmul(scores, v_hs, context_heads);
+            attention_out = context_heads.transpose(0, 1).contiguous().reshape({1, hidden});
+            attention_out.alloc_gpu();
         }
 
         if (use_quant) {
@@ -1225,14 +1293,15 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
         }
         hal::add_inplace_mixed(hidden_states_gpu.raw_data_gpu(), mlp_down.raw_data_gpu(), hidden, stream_dtype, dtype);
         hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
-        hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), blk->post_attention_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps, dtype);
+        hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(),
+                           blk->post_attention_layernorm_weight->data.raw_data_gpu(), hidden, 1, eps, dtype);
         normed_buf.mark_dirty(Tensor::DataLocation::GPU);
         if (use_quant) {
             // Fused gate|up: swiglu in place on the first half, down reads it.
             const size_t esz = get_dtype_size(dtype);
             qproj(blk->gate_up_w, normed_buf, gu_buf, qf32_normed);
-            hal::swiglu(gu_buf.raw_data_gpu(), gu_buf.raw_data_gpu(),
-                        (char *)gu_buf.raw_data_gpu() + inter * esz, inter, dtype);
+            hal::swiglu(gu_buf.raw_data_gpu(), gu_buf.raw_data_gpu(), (char *)gu_buf.raw_data_gpu() + inter * esz,
+                        inter, dtype);
             gu_buf.mark_dirty(Tensor::DataLocation::GPU);
             qproj(blk->down_w, gu_buf, mlp_down, qf32_gu);
         } else {
@@ -1249,110 +1318,121 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
     // Partial-offload prefix: hand the FP32 residual stream back to the host
     // — the CPU suffix runs the remaining layers + final norm + lm_head.
     if (hidden_host_out != nullptr) {
-        if (hidden_out_size != hidden) { return Tensor(); }
-        CHECK_CUDA(cudaMemcpyAsync(hidden_host_out, hidden_states_gpu.raw_data_gpu(),
-                                   hidden * sizeof(float), cudaMemcpyDeviceToHost, 0));
+        if (hidden_out_size != hidden) {
+            return Tensor();
+        }
+        CHECK_CUDA(cudaMemcpyAsync(hidden_host_out, hidden_states_gpu.raw_data_gpu(), hidden * sizeof(float),
+                                   cudaMemcpyDeviceToHost, 0));
         CHECK_CUDA(cudaStreamSynchronize(0));
         return Tensor();
     }
 
-    hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(), model.norm_weight()->data.raw_data_gpu(), hidden, 1, eps, dtype);
+    hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(),
+                       model.norm_weight()->data.raw_data_gpu(), hidden, 1, eps, dtype);
     normed_buf.mark_dirty(Tensor::DataLocation::GPU);
     // Quantized lm_head (GGUF): single dequant GEMV straight into FP32 logits.
-    if (const quant::QuantWeight *lq = model.lm_head_q();
-        lq != nullptr && lq->gpu_data != nullptr && lq->dev_stride != 0 &&
-        lq->out == cfg.vocab_size && dtype == hal::DType::Float16) {
+    if (const quant::QuantWeight *lq = model.lm_head_q(); lq != nullptr && lq->gpu_data != nullptr &&
+                                                          lq->dev_stride != 0 && lq->out == cfg.vocab_size &&
+                                                          dtype == hal::DType::Float16) {
         // normed_buf is the final RMSNorm output; reuse the FP32 scratch.
-        hal::convert_dtype(qf32_normed.raw_data_gpu(), normed_buf.raw_data_gpu(), hidden, dtype,
-                           hal::DType::Float32);
+        hal::convert_dtype(qf32_normed.raw_data_gpu(), normed_buf.raw_data_gpu(), hidden, dtype, hal::DType::Float32);
         Tensor logits({1, cfg.vocab_size}, hal::DType::Float32);
         logits.alloc_gpu();
         if (lq->dev_stride != 0) {
             const void *sx = nullptr;
             if (lq->dev_kind == 3 || lq->dev_kind == 4 || lq->dev_kind == 6) {
-                hal::block_sums16_f32(qf32_normed.raw_data_gpu(), qf32_sx.raw_data_gpu(),
-                                      (int)(lq->in / 16));
+                hal::block_sums16_f32(qf32_normed.raw_data_gpu(), qf32_sx.raw_data_gpu(), (int)(lq->in / 16));
                 sx = qf32_sx.raw_data_gpu();
             }
-            hal::gemv_quant_vec_f32(qf32_normed.raw_data_gpu(), sx, lq->gpu_data, lq->dev_kind, lq->in,
-                                    lq->out, (int)lq->dev_stride, (int)lq->dev_qs, (int)lq->dev_d,
-                                    (int)lq->dev_m, logits.raw_data_gpu());
+            hal::gemv_quant_vec_f32(qf32_normed.raw_data_gpu(), sx, lq->gpu_data, lq->dev_kind, lq->in, lq->out,
+                                    (int)lq->dev_stride, (int)lq->dev_qs, (int)lq->dev_d, (int)lq->dev_m,
+                                    logits.raw_data_gpu());
         } else {
-            hal::gemv_quant_f32(qf32_normed.raw_data_gpu(), lq->gpu_data, (int)lq->type, lq->in,
-                                lq->out, logits.raw_data_gpu());
+            hal::gemv_quant_f32(qf32_normed.raw_data_gpu(), lq->gpu_data, (int)lq->type, lq->in, lq->out,
+                                logits.raw_data_gpu());
         }
         logits.mark_dirty(Tensor::DataLocation::GPU);
         logits.syncToHost();
         if (gpu_time) {
-            cudaEventRecord(ev1); cudaEventSynchronize(ev1);
-            float ms; cudaEventElapsedTime(&ms, ev0, ev1);
+            cudaEventRecord(ev1);
+            cudaEventSynchronize(ev1);
+            float ms;
+            cudaEventElapsedTime(&ms, ev0, ev1);
             std::fprintf(stderr, "[gputime] decode_fwd_gpu=%.2fms\n", ms);
-            cudaEventDestroy(ev0); cudaEventDestroy(ev1);
+            cudaEventDestroy(ev0);
+            cudaEventDestroy(ev1);
         }
         return logits;
     }
     if (dtype == hal::DType::Float16) {
         if (const core::Tensor *lhead16 = model.lm_head_fp16_t()) {
-        Tensor logits({1, cfg.vocab_size}, hal::DType::Float32);
-        logits.alloc_gpu();
-        core::blas::logits_gemv_mixed_cublas(normed_buf.raw_data_gpu(), lhead16->raw_data_gpu(),
-                                             logits.raw_data_gpu(), 1, cfg.vocab_size, hidden);
-        logits.mark_dirty(Tensor::DataLocation::GPU);
-        logits.syncToHost();
-        if (gpu_time) {
-            cudaEventRecord(ev1); cudaEventSynchronize(ev1);
-            float ms; cudaEventElapsedTime(&ms, ev0, ev1);
-            std::fprintf(stderr, "[gputime] decode_fwd_gpu=%.2fms\n", ms);
-            cudaEventDestroy(ev0); cudaEventDestroy(ev1);
-        }
-        return logits;
+            Tensor logits({1, cfg.vocab_size}, hal::DType::Float32);
+            logits.alloc_gpu();
+            core::blas::logits_gemv_mixed_cublas(normed_buf.raw_data_gpu(), lhead16->raw_data_gpu(),
+                                                 logits.raw_data_gpu(), 1, cfg.vocab_size, hidden);
+            logits.mark_dirty(Tensor::DataLocation::GPU);
+            logits.syncToHost();
+            if (gpu_time) {
+                cudaEventRecord(ev1);
+                cudaEventSynchronize(ev1);
+                float ms;
+                cudaEventElapsedTime(&ms, ev0, ev1);
+                std::fprintf(stderr, "[gputime] decode_fwd_gpu=%.2fms\n", ms);
+                cudaEventDestroy(ev0);
+                cudaEventDestroy(ev1);
+            }
+            return logits;
         }
     }
     if (const core::Tensor *lhead = model.lm_head_fp32()) {
         Tensor normed_f32({1, hidden}, hal::DType::Float32);
         normed_f32.alloc_gpu();
-        hal::convert_dtype(normed_f32.raw_data_gpu(), normed_buf.raw_data_gpu(), hidden, dtype,
-                           hal::DType::Float32);
+        hal::convert_dtype(normed_f32.raw_data_gpu(), normed_buf.raw_data_gpu(), hidden, dtype, hal::DType::Float32);
         Tensor logits({1, cfg.vocab_size}, hal::DType::Float32);
         logits.alloc_gpu();
-        hal::logits_gemv_f32(normed_f32.raw_data_gpu(), lhead->raw_data_gpu(), logits.raw_data_gpu(),
-                             1, cfg.vocab_size, hidden);
+        hal::logits_gemv_f32(normed_f32.raw_data_gpu(), lhead->raw_data_gpu(), logits.raw_data_gpu(), 1, cfg.vocab_size,
+                             hidden);
         logits.mark_dirty(Tensor::DataLocation::GPU);
         logits.syncToHost();
         if (gpu_time) {
-            cudaEventRecord(ev1); cudaEventSynchronize(ev1);
-            float ms; cudaEventElapsedTime(&ms, ev0, ev1);
+            cudaEventRecord(ev1);
+            cudaEventSynchronize(ev1);
+            float ms;
+            cudaEventElapsedTime(&ms, ev0, ev1);
             std::fprintf(stderr, "[gputime] decode_fwd_gpu=%.2fms\n", ms);
-            cudaEventDestroy(ev0); cudaEventDestroy(ev1);
+            cudaEventDestroy(ev0);
+            cudaEventDestroy(ev1);
         }
         return logits;
     }
-    Tensor logits({1, cfg.vocab_size}, dtype); logits.alloc_gpu();
+    Tensor logits({1, cfg.vocab_size}, dtype);
+    logits.alloc_gpu();
     core::blas::matmul(normed_buf, model.lm_head()->data, logits);
     auto ret = logits.cast(hal::DType::Float32);
     if (gpu_time) {
-        cudaEventRecord(ev1); cudaEventSynchronize(ev1);
-        float ms; cudaEventElapsedTime(&ms, ev0, ev1);
+        cudaEventRecord(ev1);
+        cudaEventSynchronize(ev1);
+        float ms;
+        cudaEventElapsedTime(&ms, ev0, ev1);
         std::fprintf(stderr, "[gputime] decode_fwd_gpu=%.2fms\n", ms);
-        cudaEventDestroy(ev0); cudaEventDestroy(ev1);
+        cudaEventDestroy(ev0);
+        cudaEventDestroy(ev1);
     }
     return ret;
 }
 
-Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache) {
-    return llama_forward_single_token_cuda_impl(model, token_id, pos, cache, 0,
-                                               model.layers().size(), nullptr, 0);
+Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache)
+{
+    return llama_forward_single_token_cuda_impl(model, token_id, pos, cache, 0, model.layers().size(), nullptr, 0);
 }
 
-Tensor llama_forward_single_token_cuda_prefix(const model::LLaMAModel &model, int token_id,
-                                              size_t pos, KVCache *cache, size_t n_gpu_layers,
-                                              float *hidden_out, size_t hidden_size) {
+Tensor llama_forward_single_token_cuda_prefix(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache,
+                                              size_t n_gpu_layers, float *hidden_out, size_t hidden_size)
+{
     const size_t n = std::min(n_gpu_layers, model.layers().size());
-    return llama_forward_single_token_cuda_impl(model, token_id, pos, cache, 0, n,
-                                               hidden_out, hidden_size);
+    return llama_forward_single_token_cuda_impl(model, token_id, pos, cache, 0, n, hidden_out, hidden_size);
 }
 #endif
 
-} // namespace infer
-} // namespace serius
-
+}  // namespace infer
+}  // namespace serius

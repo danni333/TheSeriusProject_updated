@@ -10,16 +10,15 @@ namespace quant {
 
 /// Quantization formats supported by the on-the-fly GEMV decode kernels.
 /// Values mirror ggml/GGUF type ids where applicable.
-enum class QuantType : uint8_t
-{
+enum class QuantType : uint8_t {
     UNSUPPORTED = 0,
     F32 = 1,
     F16 = 2,
-    Q4_0 = 3,   // ggml type 2: fp16 scale + 32 x 4-bit, w = (q-8)*d
-    Q4_1 = 4,   // ggml type 3: fp16 d,m + 32 x 4-bit, w = q*d + m
-    Q8_0 = 5,   // ggml type 8: fp16 scale + 32 x int8, w = q*d
-    Q4_K = 6,   // ggml type 12: 256 weights / 144B superblock, w = d*sc*nib - dmin*m
-    Q5_K = 7,   // ggml type 13: 256 weights / 176B superblock, w = d*sc*q5 - dmin*m
+    Q4_0 = 3,  // ggml type 2: fp16 scale + 32 x 4-bit, w = (q-8)*d
+    Q4_1 = 4,  // ggml type 3: fp16 d,m + 32 x 4-bit, w = q*d + m
+    Q8_0 = 5,  // ggml type 8: fp16 scale + 32 x int8, w = q*d
+    Q4_K = 6,  // ggml type 12: 256 weights / 144B superblock, w = d*sc*nib - dmin*m
+    Q5_K = 7,  // ggml type 13: 256 weights / 176B superblock, w = d*sc*q5 - dmin*m
 };
 
 /// A weight matrix kept in packed quantized form for fast M==1 inference.
@@ -30,8 +29,8 @@ enum class QuantType : uint8_t
 struct QuantWeight
 {
     QuantType type = QuantType::UNSUPPORTED;
-    size_t in = 0;    ///< inner dim K (features per output row)
-    size_t out = 0;   ///< outer dim N (number of output rows)
+    size_t in = 0;               ///< inner dim K (features per output row)
+    size_t out = 0;              ///< outer dim N (number of output rows)
     std::vector<uint8_t> bytes;  ///< packed rows, row-major [out][row_bytes]
 
     /// Optional device copy of `bytes` for CUDA decode kernels. Owned by the
@@ -44,11 +43,11 @@ struct QuantWeight
     /// the fp16 d scales, then fp16 m scales (Q4_1 only). `dev_bytes` replaces
     /// `bytes` on the device; the fields below describe it.
     std::vector<uint8_t> dev_bytes;
-    size_t dev_stride = 0;   ///< bytes per output row in dev_bytes
-    size_t dev_qs = 0;       ///< quant payload bytes per 32-weight block (16 or 32)
-    size_t dev_d = 0;        ///< row offset of the fp16 d scale array
-    size_t dev_m = 0;        ///< row offset of the fp16 m scale array (0 = none)
-    int dev_kind = 0;        ///< 3=Q4_0, 4=Q4_1, 5=Q8_0
+    size_t dev_stride = 0;  ///< bytes per output row in dev_bytes
+    size_t dev_qs = 0;      ///< quant payload bytes per 32-weight block (16 or 32)
+    size_t dev_d = 0;       ///< row offset of the fp16 d scale array
+    size_t dev_m = 0;       ///< row offset of the fp16 m scale array (0 = none)
+    int dev_kind = 0;       ///< 3=Q4_0, 4=Q4_1, 5=Q8_0
 
     bool valid() const { return type != QuantType::UNSUPPORTED && in > 0 && out > 0 && !bytes.empty(); }
 
@@ -56,10 +55,14 @@ struct QuantWeight
     static constexpr size_t block_bytes(QuantType t)
     {
         switch (t) {
-            case QuantType::Q4_0: return 18;
-            case QuantType::Q4_1: return 20;
-            case QuantType::Q8_0: return 34;
-            default: return 0;
+            case QuantType::Q4_0:
+                return 18;
+            case QuantType::Q4_1:
+                return 20;
+            case QuantType::Q8_0:
+                return 34;
+            default:
+                return 0;
         }
     }
 
@@ -69,8 +72,12 @@ struct QuantWeight
     /// Bytes per output row.
     size_t row_bytes() const
     {
-        if (type == QuantType::Q4_K) { return (in / 256) * 144; }
-        if (type == QuantType::Q5_K) { return (in / 256) * 176; }
+        if (type == QuantType::Q4_K) {
+            return (in / 256) * 144;
+        }
+        if (type == QuantType::Q5_K) {
+            return (in / 256) * 176;
+        }
         return blocks_per_row() * block_bytes(type);
     }
 };
@@ -84,7 +91,9 @@ struct QuantWeight
 /// No-op for unsupported types or non-32-multiple `in`.
 inline void repack_quant_for_gpu(QuantWeight &w)
 {
-    if (!w.valid() || (w.in % 32) != 0 || w.dev_stride != 0) { return; }
+    if (!w.valid() || (w.in % 32) != 0 || w.dev_stride != 0) {
+        return;
+    }
 
     // Q4_K native: keep the 6-bit packed scales instead of expanding each
     // 32-weight sub-block to a Q4_1 block (20B -> effective ~18B/32w).
@@ -92,9 +101,11 @@ inline void repack_quant_for_gpu(QuantWeight &w)
     // where each header is the raw 16B {d f16, dmin f16, scales[12]} of one
     // 256-weight superblock. Kernel: kind 6.
     if (w.type == QuantType::Q4_K) {
-        if (w.in % 256 != 0) { return; }
-        const size_t bpr = w.in / 32;    // 32-weight sub-blocks per row
-        const size_t nsb = w.in / 256;   // superblocks per row
+        if (w.in % 256 != 0) {
+            return;
+        }
+        const size_t bpr = w.in / 32;   // 32-weight sub-blocks per row
+        const size_t nsb = w.in / 256;  // superblocks per row
         const size_t pay = bpr * 16;
         const size_t stride = pay + nsb * 16;
         w.dev_bytes.assign(w.out * stride, 0);
@@ -105,7 +116,7 @@ inline void repack_quant_for_gpu(QuantWeight &w)
             uint8_t *hd = dst + pay;
             for (size_t s = 0; s < nsb; ++s) {
                 const uint8_t *blk = src + s * 144;
-                std::memcpy(hd + s * 16, blk, 16);   // d, dmin, scales[12]
+                std::memcpy(hd + s * 16, blk, 16);  // d, dmin, scales[12]
                 const uint8_t *qs = blk + 16;
                 for (int ls = 0; ls < 8; ++ls) {
                     const int p = ls >> 1;
@@ -121,7 +132,7 @@ inline void repack_quant_for_gpu(QuantWeight &w)
         }
         w.dev_stride = stride;
         w.dev_qs = 16;
-        w.dev_d = pay;    // header section offset (reuses d_off kernel arg)
+        w.dev_d = pay;  // header section offset (reuses d_off kernel arg)
         w.dev_m = 0;
         w.dev_kind = 6;
         return;
@@ -131,10 +142,18 @@ inline void repack_quant_for_gpu(QuantWeight &w)
     const size_t src_bb = QuantWeight::block_bytes(w.type);
     size_t qs, d_sz = 2, m_sz = 0;
     switch (w.type) {
-        case QuantType::Q4_0: qs = 16; break;
-        case QuantType::Q4_1: qs = 16; m_sz = 2; break;
-        case QuantType::Q8_0: qs = 32; break;
-        default: return;
+        case QuantType::Q4_0:
+            qs = 16;
+            break;
+        case QuantType::Q4_1:
+            qs = 16;
+            m_sz = 2;
+            break;
+        case QuantType::Q8_0:
+            qs = 32;
+            break;
+        default:
+            return;
     }
     const size_t d_off = bpr * qs;
     const size_t m_off = (m_sz != 0) ? d_off + bpr * d_sz : 0;
@@ -153,7 +172,9 @@ inline void repack_quant_for_gpu(QuantWeight &w)
             const size_t qs_src = (w.type == QuantType::Q4_1) ? 4 : 2;
             std::memcpy(qd + b * qs, s + qs_src, qs);  // quant payload, block-major
             std::memcpy(dd + b * 2, s, 2);             // fp16 d
-            if (m_sz != 0) { std::memcpy(mm + b * 2, s + 2, 2); }  // fp16 m
+            if (m_sz != 0) {
+                std::memcpy(mm + b * 2, s + 2, 2);
+            }  // fp16 m
         }
     }
     w.dev_stride = stride;

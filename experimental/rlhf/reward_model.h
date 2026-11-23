@@ -3,9 +3,9 @@
 #include <memory>
 #include <vector>
 
-#include "../autograd/node.h"
-#include "../tensor/tensor.h"
-#include "../transformer/llama_model.h"
+#include "autograd/node.h"
+#include "tensor/tensor.h"
+#include "transformer/llama_model.h"
 
 namespace serius {
 namespace rlhf {

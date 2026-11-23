@@ -31,10 +31,10 @@ struct ActivationStats
 /// Result of AWQ quantization
 struct AWQQuantizedWeight
 {
-    QuantizedTensor quantized;           // INT4 quantized weights
-    std::vector<float> channel_scales;   // Per-channel AWQ scale factors (s_j)
-    size_t rows;                         // Weight matrix rows (output features)
-    size_t cols;                         // Weight matrix cols (input features / channels)
+    QuantizedTensor quantized;          // INT4 quantized weights
+    std::vector<float> channel_scales;  // Per-channel AWQ scale factors (s_j)
+    size_t rows;                        // Weight matrix rows (output features)
+    size_t cols;                        // Weight matrix cols (input features / channels)
 };
 
 /// Collect activation statistics from a calibration batch.
@@ -45,8 +45,7 @@ struct AWQQuantizedWeight
 /// @param num_tokens   Number of tokens in the calibration set
 /// @param num_channels Number of input channels (= K dimension of weight matrix)
 /// @return Per-channel activation magnitude statistics
-ActivationStats collect_activation_stats(const float *activations, size_t num_tokens,
-                                         size_t num_channels);
+ActivationStats collect_activation_stats(const float *activations, size_t num_tokens, size_t num_channels);
 
 /// Compute AWQ channel scales from activation statistics.
 /// Channels with higher activation magnitude get a larger scale factor,
@@ -70,8 +69,7 @@ std::vector<float> compute_awq_scales(const ActivationStats &stats, float alpha 
 /// @param scales      Per-channel AWQ scale factors from compute_awq_scales()
 /// @param block_size  INT4 quantization block size (default: 32)
 /// @return AWQ quantized weight with embedded scale factors
-AWQQuantizedWeight awq_quantize(const float *weights, size_t rows, size_t cols,
-                                const std::vector<float> &scales,
+AWQQuantizedWeight awq_quantize(const float *weights, size_t rows, size_t cols, const std::vector<float> &scales,
                                 size_t block_size = 32);
 
 /// Dequantize AWQ weights back to float (for verification/debugging).
@@ -91,8 +89,7 @@ void awq_dequantize(const AWQQuantizedWeight &awq_weight, float *out);
 /// @param X           Input matrix [M, K]
 /// @param Y           Output matrix [M, N]
 /// @param M           Rows of X
-void awq_matmul(const AWQQuantizedWeight &awq_weight, const float *X,
-                float *Y, int M);
+void awq_matmul(const AWQQuantizedWeight &awq_weight, const float *X, float *Y, int M);
 
 }  // namespace quant
 }  // namespace serius

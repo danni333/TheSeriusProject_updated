@@ -64,8 +64,7 @@ void DynamicLossScaler::update(bool overflow_detected)
     } else {
         good_steps_++;
         if (good_steps_ >= growth_interval_) {
-            scale_ = std::min(scale_ * growth_factor_,
-                              std::numeric_limits<float>::max());
+            scale_ = std::min(scale_ * growth_factor_, std::numeric_limits<float>::max());
             good_steps_ = 0;
         }
     }

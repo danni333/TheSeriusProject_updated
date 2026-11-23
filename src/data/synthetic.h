@@ -38,9 +38,7 @@ class SyntheticGenerator
     using InstructionGen = std::function<std::string()>;
     using OutputGen = std::function<std::string(const std::string &)>;
 
-    SyntheticGenerator(InstructionGen gen_instruction,
-                       OutputGen gen_output,
-                       QualityJudge &judge,
+    SyntheticGenerator(InstructionGen gen_instruction, OutputGen gen_output, QualityJudge &judge,
                        float quality_threshold = 0.7f);
 
     /// Generate up to n_samples accepted samples.

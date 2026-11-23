@@ -9,13 +9,16 @@
 /// Usage:
 ///   serius::parallel_for(0, M, [&](size_t row) { ... });
 
+#include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <functional>
 #include <future>
 #include <mutex>
 #include <queue>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace serius {
@@ -46,7 +49,8 @@ class ThreadPool
                 try {
                     task_fn();
                     promise->set_value();
-                } catch (...) {
+                }
+                catch (...) {
                     promise->set_exception(std::current_exception());
                 }
             });

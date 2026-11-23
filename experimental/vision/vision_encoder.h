@@ -5,8 +5,8 @@
 #include <memory>
 #include <vector>
 
-#include "../autograd/node.h"
-#include "../tensor/tensor.h"
+#include "autograd/node.h"
+#include "tensor/tensor.h"
 #include "patch_embed.h"
 
 namespace serius {

@@ -7,7 +7,6 @@
 #include "../autograd/node.h"
 #include "../tensor/tensor.h"
 
-
 namespace serius {
 namespace model {
 namespace attention {

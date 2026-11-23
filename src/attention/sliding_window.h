@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <vector>
 
 #include "../tensor/tensor.h"
 
@@ -27,8 +28,7 @@ Tensor sliding_window_mask(size_t seq_len, size_t window_size);
 /// @param window_size Size of the sliding window for local attention
 /// @param global_indices Indices of tokens with global attention
 /// @return Mask tensor of shape (seq_len, seq_len)
-Tensor global_local_mask(size_t seq_len, size_t window_size,
-                         const std::vector<size_t>& global_indices);
+Tensor global_local_mask(size_t seq_len, size_t window_size, const std::vector<size_t> &global_indices);
 
 /// Checks if the sliding window mask is correctly configured.
 /// @param seq_len Sequence length

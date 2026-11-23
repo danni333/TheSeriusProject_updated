@@ -3,9 +3,11 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <unordered_set>
 
-#include "../autograd/ops.h"
-#include "../infer/llama_inference.h"
+#include "autograd/engine.h"
+#include "autograd/ops.h"
+#include "infer/llama_inference.h"
 
 namespace serius {
 namespace rlhf {
@@ -53,6 +55,48 @@ Node *forward_hidden(const model::LLaMAModel &transformer, const Tensor &tokens)
     return hidden;
 }
 
+/// Delete every node reachable from \p root except the model's parameter
+/// nodes (owned by the transformer via unique_ptr and shared across calls).
+/// forward_hidden() builds a fresh autograd graph per call; without this the
+/// whole activation graph leaks on every score()/compute_logprobs() call.
+void free_graph(Node *root, const std::unordered_set<Node *> &params)
+{
+    if (!root) return;
+    for (Node *n : core::autograd::topological_sort(root)) {
+        if (n && params.find(n) == params.end()) {
+            delete n;
+        }
+    }
+}
+
+/// Collect the parameter Node pointers owned by the transformer so free_graph
+/// can tell them apart from per-call temporaries.
+std::unordered_set<Node *> collect_params(const model::LLaMAModel &m)
+{
+    std::unordered_set<Node *> params;
+    auto add = [&params](Node *n) {
+        if (n) params.insert(n);
+    };
+    add(m.embed_tokens());
+    add(m.norm_weight());
+    add(m.lm_head());
+    for (const auto &layer : m.layers()) {
+        add(layer->input_layernorm_weight.get());
+        add(layer->q_proj.get());
+        add(layer->k_proj.get());
+        add(layer->v_proj.get());
+        add(layer->q_bias.get());
+        add(layer->k_bias.get());
+        add(layer->v_bias.get());
+        add(layer->o_proj.get());
+        add(layer->post_attention_layernorm_weight.get());
+        add(layer->gate_proj.get());
+        add(layer->up_proj.get());
+        add(layer->down_proj.get());
+    }
+    return params;
+}
+
 }  // namespace
 
 struct RewardModel::Impl
@@ -61,6 +105,7 @@ struct RewardModel::Impl
     model::LLaMAModel transformer;
     Tensor reward_head;  // (hidden_size, 1) projection
     Tensor reward_bias;  // scalar bias
+    std::unordered_set<Node *> params;  // transformer params, excluded from free_graph
 
     explicit Impl(const model::LLamaConfig &cfg) : config(cfg), transformer(cfg)
     {
@@ -68,6 +113,7 @@ struct RewardModel::Impl
         reward_head.rand();
         reward_bias = Tensor({1});
         reward_bias.fill(0.0f);
+        params = collect_params(transformer);
     }
 };
 
@@ -94,7 +140,7 @@ float RewardModel::score(const Tensor &tokens) const
     }
     reward += impl_->reward_bias[0];
 
-    delete hidden;
+    free_graph(hidden, impl_->params);
     return reward;
 }
 
@@ -133,8 +179,8 @@ std::vector<float> RewardModel::compute_logprobs(const Tensor &tokens) const
         }
     }
 
-    delete hidden;
-    delete logits_node;
+    // logits_node's graph includes hidden and all block intermediates.
+    free_graph(logits_node, impl_->params);
     return log_probs;
 }
 

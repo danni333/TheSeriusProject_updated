@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "../autograd/node.h"
 #include "../blas/blas.h"

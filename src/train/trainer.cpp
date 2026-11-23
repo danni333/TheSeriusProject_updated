@@ -16,6 +16,19 @@ Trainer::Trainer(model::TransformerModel &model, optim::AdamW &optimizer, optim:
                  const TrainerConfig &config)
     : model_(model), optimizer_(optimizer), scheduler_(scheduler), config_(config)
 {
+    const auto params = model_.parameters();
+    model_params_set_.insert(params.begin(), params.end());
+}
+
+void Trainer::cleanup_graph(core::autograd::Node *loss_node) const
+{
+    if (!loss_node) return;
+    std::vector<core::autograd::Node *> order = core::autograd::topological_sort(loss_node);
+    for (core::autograd::Node *node : order) {
+        if (node && model_params_set_.find(node) == model_params_set_.end()) {
+            delete node;
+        }
+    }
 }
 
 void Trainer::train(DataLoader &dataloader)
@@ -36,7 +49,7 @@ void Trainer::train(DataLoader &dataloader)
             core::autograd::Node *target_node = new core::autograd::Node(std::move(batch.target_ids), false);
             target_node->name = "target_ids";
 
-            // Forward pass
+            // 3. Forward pass
             core::autograd::Node *logits = model_.forward(input_node);
             core::autograd::Node *loss_node = core::autograd::ops::cross_entropy(logits, target_node);
 
@@ -57,37 +70,37 @@ void Trainer::train(DataLoader &dataloader)
             float current_lr = scheduler_.get_lr(current_step_);
 
             if (should_step) {
-                // 6. Gradient clipping
+                // 6. Gradient clipping + optimizer step
                 stability::clip_grad_norm(model_.parameters(), config_.grad_clip);
                 optimizer_.set_lr(current_lr);
-
-                // 8. Optimizer step
                 optimizer_.step();
             } else {
                 std::cout << "Warning: Gradient overflow detected at step " << current_step_
                           << ". Skipping optimizer step.\n";
             }
 
-            // 8. Logging
+            // 7. Logging
             const int LOG_INTERVAL = 10;
             if (current_step_ % LOG_INTERVAL == 0) {
                 std::cout << "Step: " << current_step_ << " | Loss: " << std::fixed << std::setprecision(4)
                           << loss_node->data[0] << " | LR: " << std::scientific << current_lr << "\n";
             }
 
-            // 9. Checkpointing
+            // 8. Checkpointing
             if (current_step_ > 0 && current_step_ % config_.checkpoint_interval == 0) {
                 std::string path = config_.checkpoint_dir + "/model_step_" + std::to_string(current_step_) + ".ckpt";
                 save_checkpoint(path, model_, optimizer_, epoch, current_step_);
                 std::cout << "Saved checkpoint to " << path << "\n";
             }
 
-            current_step_++;
+            // 9. Free the forward graph (parameters are kept: they are shared
+            // across steps and owned by the model). cross_entropy does not
+            // register target_node as a graph child, so it is unreachable
+            // from the sink and must be freed explicitly.
+            cleanup_graph(scaled_loss);
+            delete target_node;
 
-            // Cleanup nodes (in a real engine, this might be managed better)
-            // Note: need to be careful with Node pointers if they are deleted or not.
-            // For now, we'll assume they need manual cleanup if not managed.
-            // ... cleanup logic (topological sort delete)
+            current_step_++;
         }
     }
 }

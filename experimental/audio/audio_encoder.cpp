@@ -3,12 +3,12 @@
 #include <algorithm>
 #include <cmath>
 
-#include "../autograd/ops.h"
-#include "../common/serius_check.h"
-#include "../init/weight_init.h"
-#include "../multimodal/cross_attention.h"
-#include "../transformer/ffn.h"
-#include "../transformer/layernorm.h"
+#include "autograd/ops.h"
+#include "common/serius_check.h"
+#include "init/weight_init.h"
+#include "multimodal/cross_attention.h"
+#include "transformer/ffn.h"
+#include "transformer/layernorm.h"
 
 namespace serius {
 namespace audio {

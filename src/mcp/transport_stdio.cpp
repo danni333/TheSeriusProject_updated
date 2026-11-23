@@ -1,20 +1,19 @@
 #include "transport_stdio.h"
 
-#include <nlohmann/json.hpp>
-
 #include <atomic>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <nlohmann/json.hpp>
 #include <string>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>
-#include <io.h>
 #include <fcntl.h>
+#include <io.h>
+#include <windows.h>
 #else
 #include <fcntl.h>
 #include <signal.h>
@@ -92,8 +91,8 @@ void StdioTransport::spawn()
 
     PROCESS_INFORMATION pi{};
     std::string cmdline = command_;  // CreateProcess needs a mutable buffer
-    if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    if (!CreateProcessA(nullptr, cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si,
+                        &pi)) {
         CloseHandle(child_in_read);
         CloseHandle(child_in_write);
         CloseHandle(child_out_read);
@@ -106,10 +105,8 @@ void StdioTransport::spawn()
     CloseHandle(child_in_read);
     CloseHandle(child_out_write);
 
-    const int in_fd = _open_osfhandle(reinterpret_cast<intptr_t>(child_in_write),
-                                      _O_WRONLY | _O_TEXT);
-    const int out_fd = _open_osfhandle(reinterpret_cast<intptr_t>(child_out_read),
-                                       _O_RDONLY | _O_TEXT);
+    const int in_fd = _open_osfhandle(reinterpret_cast<intptr_t>(child_in_write), _O_WRONLY | _O_TEXT);
+    const int out_fd = _open_osfhandle(reinterpret_cast<intptr_t>(child_out_read), _O_RDONLY | _O_TEXT);
     in_ = in_fd >= 0 ? _fdopen(in_fd, "w") : nullptr;
     out_ = out_fd >= 0 ? _fdopen(out_fd, "r") : nullptr;
     if (in_) std::setvbuf(in_, nullptr, _IONBF, 0);
@@ -124,14 +121,18 @@ void StdioTransport::spawn()
         // Child: stdin <- in_pipe[0], stdout -> out_pipe[1]
         dup2(in_pipe[0], STDIN_FILENO);
         dup2(out_pipe[1], STDOUT_FILENO);
-        close(in_pipe[0]); close(in_pipe[1]);
-        close(out_pipe[0]); close(out_pipe[1]);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
         execl("/bin/sh", "sh", "-c", command_.c_str(), static_cast<char *>(nullptr));
         _exit(127);
     }
     if (pid_ < 0) {
-        close(in_pipe[0]); close(in_pipe[1]);
-        close(out_pipe[0]); close(out_pipe[1]);
+        close(in_pipe[0]);
+        close(in_pipe[1]);
+        close(out_pipe[0]);
+        close(out_pipe[1]);
         pid_ = -1;
         return;
     }
@@ -149,8 +150,7 @@ json StdioTransport::send_request(const std::string &method, const json &params)
     if (!in_ || !out_) {
         return json{{"jsonrpc", "2.0"},
                     {"id", nullptr},
-                    {"error", {{"code", -32000},
-                               {"message", "stdio transport not connected"}}}};
+                    {"error", {{"code", -32000}, {"message", "stdio transport not connected"}}}};
     }
 
     const int id = g_next_stdio_id++;
@@ -161,12 +161,10 @@ json StdioTransport::send_request(const std::string &method, const json &params)
     req["params"] = params;
 
     const std::string line = req.dump() + "\n";
-    if (std::fwrite(line.data(), 1, line.size(), in_) != line.size() ||
-        std::fflush(in_) != 0) {
+    if (std::fwrite(line.data(), 1, line.size(), in_) != line.size() || std::fflush(in_) != 0) {
         return json{{"jsonrpc", "2.0"},
                     {"id", id},
-                    {"error", {{"code", -32002},
-                               {"message", "failed to write request to subprocess"}}}};
+                    {"error", {{"code", -32002}, {"message", "failed to write request to subprocess"}}}};
     }
 
     // MCP stdio uses newline-delimited JSON. Skip notifications (no "id")
@@ -176,7 +174,8 @@ json StdioTransport::send_request(const std::string &method, const json &params)
         json resp;
         try {
             resp = json::parse(buf);
-        } catch (...) {
+        }
+        catch (...) {
             continue;  // tolerate non-JSON noise on stdout
         }
         if (resp.value("id", -1) == id) {
@@ -186,8 +185,7 @@ json StdioTransport::send_request(const std::string &method, const json &params)
 
     return json{{"jsonrpc", "2.0"},
                 {"id", id},
-                {"error", {{"code", -32003},
-                           {"message", "subprocess closed stdout (crashed or exited)"}}}};
+                {"error", {{"code", -32003}, {"message", "subprocess closed stdout (crashed or exited)"}}}};
 }
 
 }  // namespace mcp

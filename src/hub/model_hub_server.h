@@ -12,10 +12,10 @@
 #include <string>
 #include <vector>
 
+#include "../common/defaults.h"
 #include "hub_types.h"
 #include "metadata_manager.h"
 #include "search_engine.h"
-#include "../common/defaults.h"
 
 namespace serius::hub {
 
@@ -34,16 +34,15 @@ class ModelHubServer
     // Model management
     bool upload_model(const std::string &model_path, const ModelMetadata &metadata);
     bool download_model(const std::string &model_id, const std::string &output_path);
-    std::vector<ModelMetadata> search_models(const std::string &query,
-                                             const std::vector<std::string> &tags = {},
+    std::vector<ModelMetadata> search_models(const std::string &query, const std::vector<std::string> &tags = {},
                                              int limit = 50, int offset = 0);
     bool delete_model(const std::string &model_id);
     ModelMetadata get_model_metadata(const std::string &model_id);
 
-    // Authentication (file-based API keys in hub_users.json)
-    bool authenticate_user(const std::string &token, std::string &user_id);
-    bool check_permissions(const std::string &user_id, const std::string &action,
-                           const std::string &resource = "");
+    // Authentication (file-based API key hashes in hub_users.json)
+    // remote_addr is the client IP; used to restrict open mode to loopback.
+    bool authenticate_user(const std::string &token, std::string &user_id, const std::string &remote_addr = "");
+    bool check_permissions(const std::string &user_id, const std::string &action, const std::string &resource = "");
 
    private:
     std::unique_ptr<httplib::Server> server_;
@@ -68,13 +67,15 @@ class ModelHubServer
     nlohmann::json model_to_json(const ModelMetadata &metadata);
     ModelMetadata json_to_model(const nlohmann::json &json);
     bool validate_model_file(const std::string &file_path);
-    void log_access(const std::string &user_id, const std::string &action,
-                    const std::string &resource);
+    void log_access(const std::string &user_id, const std::string &action, const std::string &resource);
 
-    // File-based user store: {api_key: {user_id, username, permissions[]}}
+    // File-based user store: {sha256(api_key): {user_id, username, permissions[]}}
     nlohmann::json load_users() const;
     bool save_users(const nlohmann::json &users);
-    std::string register_user(const std::string &username);
+    // Returns 0 on success (api_key filled), 1 on empty username/save failure,
+    // 2 when the username is already registered (api_key left empty — the
+    // existing account's key is never disclosed).
+    int register_user(const std::string &username, std::string &api_key);
     std::vector<std::string> user_permissions(const std::string &user_id) const;
     std::string resolve_user_id(const std::string &api_key) const;
 };

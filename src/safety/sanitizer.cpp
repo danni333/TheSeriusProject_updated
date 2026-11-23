@@ -5,18 +5,17 @@
 namespace serius {
 namespace safety {
 
-Sanitizer::Sanitizer()
-    : Sanitizer(Config{})
-{
-}
+Sanitizer::Sanitizer() : Sanitizer(Config{}) {}
 
-Sanitizer::Sanitizer(const Config& config)
-    : config_(config)
+Sanitizer::Sanitizer(const Config &config) : config_(config)
 {
     // Add patterns based on config
     if (config_.remove_sql_injection) {
-        custom_patterns_.emplace_back(std::regex(R"(\b(DROP|DELETE|INSERT|UPDATE|ALTER|EXEC|UNION)\s+[A-Z]+\b)", std::regex_constants::icase), "[SQL_REDACTED]");
-        custom_patterns_.emplace_back(std::regex(R"(;\s*(DROP|DELETE|INSERT|UPDATE))", std::regex_constants::icase), "[SQL_REDACTED]");
+        custom_patterns_.emplace_back(
+            std::regex(R"(\b(DROP|DELETE|INSERT|UPDATE|ALTER|EXEC|UNION)\s+[A-Z]+\b)", std::regex_constants::icase),
+            "[SQL_REDACTED]");
+        custom_patterns_.emplace_back(std::regex(R"(;\s*(DROP|DELETE|INSERT|UPDATE))", std::regex_constants::icase),
+                                      "[SQL_REDACTED]");
     }
 
     if (config_.remove_shell_commands) {
@@ -34,7 +33,7 @@ Sanitizer::Sanitizer(const Config& config)
     }
 }
 
-std::string Sanitizer::sanitize(const std::string& text) const
+std::string Sanitizer::sanitize(const std::string &text) const
 {
     std::string result = text;
 
@@ -44,18 +43,19 @@ std::string Sanitizer::sanitize(const std::string& text) const
     }
 
     // Apply custom patterns
-    for (const auto& [pattern, replacement] : custom_patterns_) {
+    for (const auto &[pattern, replacement] : custom_patterns_) {
         result = std::regex_replace(result, pattern, replacement);
     }
 
     return result;
 }
 
-void Sanitizer::add_pattern(const std::string& pattern, const std::string& replacement)
+void Sanitizer::add_pattern(const std::string &pattern, const std::string &replacement)
 {
     try {
         custom_patterns_.emplace_back(std::regex(pattern), replacement);
-    } catch (const std::regex_error&) {
+    }
+    catch (const std::regex_error &) {
         // Invalid regex, ignore
     }
 }

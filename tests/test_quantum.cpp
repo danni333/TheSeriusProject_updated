@@ -3,9 +3,9 @@
 #include <cmath>
 #include <vector>
 
-#include "../src/quantum/circuit.h"
-#include "../src/quantum/state.h"
-#include "../src/quantum/vqe.h"
+#include "quantum/circuit.h"
+#include "quantum/state.h"
+#include "quantum/vqe.h"
 
 using namespace serius::quantum;
 using serius::core::Tensor;

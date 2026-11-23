@@ -4,8 +4,6 @@
 #endif
 #endif
 
-#include "llama_inference.h"
-
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -14,8 +12,10 @@
 
 #include "../blas/blas.h"
 #include "../quant/quant_weight.h"
+#include "llama_inference.h"
 #ifdef SERIUS_USE_CUDA
 #include <cuda_runtime.h>
+
 #include "../blas/matmul_cuda.h"
 #include "../hal/device.h"
 #endif
@@ -72,8 +72,8 @@ bool model_quant_layers(const model::LLaMAModel &model)
         return false;
     }
     for (const auto &blk : model.layers()) {
-        if (!qw_gpu_supported(blk->qkv_w) || !qw_gpu_supported(blk->gate_up_w) ||
-            !qw_gpu_supported(blk->o_w) || !qw_gpu_supported(blk->down_w)) {
+        if (!qw_gpu_supported(blk->qkv_w) || !qw_gpu_supported(blk->gate_up_w) || !qw_gpu_supported(blk->o_w) ||
+            !qw_gpu_supported(blk->down_w)) {
             return false;
         }
     }
@@ -103,16 +103,16 @@ LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model)
     // it will actually be repacked+uploaded (qw_gpu_supported predicts that)
     // and has the [vocab, hidden] shape the logits kernels expect. FP16
     // activations come for free: the offload casts embed_tokens to Float16.
-    const bool quant_lm = quant_upload_enabled() && lm_head_q != nullptr &&
-        qw_gpu_supported(*lm_head_q) && lm_head_q->out == vocab && lm_head_q->in == hidden;
+    const bool quant_lm = quant_upload_enabled() && lm_head_q != nullptr && qw_gpu_supported(*lm_head_q) &&
+                          lm_head_q->out == vocab && lm_head_q->in == hidden;
 
     size_t need = 0;
     if (quant) {
         // Packed-quant mode: embed table, norms and biases stay dense FP16;
         // projections exist on the GPU only as packed QuantWeights.
-        need += vocab * hidden * 2;                    // embed_tokens
+        need += vocab * hidden * 2;                        // embed_tokens
         need += n_layers * (3 * hidden + 2 * kv_dim) * 2;  // 2 LN + q/k/v bias
-        need += hidden * 2;                            // final norm
+        need += hidden * 2;                                // final norm
         for (const auto &blk : model.layers()) {
             need += quant_weight_bytes(blk->qkv_w);
             need += quant_weight_bytes(blk->gate_up_w);
@@ -122,8 +122,7 @@ LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model)
         // Batched-prefill dequant scratch: dq + dq_t, each max(in*out) FP16.
         size_t max_elems = 0;
         for (const auto &blk : model.layers()) {
-            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w,
-                                              &blk->o_w, &blk->down_w};
+            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w, &blk->o_w, &blk->down_w};
             for (const auto *qw : ws) {
                 max_elems = std::max(max_elems, qw->in * qw->out);
             }
@@ -132,11 +131,10 @@ LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model)
         need += kv_bytes;
     } else {
         // Dense FP16 params uploaded by the offload (embed + per-block weights).
-        const size_t per_layer_params =
-            hidden * hidden +            // q_proj
-            2 * hidden * kv_dim +        // k_proj + v_proj
-            hidden * hidden +            // o_proj
-            3 * hidden * inter;          // gate + up + down
+        const size_t per_layer_params = hidden * hidden +      // q_proj
+                                        2 * hidden * kv_dim +  // k_proj + v_proj
+                                        hidden * hidden +      // o_proj
+                                        3 * hidden * inter;    // gate + up + down
         size_t dense_params = vocab * hidden + n_layers * per_layer_params;
         need = dense_params * 2;  // FP16
         need += kv_bytes;
@@ -144,8 +142,7 @@ LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model)
         // Packed weights still upload alongside the dense copies whenever
         // the repack supports them (mixed-quant models keep both paths).
         for (const auto &blk : model.layers()) {
-            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w,
-                                              &blk->o_w, &blk->down_w};
+            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w, &blk->o_w, &blk->down_w};
             for (const auto *qw : ws) {
                 if (qw_gpu_supported(*qw)) {
                     need += quant_weight_bytes(*qw);
@@ -156,8 +153,7 @@ LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model)
         // packed weights did upload even in dense mode.
         size_t max_elems = 0;
         for (const auto &blk : model.layers()) {
-            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w,
-                                              &blk->o_w, &blk->down_w};
+            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w, &blk->o_w, &blk->down_w};
             for (const auto *qw : ws) {
                 if (qw_gpu_supported(*qw)) {
                     max_elems = std::max(max_elems, qw->in * qw->out);
@@ -198,8 +194,7 @@ LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model)
     }
     plan.free_bytes = free_b;
     // Keep 10% of free VRAM as headroom for other allocations/fragmentation.
-    plan.fit = (need <= free_b * 9 / 10) ? LlamaGpuFit::kFits
-                                        : LlamaGpuFit::kInsufficientVram;
+    plan.fit = (need <= free_b * 9 / 10) ? LlamaGpuFit::kFits : LlamaGpuFit::kInsufficientVram;
 #else
     plan.fit = LlamaGpuFit::kNoCuda;
 #endif
@@ -212,11 +207,10 @@ size_t estimate_llama_params(const model::LLaMAModel &model)
     const size_t hidden = cfg.hidden_size;
     const size_t inter = cfg.intermediate_size;
     const size_t kv_dim = cfg.num_key_value_heads * (hidden / cfg.num_attention_heads);
-    const size_t per_layer =
-        hidden * hidden +                 // q_proj
-        2 * hidden * kv_dim +             // k_proj + v_proj
-        hidden * hidden +                 // o_proj
-        3 * hidden * inter;               // gate + up + down
+    const size_t per_layer = hidden * hidden +      // q_proj
+                             2 * hidden * kv_dim +  // k_proj + v_proj
+                             hidden * hidden +      // o_proj
+                             3 * hidden * inter;    // gate + up + down
     return cfg.vocab_size * hidden + cfg.num_hidden_layers * per_layer;
 }
 
@@ -237,8 +231,8 @@ LlamaGpuDecision resolve_llama_gpu(const model::LLaMAModel &model, LlamaGpuMode 
         // when the estimate says it might not fit.
         d.use_gpu = (plan.fit != LlamaGpuFit::kNoCuda);
         d.reason = (plan.fit == LlamaGpuFit::kInsufficientVram)
-            ? "cuda requested but estimated VRAM need exceeds free memory"
-            : "cuda requested";
+                       ? "cuda requested but estimated VRAM need exceeds free memory"
+                       : "cuda requested";
         return d;
     }
     // kAuto: offload only when the footprint fits safely.
@@ -266,13 +260,17 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model)
     if (std::getenv("SERIUS_NO_QUANT") == nullptr) {
         hal::IBackend *be = hal::get_gpu_backend();
         auto upload_qw = [be](quant::QuantWeight &qw) {
-            if (!qw.valid() || qw.gpu_data != nullptr) { return; }
+            if (!qw.valid() || qw.gpu_data != nullptr) {
+                return;
+            }
             // Repack into the aligned layout the vectorized kernels read.
             // Types/layouts it rejects stay host-only: gpu_data is only ever
             // set for the repacked dev_bytes layout (dev_stride != 0), so a
             // non-null gpu_data always means a usable GPU-resident weight.
             quant::repack_quant_for_gpu(qw);
-            if (qw.dev_stride == 0) { return; }
+            if (qw.dev_stride == 0) {
+                return;
+            }
             qw.gpu_data = be->malloc(qw.dev_bytes.size());
             be->memcpy_h2d(qw.gpu_data, qw.dev_bytes.data(), qw.dev_bytes.size());
         };
@@ -292,21 +290,17 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model)
     // skipped entirely. The FP32 host tensors remain as the CPU fallback /
     // source of truth. FP16 activations are guaranteed: move_param below
     // casts embed_tokens (and every moved param) to Float16.
-    auto qw_ready = [](const quant::QuantWeight &qw) {
-        return qw.gpu_data != nullptr && qw.dev_stride != 0;
-    };
+    auto qw_ready = [](const quant::QuantWeight &qw) { return qw.gpu_data != nullptr && qw.dev_stride != 0; };
     bool quant_layers = !model.layers().empty();
     for (const auto &blk : model.layers()) {
-        if (!qw_ready(blk->qkv_w) || !qw_ready(blk->gate_up_w) ||
-            !qw_ready(blk->o_w) || !qw_ready(blk->down_w)) {
+        if (!qw_ready(blk->qkv_w) || !qw_ready(blk->gate_up_w) || !qw_ready(blk->o_w) || !qw_ready(blk->down_w)) {
             quant_layers = false;
             break;
         }
     }
     const auto &cfg = model.config();
     const auto &lq = model.lm_head_q();
-    const bool quant_lm_head = lq.valid() && qw_ready(lq) &&
-        lq.out == cfg.vocab_size && lq.in == cfg.hidden_size;
+    const bool quant_lm_head = lq.valid() && qw_ready(lq) && lq.out == cfg.vocab_size && lq.in == cfg.hidden_size;
 
     // Keep an FP32 transposed lm_head [vocab, hidden] on the GPU:
     // the dedicated logits GEMV kernel reads it coalesced, and FP32
@@ -327,7 +321,9 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model)
         model.lm_head_fp16_t().set_device(hal::DeviceType::CUDA);
     }
     auto move_param = [](core::autograd::Node *p) {
-        if (p == nullptr) { return; }
+        if (p == nullptr) {
+            return;
+        }
         p->data = p->data.cast(hal::DType::Float16);
         p->data.set_device(hal::DeviceType::CUDA);
     };
@@ -365,14 +361,14 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model)
         const size_t wm = 256;  // representative M (seq_len)
         const size_t max_k = (std::max)(hidden, inter);
         void *buf = gbe->malloc(wm * max_k * 2 + 4 * 1024 * 1024);
-        auto f16_view = [&](size_t m, size_t k) {
-            return core::Tensor::gpu_view(buf, {m, k}, hal::DType::Float16);
-        };
+        auto f16_view = [&](size_t m, size_t k) { return core::Tensor::gpu_view(buf, {m, k}, hal::DType::Float16); };
         const auto &l0 = model.layers()[0];
-        struct WP { core::autograd::Node *w; } wps[] = {
-            {l0->q_proj.get()}, {l0->k_proj.get()}, {l0->v_proj.get()},
-            {l0->o_proj.get()}, {l0->gate_proj.get()}, {l0->up_proj.get()},
-            {l0->down_proj.get()},
+        struct WP
+        {
+            core::autograd::Node *w;
+        } wps[] = {
+            {l0->q_proj.get()},    {l0->k_proj.get()},  {l0->v_proj.get()},    {l0->o_proj.get()},
+            {l0->gate_proj.get()}, {l0->up_proj.get()}, {l0->down_proj.get()},
         };
         for (auto &wp : wps) {
             if (wp.w == nullptr) continue;
@@ -482,8 +478,7 @@ bool offload_llama_model_partial(model::LLaMAModel &model, size_t n_layers)
     // norm_weight and lm_head stay CPU-only: the suffix computes them there.
 
     partial_layers_registry()[&model] = n_layers;
-    std::fprintf(stderr, "[offload] partial: %zu/%zu layers on GPU (FP32 dual-resident)\n",
-                 n_layers, total);
+    std::fprintf(stderr, "[offload] partial: %zu/%zu layers on GPU (FP32 dual-resident)\n", n_layers, total);
     return true;
 #else
     (void)model;

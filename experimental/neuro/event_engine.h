@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <vector>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 #include "lif_neuron.h"
 
 namespace serius {

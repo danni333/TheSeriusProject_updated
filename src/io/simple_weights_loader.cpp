@@ -1,6 +1,8 @@
 #include "simple_weights_loader.h"
 
+#include <cstdint>
 #include <fstream>
+#include <vector>
 
 #include "../transformer/model.h"
 

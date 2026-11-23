@@ -7,19 +7,16 @@
 namespace serius {
 namespace distributed {
 
-TensorParallelLinear::TensorParallelLinear(Communicator *comm,
-                                           const TensorParallelConfig &config)
+TensorParallelLinear::TensorParallelLinear(Communicator *comm, const TensorParallelConfig &config)
     : comm_(comm), config_(config)
 {
     if (config_.tp_size != comm_->world_size()) {
-        throw std::runtime_error(
-            "TensorParallelLinear: tp_size must equal communicator world_size");
+        throw std::runtime_error("TensorParallelLinear: tp_size must equal communicator world_size");
     }
 }
 
-void TensorParallelLinear::column_parallel_forward(
-    const float *X, const float *W_local, float *Y,
-    size_t batch_size, size_t in_features, size_t local_out_features)
+void TensorParallelLinear::column_parallel_forward(const float *X, const float *W_local, float *Y, size_t batch_size,
+                                                   size_t in_features, size_t local_out_features)
 {
     // Step 1: Local matmul Y_local = X * W_local
     // X: [batch_size, in_features]
@@ -57,16 +54,13 @@ void TensorParallelLinear::column_parallel_forward(
         for (int r = 0; r < config_.tp_size; ++r) {
             size_t src_offset = static_cast<size_t>(r) * local_count + i * local_out_features;
             size_t dst_offset = i * out_features + static_cast<size_t>(r) * local_out_features;
-            std::memcpy(Y + dst_offset,
-                         gathered.data() + src_offset,
-                         local_out_features * sizeof(float));
+            std::memcpy(Y + dst_offset, gathered.data() + src_offset, local_out_features * sizeof(float));
         }
     }
 }
 
-void TensorParallelLinear::row_parallel_forward(
-    const float *X_local, const float *W_local, float *Y,
-    size_t batch_size, size_t local_in_features, size_t out_features)
+void TensorParallelLinear::row_parallel_forward(const float *X_local, const float *W_local, float *Y, size_t batch_size,
+                                                size_t local_in_features, size_t out_features)
 {
     // Step 1: Local matmul Y_partial = X_local * W_local
     // X_local: [batch_size, local_in_features]
@@ -89,16 +83,13 @@ void TensorParallelLinear::row_parallel_forward(
     comm_->all_reduce(Y, out_count, ReduceOp::Sum);
 }
 
-void TensorParallelLinear::scatter_input(const float *X, float *X_local,
-                                         size_t batch_size, size_t in_features)
+void TensorParallelLinear::scatter_input(const float *X, float *X_local, size_t batch_size, size_t in_features)
 {
     size_t local_in = in_features / static_cast<size_t>(config_.tp_size);
     size_t offset = static_cast<size_t>(comm_->rank()) * local_in;
 
     for (size_t i = 0; i < batch_size; ++i) {
-        std::memcpy(X_local + i * local_in,
-                     X + i * in_features + offset,
-                     local_in * sizeof(float));
+        std::memcpy(X_local + i * local_in, X + i * in_features + offset, local_in * sizeof(float));
     }
 }
 

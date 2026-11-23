@@ -15,27 +15,23 @@ namespace quant {
 // Optimized tiled kernel for dequantized matmul (X @ W^T)
 // X is [M, K], W_q4 is [N, K/2] packed
 // Each thread block computes a TILE_M x TILE_N block of output Y.
-template<int TILE_M, int TILE_N, int TILE_K>
-__global__ void dequant_matmul_tiled_kernel(
-    const uint8_t *__restrict__ W_q4, 
-    const float *__restrict__ scales,
-    const uint8_t *__restrict__ zeros, 
-    const float *__restrict__ X,
-    float *__restrict__ Y, 
-    int M, int N, int K, int block_size)
+template <int TILE_M, int TILE_N, int TILE_K>
+__global__ void dequant_matmul_tiled_kernel(const uint8_t *__restrict__ W_q4, const float *__restrict__ scales,
+                                            const uint8_t *__restrict__ zeros, const float *__restrict__ X,
+                                            float *__restrict__ Y, int M, int N, int K, int block_size)
 {
     __shared__ float s_X[TILE_M][TILE_K];
     __shared__ uint8_t s_W[TILE_N][TILE_K / 2];
-    
+
     int ty = threadIdx.y;
     int tx = threadIdx.x;
-    
+
     int row = blockIdx.y * TILE_M + ty;
     int col = blockIdx.x * TILE_N + tx;
-    
+
     float accum = 0.0f;
     int blocks_per_row = (K + block_size - 1) / block_size;
-    
+
     for (int k_off = 0; k_off < K; k_off += TILE_K) {
         // Load X into shared memory
         if (row < M && (k_off + tx) < K) {
@@ -43,11 +39,11 @@ __global__ void dequant_matmul_tiled_kernel(
         } else {
             s_X[ty][tx] = 0.0f;
         }
-        
+
         // Load W_q4 into shared memory (packed bytes)
         // tx is 0..15, ty is 0..15
         // We need to load TILE_N * (TILE_K/2) bytes = 16 * 8 = 128 bytes.
-        // Total threads = 256. 
+        // Total threads = 256.
         int thread_id = ty * TILE_N + tx;
         if (thread_id < TILE_N * (TILE_K / 2)) {
             int w_col = thread_id / (TILE_K / 2);
@@ -59,12 +55,12 @@ __global__ void dequant_matmul_tiled_kernel(
                 s_W[w_col][w_k] = 0;
             }
         }
-        
+
         __syncthreads();
-        
+
         // Compute partial dot product
         if (row < M && col < N) {
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < TILE_K; ++k) {
                 int global_k = k_off + k;
                 if (global_k >= K) break;
@@ -72,17 +68,17 @@ __global__ void dequant_matmul_tiled_kernel(
                 int b_idx = global_k / block_size;
                 float s = scales[col * blocks_per_row + b_idx];
                 uint8_t z = zeros[col * blocks_per_row + b_idx];
-                
-                uint8_t packed = s_W[tx][k/2];
+
+                uint8_t packed = s_W[tx][k / 2];
                 uint8_t q = (k & 1) ? (packed >> 4) : (packed & 0x0F);
-                
+
                 float w = (static_cast<float>(q) - static_cast<float>(z)) * s;
                 accum += s_X[ty][k] * w;
             }
         }
         __syncthreads();
     }
-    
+
     if (row < M && col < N) {
         Y[row * N + col] = accum;
     }

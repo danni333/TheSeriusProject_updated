@@ -1,22 +1,23 @@
 #include "cli/cli.h"
-#include "cli/cmd_chat.h"
-#include "cli/cmd_serve.h"
-#include "cli/cmd_doctor.h"
-#include "cli/cmd_import.h"
-#include "cli/cmd_convert.h"
-#include "cli/cmd_generate.h"
 #include "cli/cmd_bench.h"
-#include "cli/cmd_stress.h"
-#include "cli/cmd_mcp.h"
+#include "cli/cmd_chat.h"
+#include "cli/cmd_convert.h"
+#include "cli/cmd_doctor.h"
 #include "cli/cmd_eval.h"
+#include "cli/cmd_generate.h"
+#include "cli/cmd_import.h"
 #include "cli/cmd_inspect.h"
+#include "cli/cmd_mcp.h"
+#include "cli/cmd_serve.h"
+#include "cli/cmd_stress.h"
 #include "cli/cmd_think.h"
 
 #ifdef _WIN32
 #include <windows.h>
 #include <shellapi.h>
-#include <vector>
+
 #include <string>
+#include <vector>
 #endif
 
 namespace serius {
@@ -61,7 +62,7 @@ int main(int argc, char **argv)
     LPWSTR *w_argv = CommandLineToArgvW(GetCommandLineW(), &w_argc);
     if (w_argv) {
         std::vector<std::string> utf8_args(w_argc);
-        std::vector<char*> utf8_argv(w_argc);
+        std::vector<char *> utf8_argv(w_argc);
         for (int i = 0; i < w_argc; ++i) {
             int len = WideCharToMultiByte(CP_UTF8, 0, w_argv[i], -1, nullptr, 0, nullptr, nullptr);
             if (len > 0) {
@@ -76,4 +77,3 @@ int main(int argc, char **argv)
 #endif
     return serius::cli::main_cli(argc, argv);
 }
-

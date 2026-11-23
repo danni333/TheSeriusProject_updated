@@ -1,3 +1,5 @@
+#pragma once
+
 #include "../hal/device.h"
 
 namespace serius {
@@ -22,8 +24,8 @@ void logits_gemv_mixed_cublas(const void *x, const void *w, void *out, size_t se
 /// tile holding exactly those rows (e.g. a dequantized slice of the packed
 /// lm_head). Tiles cover disjoint columns of an uninitialized `out`, so
 /// `beta` should be 0.
-void logits_gemm_mixed_cublas(const void *x, const void *w, void *out, size_t seq, size_t vocab_total,
-                              size_t v0, size_t n, size_t hidden, float beta, void *stream = nullptr);
+void logits_gemm_mixed_cublas(const void *x, const void *w, void *out, size_t seq, size_t vocab_total, size_t v0,
+                              size_t n, size_t hidden, float beta, void *stream = nullptr);
 
 }  // namespace blas
 }  // namespace core

@@ -3,9 +3,9 @@
 #include <cmath>
 #include <vector>
 
-#include "../src/world/imagination.h"
-#include "../src/world/jepa.h"
-#include "../src/world/world_model.h"
+#include "world/imagination.h"
+#include "world/jepa.h"
+#include "world/world_model.h"
 
 using namespace serius::world;
 using serius::core::Tensor;

@@ -1,9 +1,9 @@
 #pragma once
 
-#include "transport.h"
-
 #include <cstdio>
 #include <string>
+
+#include "transport.h"
 
 namespace serius {
 namespace mcp {
@@ -20,8 +20,7 @@ class StdioTransport : public Transport
     StdioTransport(const StdioTransport &) = delete;
     StdioTransport &operator=(const StdioTransport &) = delete;
 
-    json send_request(const std::string &method,
-                      const json &params = json::object()) override;
+    json send_request(const std::string &method, const json &params = json::object()) override;
 
    private:
     void spawn();

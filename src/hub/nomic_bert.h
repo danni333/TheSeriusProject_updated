@@ -1,12 +1,12 @@
 #pragma once
 
-#include "../common/text_embed.h"
-#include "../tensor/tensor.h"
-
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "../common/text_embed.h"
+#include "../tensor/tensor.h"
 
 namespace serius::hub {
 
@@ -43,8 +43,7 @@ class NomicBertEmbedder
     /// (keys like "token_embd.weight", "blk.N.attn_qkv.weight", ...).
     /// Returns false if required tensors are missing.
     bool load(const std::unordered_map<std::string, core::Tensor> &tensors);
-    bool load(const std::unordered_map<std::string, core::Tensor> &tensors,
-              const Config &cfg);
+    bool load(const std::unordered_map<std::string, core::Tensor> &tensors, const Config &cfg);
 
     /// Vocabulary token strings indexed by token id (from GGUF tokenizer
     /// metadata). Required before tokenize()/embed() produce real ids.
@@ -92,13 +91,12 @@ class NomicBertEmbedder
 
     std::unordered_map<std::string, int> vocab_;
 
-    static bool get_tensor(const std::unordered_map<std::string, core::Tensor> &tensors,
-                           const std::string &name, std::vector<float> *out);
+    static bool get_tensor(const std::unordered_map<std::string, core::Tensor> &tensors, const std::string &name,
+                           std::vector<float> *out);
     /// Load a 2D weight [out_dim, in_dim] and store it transposed as
     /// [in_dim, out_dim] row-major, ready for a single GEMM forward pass.
     static bool get_tensor_transposed(const std::unordered_map<std::string, core::Tensor> &tensors,
-                                      const std::string &name, size_t out_dim, size_t in_dim,
-                                      std::vector<float> *out);
+                                      const std::string &name, size_t out_dim, size_t in_dim, std::vector<float> *out);
 };
 
 }  // namespace serius::hub

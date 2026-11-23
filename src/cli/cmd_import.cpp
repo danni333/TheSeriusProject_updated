@@ -1,10 +1,12 @@
 #include "cli/cmd_import.h"
-#include "cli/args_parser.h"
-#include "../hub/downloader.h"
 
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+
+#include "../hub/downloader.h"
+#include "cli/args_parser.h"
+#include "cli/download_progress.h"
 
 namespace fs = std::filesystem;
 
@@ -51,8 +53,7 @@ int import_local_path(const std::string &source, const std::string &output)
     }
 
     if (fs::is_directory(src, ec)) {
-        fs::copy(src, dst,
-                 fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
+        fs::copy(src, dst, fs::copy_options::recursive | fs::copy_options::overwrite_existing, ec);
     } else {
         fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
     }
@@ -104,7 +105,8 @@ int cmd_import(int argc, char **argv)
         std::cout << "Downloading from HuggingFace: " << repo_id << "\n";
         std::cout << "Output directory: " << output << "\n";
 
-        bool success = downloader.download_hf(repo_id, output, token);
+        bool success = downloader.download_hf(repo_id, output, token, make_download_progress());
+        finish_download_progress();
         if (success) {
             std::cout << "Download completed successfully\n";
             return 0;
@@ -117,7 +119,8 @@ int cmd_import(int argc, char **argv)
         std::cout << "Downloading from URL: " << source << "\n";
         std::cout << "Output path: " << output << "\n";
 
-        bool success = downloader.download_url(source, output);
+        bool success = downloader.download_url(source, output, make_download_progress());
+        finish_download_progress();
         if (success) {
             std::cout << "Download completed successfully\n";
             return 0;

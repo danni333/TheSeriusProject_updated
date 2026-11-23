@@ -3,22 +3,17 @@
 namespace serius {
 namespace server {
 
-ContinuousBatcher::ContinuousBatcher(size_t max_batch_size)
-    : max_batch_size_(max_batch_size), slots_(max_batch_size)
-{
-}
+ContinuousBatcher::ContinuousBatcher(size_t max_batch_size) : max_batch_size_(max_batch_size), slots_(max_batch_size) {}
 
 ContinuousBatcher::~ContinuousBatcher() = default;
 
-void ContinuousBatcher::enqueue(int request_id, std::vector<int> tokens,
-                                std::function<void(std::string, bool)> cb)
+void ContinuousBatcher::enqueue(int request_id, std::vector<int> tokens, std::function<void(std::string, bool)> cb)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     waiting_.push({request_id, std::move(tokens), std::move(cb)});
 }
 
-void ContinuousBatcher::iteration(
-    std::function<std::vector<int>(const std::vector<std::vector<int>> &)> forward_batch)
+void ContinuousBatcher::iteration(std::function<std::vector<int>(const std::vector<std::vector<int>> &)> forward_batch)
 {
     std::lock_guard<std::mutex> lock(mutex_);
 

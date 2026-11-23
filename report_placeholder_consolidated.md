@@ -30,6 +30,7 @@ Item di questo report verificati e risolti nel frattempo:
 | Part2 | **Sparsity Mask BIGBIRD simplified** | ✅ RISOLTO — `bigbird_block_mask()` reale in `sparsity_mask.cpp`: unione di sliding-window causale (locale) + global blocks (prime N righe/colonne, stessa semantica di Longformer) + edge casuali con `random_keep_prob` e seed deterministico. `generate_block_mask(BIGBIRD)` usa default scalati su `num_blocks`. Test in `test_sparse` (4 nuovi, 17/17). |
 | Part2 | **Keyword-based: verifier, toxicity, citation** | ✅ RISOLTO — i tre scorer ora accettano un embedder opzionale (`common::TextEmbedFn` in `src/common/text_embed.h`, compatibile con `rag::EmbedFn`) e combinano segnale lessicale + similarità embedding: `grounding::SupportScorer` (support_score = lexical overlap su content word con tolleranza morfologica + cosine riscalato su range atteso, `citation_engine`), `safety::ToxicityClassifier` in `red_team` (lessicale + margin cosine vs prototype tossiche/benigne con cache embedding, `set_prototypes`), `reasoning::EmbeddingVerifier` nuovo (cosine vs reference + penalty failure keyword, fallback lessicale senza embedder). Mapping cosine configurabile (`set_cosine_range`, floor/ceiling per modelli tipo nomic), peso semantico regolabile (`set_semantic_weight`), API batch `score_claim_against_documents`. Integrazione reale: `NomicBertEmbedder::embed_fn()` e `EmbeddingManager::{query,document}_embed_fn()` ritornano `TextEmbedFn` pronti all'uso. Senza embedder il comportamento resta deterministico. Fix ODR: `safety/toxicity.{h,cpp}` `ToxicityClassifier` rinominata in `TokenToxicityClassifier` (collisione di nome con quella di `red_team.h`, LNK4006). Test: `test_grounding` 20/20, `test_reasoning` 15/15, `test_red_team` 11/11, `test_guardrails` 12/12, `test_hub_search` 4/4. |
 | Part2 | **Residui "simplified" minori** | ✅ RISOLTO — (1) `rlhf/ppo_trainer.cpp`: advantage ora GRPO-style — reward penalizzati con `kl_penalty` e normalizzati **per gruppo di G** (prima normalizzazione globale e `adjusted_reward` calcolato e scartato); fix codice morto: file aggiunto a `src/CMakeLists.txt` sotto `SERIUS_EXPERIMENTAL_RLHF`, `GenerationResult` ora alias di `RewardModel::GenerationResult`, accessor `Impl` spostati in .cpp. (2) `autoopt/llm_client.cpp`: request/response JSON ora via `nlohmann/json` (prima string-building senza escape e parsing per `find()` che si rompeva con escape/newline). (3) `quant/gptq.h`: doc comment aggiornato all'algoritmo reale (Cholesky H_inv + feedback errore per gruppo). (4) `ops_norm.cpp` LayerNorm backward: verificato già esatto. Test: `test_rlhf` 10/10, `test_autoopt` 14/14 (build-ninja). |
+| Part2 | **Agent Consensus: simple trigram similarity** | ✅ RISOLTO — `DelphiConsensus` ora accetta un embedder opzionale (`set_embed_fn(common::TextEmbedFn)`, stesso pattern di verifier/toxicity/citation) e `set_embed_range(lo,hi)` per mappare il cosine atteso in [0,1] via `common::cosine_unit`. Con embedder la similarità usa cosine embedding (cache `unordered_map` per non ri-embeddare le stesse risposte tra i confronti pairwise); senza embedder resta il fallback trigram Jaccard deterministico. Soglie consensus (>0.9) e clustering (>0.7) invariate. Test `MultiAgent.ConsensusEmbedderSimilarity` in `test_multi_agent` (10/10). |
 
 Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era rotto (fixato — root cause in `Tensor` host/device sync), KV cache non persistente tra turni (fixato), multi-modello assente (implementato), `hf://` non supportato a runtime (implementato).
 
@@ -100,7 +101,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 - Graph Compiler: simplified execution, dummy tracing, standard allocator
 
 ### Benchmark (1)
-- Latency: simulated metrics quando modello caricato
+- ~~Latency: simulated metrics quando modello caricato~~ ✅ `bench_single` esegue inferenza reale (`llama_forward_single_token` + sampler reale, TTFT/prefill/decode TPS misurati); se nessun modello è utilizzabile lascia i metric a 0 con messaggio esplicito "no simulated values"
 
 ### AutoOpt (1)
 - Refactorer: library loading non integrato
@@ -109,13 +110,13 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 - ~~Embeddings: hash-based invece di embedding model~~ ✅ encoder `nomic-bert` reale su GGUF (Q4_K/Q5_K/Q6_K dequant inclusa `dequantize_q5_k`) con task prefix `search_query:`/`search_document:`; fallback mean-pool token_embd, poi hash n-gram (word unigram + char 3-5 gram, firmati)
 
 ### Transformer (1)
-- FFN: fused_bias_gelu temporary
+- ~~FFN: fused_bias_gelu temporary~~ ✅ `FFN::forward_optimized` usa `ops::fused_bias_gelu` reale (autograd op in `ops_norm.cpp` con backward, kernel CUDA `hal::fused_bias_gelu` in `fused_kernels.cu`, forward_fn per replay nel graph compiler); rimossi i commenti di sviluppo stale
 
 ### Train (1)
-- Trainer: manual cleanup nodi
+- ~~Trainer: manual cleanup nodi~~ ✅ `Trainer::cleanup_graph()` fa topological_sort da `scaled_loss` e deleta tutti i nodi raggiungibili tranne i parametri del modello (set `model_params_set_` catturato nel ctor, stesso pattern di `SFTTrainer::cleanup_graph`) — prima l'intero forward graph (attivazioni, gradienti, input/target) leakava a ogni step
 
 ### Agent (1)
-- Consensus: simple trigram similarity
+- ~~Consensus: simple trigram similarity~~ ✅ embedder opzionale (`TextEmbedFn`) con fallback trigram — vedi tabella RISOLTO in alto
 
 ### Reasoning (1)
 - Verifier: keyword-based
@@ -127,7 +128,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 - Citation: keyword overlap
 
 ### RLHF (1)
-- Reward Model: simplified generation
+- ~~Reward Model: simplified generation~~ ✅ generazione già reale (decode autoregressivo con KV cache, argmax greedy, log_softmax del token scelto); fix reale applicato: `score()`/`compute_logprobs()` leakavano l'intero grafo autograd per chiamata — ora `free_graph()` fa topological_sort ed elimina tutti i nodi tranne i parametri del transformer (`collect_params`, stesso pattern di `Trainer::cleanup_graph`)
 
 ### Tools (1)
 - Registry: simplified JSON validation

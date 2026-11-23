@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../infer/speculative.h"
+#include "infer/speculative.h"
 
 namespace serius {
 namespace inference {

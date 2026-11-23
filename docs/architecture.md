@@ -30,10 +30,15 @@ src/
 ├── server/          # HTTP API server
 ├── cli/             # Command-line interface
 ├── hub/             # Model hub and downloader
-├── knowledge/       # Semantic hashing and knowledge function
 ├── autoopt/         # Auto-refactoring and hot-swapping
 └── hal/             # Hardware abstraction layer
 ```
+
+Moduli sperimentali/didattici (quantum, liquid, world, neuro, ssm, federated,
+multimodal/vision/audio, reasoning, rlhf, interpret, knowledge, automl, eval,
+grounding, inference, rag, agent, autoopt) non sono in `src/`: vivono in
+`experimental/` alla root e sono opt-in via flag CMake
+`SERIUS_EXPERIMENTAL_*`. Vedi [experimental.md](experimental.md).
 
 ## Core Components
 
@@ -106,8 +111,11 @@ src/
 - `serius::infer` - Inference engine
 - `serius::server` - HTTP API server
 - `serius::hub` - Model hub
-- `serius::knowledge` - Semantic hashing
 - `serius::autoopt` - Auto-refactoring
+
+Namespaces dei moduli in `experimental/` (knowledge, reasoning, eval,
+interpret, grounding, rlhf, ecc.) sono opzionali e vedi
+[experimental.md](experimental.md).
 
 ## Design Principles
 

@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-#include "../common/text_embed.h"
+#include "common/text_embed.h"
 #include "mcts.h"
 
 namespace serius {

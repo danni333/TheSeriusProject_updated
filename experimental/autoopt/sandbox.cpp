@@ -1,6 +1,8 @@
 #include "sandbox.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -9,15 +11,63 @@
 #include <random>
 #include <sstream>
 
+#include "common/process_utils.h"
+
 #ifdef _WIN32
-#define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
-#define popen _popen
-#define pclose _pclose
 #else
 #include <dlfcn.h>
 #include <unistd.h>
 #endif
+
+namespace {
+
+// Locate an executable on PATH without invoking a shell.
+std::string find_on_path(const std::string &exe)
+{
+    namespace fs = std::filesystem;
+#ifdef _WIN32
+    char path_buf[32768];
+    size_t path_len = 0;
+    if (getenv_s(&path_len, path_buf, sizeof(path_buf), "PATH") != 0 || path_len == 0) {
+        return "";
+    }
+    const std::string path_str(path_buf, path_len - 1);
+#else
+    const char *path_env = std::getenv("PATH");
+    if (!path_env) { return ""; }
+    const std::string path_str(path_env);
+#endif
+#ifdef _WIN32
+    constexpr char delim = ';';
+#else
+    constexpr char delim = ':';
+#endif
+    size_t pos = 0;
+    while (pos <= path_str.size()) {
+        const size_t sep = path_str.find(delim, pos);
+        const std::string dir =
+            path_str.substr(pos, sep == std::string::npos ? sep : sep - pos);
+        pos = sep == std::string::npos ? path_str.size() + 1 : sep + 1;
+        if (dir.empty()) { continue; }
+        std::error_code ec;
+        const fs::path candidate = fs::path(dir) / exe;
+        if (fs::exists(candidate, ec)) { return candidate.string(); }
+    }
+    return "";
+}
+
+bool is_safe_artifact_name(const std::string &name)
+{
+    if (name.empty() || name.size() > 64) { return false; }
+    if (name == "." || name == "..") { return false; }
+    return std::all_of(name.begin(), name.end(), [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '.' ||
+               c == '-' || c == '_';
+    });
+}
+
+}  // namespace
 
 namespace serius {
 namespace autoopt {
@@ -60,11 +110,11 @@ std::string Sandbox::get_compiler_command() const
     // Fallback: check PATH
     return "cl.exe";
 #else
-    // Try g++ first, then clang++
-    if (system("which g++ > /dev/null 2>&1") == 0) {
+    // Try g++ first, then clang++ (PATH lookup without a shell)
+    if (!find_on_path("g++").empty()) {
         return "g++";
     }
-    if (system("which clang++ > /dev/null 2>&1") == 0) {
+    if (!find_on_path("clang++").empty()) {
         return "clang++";
     }
     return "g++";  // Default fallback
@@ -85,33 +135,24 @@ bool Sandbox::compile_to_library(const std::string &source, const std::string &o
     out << source;
     out.close();
 
-    // Build compiler command
-    std::string compiler = get_compiler_command();
-    std::ostringstream cmd;
+    // Build compiler argument vector — no shell ever parses these strings.
+    const std::string compiler = get_compiler_command();
+    std::vector<std::string> args;
 
 #ifdef _WIN32
-    // MSVC: cl.exe /LD /EHsc source.cpp /OUT:output.dll
-    cmd << "\"" << compiler << "\" /LD /EHsc \"" << source_path << "\" /Fe:\"" << output_path << "\" 2>&1";
+    // MSVC: cl.exe /LD /EHsc source.cpp /Fe<output>
+    args = {compiler, "/nologo", "/LD", "/EHsc", source_path, "/Fe" + output_path};
 #else
     // g++/clang++: -shared -fPIC -o output.so source.cpp
-    cmd << compiler << " -shared -fPIC -std=c++20 -o \"" << output_path << "\" \"" << source_path << "\" 2>&1";
+    args = {compiler, "-shared", "-fPIC", "-std=c++20", "-o", output_path, source_path};
 #endif
 
-    // Execute compilation with timeout
-    FILE* pipe = popen(cmd.str().c_str(), "r");
-    if (!pipe) {
-        error = "Failed to execute compiler: " + compiler;
-        return false;
-    }
-
-    // Read compiler output
-    char buffer[256];
-    std::string output;
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        output += buffer;
-    }
-    int status = pclose(pipe);
-    (void)status;  // Suppress unused warning
+    // Execute compilation, capturing stdout and stderr for diagnostics.
+    std::string out_str, err_str;
+    const int status =
+        serius::common::run_process(args, &out_str, &err_str);
+    (void)status;  // The artifact's existence is the real success check.
+    const std::string output = out_str + err_str;
 
     // Check if library was created
     if (!fs::exists(output_path)) {
@@ -149,6 +190,14 @@ CompilationResult Sandbox::compile(const std::string &source_code, const std::st
     // If real compiler is disabled, just return success after syntax check
     if (!use_real_compiler_) {
         res.success = true;
+        return res;
+    }
+
+    // target_name becomes part of the compiler output path — restrict it to
+    // a safe charset so it can never escape the temp directory.
+    if (!is_safe_artifact_name(target_name)) {
+        res.success = false;
+        res.error_message = "Unsafe artifact name: " + target_name;
         return res;
     }
 

@@ -2,7 +2,6 @@
 
 #include <memory>
 #include <stack>
-#include <unordered_map>
 #include <vector>
 
 #include "../tensor/tensor.h"

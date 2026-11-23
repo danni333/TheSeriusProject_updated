@@ -24,10 +24,10 @@ namespace quant {
 /// Configuration for GPTQ quantization
 struct GPTQConfig
 {
-    size_t block_size = 32;       // INT4 quantization block size
-    size_t group_size = 128;      // Column group size for Hessian updates
-    float damp_percent = 0.01f;   // Diagonal dampening for numerical stability
-    bool act_order = false;       // Quantize columns in order of decreasing Hessian diagonal
+    size_t block_size = 32;      // INT4 quantization block size
+    size_t group_size = 128;     // Column group size for Hessian updates
+    float damp_percent = 0.01f;  // Diagonal dampening for numerical stability
+    bool act_order = false;      // Quantize columns in order of decreasing Hessian diagonal
 };
 
 /// Result of GPTQ quantization for a single weight matrix
@@ -67,8 +67,7 @@ std::vector<float> compute_hessian(const float *activations, size_t num_tokens, 
 /// @param hessian     Hessian matrix [cols, cols] from compute_hessian()
 /// @param config      GPTQ configuration
 /// @return GPTQ quantized weight
-GPTQQuantizedWeight gptq_quantize(const float *weights, size_t rows, size_t cols,
-                                  const std::vector<float> &hessian,
+GPTQQuantizedWeight gptq_quantize(const float *weights, size_t rows, size_t cols, const std::vector<float> &hessian,
                                   const GPTQConfig &config = GPTQConfig{});
 
 /// Dequantize GPTQ weights back to float (for verification/debugging).
@@ -84,8 +83,7 @@ void gptq_dequantize(const GPTQQuantizedWeight &gptq_weight, float *out);
 /// @param X            Input matrix [M, K]
 /// @param Y            Output matrix [M, N]
 /// @param M            Number of rows in X
-void gptq_matmul(const GPTQQuantizedWeight &gptq_weight, const float *X,
-                 float *Y, int M);
+void gptq_matmul(const GPTQQuantizedWeight &gptq_weight, const float *X, float *Y, int M);
 
 }  // namespace quant
 }  // namespace serius

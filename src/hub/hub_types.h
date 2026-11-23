@@ -21,7 +21,6 @@ struct ModelMetadata
     nlohmann::json config;
     std::string created_at;
     std::string updated_at;
-    // SearchResult row_to_search_result(sqlite3_stmt *stmt, float score = 0.0f);
     int download_count;
     float rating;
     bool is_public;
@@ -47,8 +46,7 @@ inline nlohmann::json model_to_json(const ModelMetadata &m)
                           {"is_public", m.is_public}};
 }
 
-inline  // ModelMetadata row_to_model(sqlite3_stmt *stmt);
-    ModelMetadata json_to_model(const nlohmann::json &j)
+inline ModelMetadata json_to_model(const nlohmann::json &j)
 {
     ModelMetadata m;
     m.id = j.value("id", "");

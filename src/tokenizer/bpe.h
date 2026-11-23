@@ -8,7 +8,9 @@
 
 namespace serius {
 
-namespace io { struct GGUFTokenizerData; }  // forward declare
+namespace io {
+struct GGUFTokenizerData;
+}  // namespace io
 
 class BPETokenizer
 {

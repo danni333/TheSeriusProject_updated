@@ -1,25 +1,37 @@
 #include "worker.h"
-#include "stress_runner.h"
-#include <thread>
+
 #include <chrono>
+#include <thread>
+
+#include "stress_runner.h"
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4702)
+#endif
 #include <httplib.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #include <nlohmann/json.hpp>
 
 namespace serius {
 namespace stress {
 
-StressWorker::StressWorker(const std::string& server_url,
-                           const std::string& prompt,
-                           int max_tokens,
-                           const std::string& model_name,
-                           const std::string& endpoint,
-                           int timeout_seconds,
+StressWorker::StressWorker(const std::string &server_url, const std::string &prompt, int max_tokens,
+                           const std::string &model_name, const std::string &endpoint, int timeout_seconds,
                            int interval_ms)
-    : server_url_(server_url), prompt_(prompt), max_tokens_(max_tokens),
-      model_name_(model_name), endpoint_(endpoint),
-      timeout_seconds_(timeout_seconds), interval_ms_(interval_ms) {}
+    : server_url_(server_url),
+      prompt_(prompt),
+      max_tokens_(max_tokens),
+      model_name_(model_name),
+      endpoint_(endpoint),
+      timeout_seconds_(timeout_seconds),
+      interval_ms_(interval_ms)
+{
+}
 
-void StressWorker::run(std::atomic<bool>& running, StressResult& result, std::mutex& mtx) {
+void StressWorker::run(std::atomic<bool> &running, StressResult &result, std::mutex &mtx)
+{
     while (running) {
         float latency_ms = 0.0f;
         int completion_tokens = 0;
@@ -45,7 +57,8 @@ void StressWorker::run(std::atomic<bool>& running, StressResult& result, std::mu
     }
 }
 
-bool StressWorker::send_request(float& latency_ms, int& completion_tokens) {
+bool StressWorker::send_request(float &latency_ms, int &completion_tokens)
+{
     httplib::Client cli(server_url_);
     cli.set_connection_timeout(timeout_seconds_);
     cli.set_read_timeout(timeout_seconds_);
@@ -68,9 +81,9 @@ bool StressWorker::send_request(float& latency_ms, int& completion_tokens) {
     }
     try {
         const auto j = nlohmann::json::parse(res->body);
-        completion_tokens = j.value("usage", nlohmann::json::object())
-                                .value("completion_tokens", 0);
-    } catch (...) {
+        completion_tokens = j.value("usage", nlohmann::json::object()).value("completion_tokens", 0);
+    }
+    catch (...) {
     }
     return true;
 }

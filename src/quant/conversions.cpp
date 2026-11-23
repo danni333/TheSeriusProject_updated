@@ -1,8 +1,6 @@
 #include "conversions.h"
 
-#include <algorithm>
 #include <cstring>
-
 
 namespace serius {
 namespace quant {

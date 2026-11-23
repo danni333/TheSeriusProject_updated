@@ -2,10 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
-#include <initializer_list>
-#include <numeric>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -108,7 +104,9 @@ class Tensor
         if (dtype_ != hal::DType::Float32) throw std::runtime_error("Tensor::data() used on non-float32 tensor");
         syncToHost();
         // Host pointer may be written through: the GPU copy is now stale.
-        if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+        if (data_gpu_ != nullptr) {
+            location_ = DataLocation::CPU;
+        }
         return static_cast<float *>(data_);
     }
     const float *data() const
@@ -121,13 +119,12 @@ class Tensor
     void *raw_data()
     {
         syncToHost();
-        if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+        if (data_gpu_ != nullptr) {
+            location_ = DataLocation::CPU;
+        }
         return data_;
     }
     const void *raw_data() const { return data_; }
-
-    // --- Shape Operations ---
-    // ... rest of the public members ...
 
     /// Make the tensor contiguous in memory
     Tensor contiguous() const;
@@ -178,8 +175,7 @@ class Tensor
     /// Non-owning view over BOTH a host and a device buffer (e.g. logits that
     /// were copied D2H but are also consumed by GPU kernels). Neither pointer
     /// is freed by the Tensor.
-    static Tensor host_gpu_view(void *host_data, void *gpu_data,
-                                const std::vector<size_t> &shape, hal::DType dtype);
+    static Tensor host_gpu_view(void *host_data, void *gpu_data, const std::vector<size_t> &shape, hal::DType dtype);
 
     /// Create a new tensor filled with zeros
     static Tensor zeros(const std::vector<size_t> &shape, memory::MemoryPool *pool = nullptr);
@@ -259,8 +255,8 @@ class Tensor
     static Tensor gpu_only(const std::vector<size_t> &shape, hal::DType dtype);
 
    private:
-    void *data_ = nullptr;          // Host pointer
-    void *data_gpu_ = nullptr;      // Device pointer
+    void *data_ = nullptr;                               // Host pointer
+    void *data_gpu_ = nullptr;                           // Device pointer
     mutable DataLocation location_ = DataLocation::CPU;  // Where is the most recent data?
 
     std::vector<size_t> shape_;

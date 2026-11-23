@@ -1,11 +1,11 @@
 #pragma once
 
-#include "hub_types.h"
-
 #include <chrono>
 #include <ctime>
 #include <string>
 #include <vector>
+
+#include "hub_types.h"
 
 #ifdef SERIUS_HUB_SQLITE
 struct sqlite3;

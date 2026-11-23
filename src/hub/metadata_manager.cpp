@@ -13,7 +13,6 @@
 #include <sqlite3.h>
 #endif
 
-
 namespace serius::hub {
 
 MetadataManager::MetadataManager(const std::string &db_path) : db_path_(db_path) {}
@@ -187,7 +186,6 @@ std::vector<ModelMetadata> MetadataManager::search_models(const std::string &que
 {
 #ifdef SERIUS_HUB_SQLITE
     if (!use_json_fallback_ && ensure_open()) {
-
         std::string sql = "SELECT * FROM models WHERE 1=1";
         std::vector<std::string> params;
         // SQLite LIKE is case-insensitive for ASCII — no lowering needed.
@@ -335,8 +333,8 @@ bool MetadataManager::increment_download_count(const std::string &model_id)
 #ifdef SERIUS_HUB_SQLITE
     if (!use_json_fallback_ && ensure_open()) {
         sqlite3_stmt *stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, "UPDATE models SET download_count = download_count + 1 WHERE id = ?",
-                               -1, &stmt, nullptr) != SQLITE_OK) {
+        if (sqlite3_prepare_v2(db_, "UPDATE models SET download_count = download_count + 1 WHERE id = ?", -1, &stmt,
+                               nullptr) != SQLITE_OK) {
             return false;
         }
         sqlite3_bind_text(stmt, 1, model_id.c_str(), -1, SQLITE_TRANSIENT);
@@ -358,8 +356,7 @@ bool MetadataManager::update_rating(const std::string &model_id, float rating)
 #ifdef SERIUS_HUB_SQLITE
     if (!use_json_fallback_ && ensure_open()) {
         sqlite3_stmt *stmt = nullptr;
-        if (sqlite3_prepare_v2(db_, "UPDATE models SET rating = ? WHERE id = ?", -1, &stmt, nullptr) !=
-            SQLITE_OK) {
+        if (sqlite3_prepare_v2(db_, "UPDATE models SET rating = ? WHERE id = ?", -1, &stmt, nullptr) != SQLITE_OK) {
             return false;
         }
         sqlite3_bind_double(stmt, 1, rating);
@@ -385,7 +382,8 @@ nlohmann::json MetadataManager::load_db() const
         nlohmann::json j;
         file >> j;
         return j;
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         std::cerr << "[Hub] Corrupt metadata DB " << db_path_ << ": " << e.what() << "\n";
         return nlohmann::json::object();
     }
@@ -458,8 +456,7 @@ bool MetadataManager::ensure_open()
             std::ifstream probe(db_path_, std::ios::binary);
             char magic[16] = {};
             probe.read(magic, sizeof(magic));
-            is_sqlite = probe.gcount() == 16 &&
-                        std::memcmp(magic, "SQLite format 3\0", 16) == 0;
+            is_sqlite = probe.gcount() == 16 && std::memcmp(magic, "SQLite format 3\0", 16) == 0;
         }
         if (!is_sqlite) {
             const auto legacy = load_db();
@@ -475,21 +472,26 @@ bool MetadataManager::ensure_open()
             std::error_code ec;
             std::filesystem::rename(db_path_, bak, ec);
             if (ec) {
-                spdlog::warn("MetadataManager: could not rename legacy JSON {}: {}; "
-                             "keeping JSON backend", db_path_, ec.message());
+                spdlog::warn(
+                    "MetadataManager: could not rename legacy JSON {}: {}; "
+                    "keeping JSON backend",
+                    db_path_, ec.message());
                 pending_import.clear();
                 use_json_fallback_ = true;
                 return true;
             }
-            spdlog::info("MetadataManager: migrated {} model(s) from JSON {} -> {}",
-                         pending_import.size(), db_path_, bak);
+            spdlog::info("MetadataManager: migrated {} model(s) from JSON {} -> {}", pending_import.size(), db_path_,
+                         bak);
         }
     }
 
     if (sqlite3_open(db_path_.c_str(), &db_) != SQLITE_OK) {
         spdlog::error("MetadataManager: cannot open db '{}': {}", db_path_,
                       db_ ? sqlite3_errmsg(db_) : "out of memory");
-        if (db_) { sqlite3_close(db_); db_ = nullptr; }
+        if (db_) {
+            sqlite3_close(db_);
+            db_ = nullptr;
+        }
         return false;
     }
     sqlite3_busy_timeout(db_, 5000);
@@ -525,7 +527,8 @@ ModelMetadata MetadataManager::row_to_model(sqlite3_stmt *stmt)
     m.license = col_text(5);
     try {
         m.tags = nlohmann::json::parse(col_text(6)).get<std::vector<std::string>>();
-    } catch (...) {
+    }
+    catch (...) {
         m.tags.clear();
     }
     m.model_type = col_text(7);
@@ -533,7 +536,8 @@ ModelMetadata MetadataManager::row_to_model(sqlite3_stmt *stmt)
     m.checksum_sha256 = col_text(9);
     try {
         m.config = nlohmann::json::parse(col_text(10));
-    } catch (...) {
+    }
+    catch (...) {
         m.config = nlohmann::json::object();
     }
     m.created_at = col_text(11);

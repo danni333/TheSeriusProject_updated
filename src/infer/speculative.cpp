@@ -37,15 +37,14 @@ SpeculativeDecoder::SpeculativeDecoder(ForwardFn draft_model, ForwardFn target_m
 
 SpeculativeDecoder::SpeculativeDecoder(DraftModel draft_model, DraftModel target_model, Sampler sampler, int gamma,
                                        int eos_token_id, unsigned seed)
-    : SpeculativeDecoder(draft_model.valid() ? ForwardFn([draft_model](const std::vector<int> &seq) {
-                            return draft_model.forward(seq);
-                        })
-                                            : ForwardFn(),
-                        target_model.valid() ? ForwardFn([target_model](const std::vector<int> &seq) {
-                            return target_model.forward(seq);
-                        })
-                                              : ForwardFn(),
-                        std::move(sampler), gamma, eos_token_id, seed)
+    : SpeculativeDecoder(
+          draft_model.valid()
+              ? ForwardFn([draft_model](const std::vector<int> &seq) { return draft_model.forward(seq); })
+              : ForwardFn(),
+          target_model.valid()
+              ? ForwardFn([target_model](const std::vector<int> &seq) { return target_model.forward(seq); })
+              : ForwardFn(),
+          std::move(sampler), gamma, eos_token_id, seed)
 {
 }
 
@@ -170,7 +169,8 @@ std::vector<int> SpeculativeDecoder::generate(const std::vector<int> &prompt, st
 
         for (std::size_t i = 0; i < draft_tokens.size(); ++i) {
             std::vector<int> prefix = sequence;
-            prefix.insert(prefix.end(), draft_tokens.begin(), draft_tokens.begin() + static_cast<std::ptrdiff_t>(i + 1));
+            prefix.insert(prefix.end(), draft_tokens.begin(),
+                          draft_tokens.begin() + static_cast<std::ptrdiff_t>(i + 1));
 
             auto target_logits = target_model_(prefix);
             auto target_probs = softmax_distribution(logits_to_last_row(target_logits));
@@ -234,7 +234,8 @@ std::vector<int> SpeculativeDecoder::generate(const std::vector<int> &prompt, st
     }
 
     if (metrics_.draft_steps > 0) {
-        metrics_.acceptance_rate = static_cast<float>(metrics_.accepted_tokens) / static_cast<float>(metrics_.draft_steps);
+        metrics_.acceptance_rate =
+            static_cast<float>(metrics_.accepted_tokens) / static_cast<float>(metrics_.draft_steps);
     }
 
     return sequence;

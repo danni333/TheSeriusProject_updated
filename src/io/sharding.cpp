@@ -3,7 +3,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-
 #include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
@@ -40,15 +39,14 @@ bool load_sharded_safetensors(const std::string &index_path, std::map<std::strin
             (*out)[name] = reader.get_tensor(name);
         }
         return !out->empty();
-    } catch (const std::exception &e) {
-        std::cerr << "[Sharding] Failed to load index " << index_path
-                  << ": " << e.what() << "\n";
+    }
+    catch (const std::exception &e) {
+        std::cerr << "[Sharding] Failed to load index " << index_path << ": " << e.what() << "\n";
         return false;
     }
 }
 
-bool write_sharded_safetensors_index(const std::string &directory,
-                                     const std::string &base_name,
+bool write_sharded_safetensors_index(const std::string &directory, const std::string &base_name,
                                      const std::vector<std::pair<std::string, core::Tensor>> &tensors,
                                      size_t max_shard_bytes)
 {
@@ -67,7 +65,7 @@ bool write_sharded_safetensors_index(const std::string &directory,
     const size_t shard_limit = max_shard_bytes == 0 ? kDefaultShardBytes : max_shard_bytes;
 
     nlohmann::json index = nlohmann::json::object();
-    index["__metadata__"] = { {"format", "serius-sharded"}, {"version", "1.0"} };
+    index["__metadata__"] = {{"format", "serius-sharded"}, {"version", "1.0"}};
     index["tensors"] = nlohmann::json::object();
 
     auto flush = [&](const std::vector<std::pair<std::string, core::Tensor>> &chunk) {
@@ -75,7 +73,8 @@ bool write_sharded_safetensors_index(const std::string &directory,
             return;
         }
 
-        const std::string shard_name = base_name + "." + std::to_string(index["_shard_count"].get<size_t>() + 1) + ".safetensors";
+        const std::string shard_name =
+            base_name + "." + std::to_string(index["_shard_count"].get<size_t>() + 1) + ".safetensors";
         const std::string shard_path = (dir / shard_name).string();
         SafetensorsWriter writer;
         for (const auto &[tensor_name, tensor] : chunk) {
@@ -84,7 +83,7 @@ bool write_sharded_safetensors_index(const std::string &directory,
         writer.save(shard_path);
 
         for (const auto &[tensor_name, tensor] : chunk) {
-            index["tensors"][tensor_name] = { {"file", shard_name}, {"bytes", tensor.size() * tensor.element_size()} };
+            index["tensors"][tensor_name] = {{"file", shard_name}, {"bytes", tensor.size() * tensor.element_size()}};
         }
         index["_shard_count"] = index["_shard_count"].get<size_t>() + 1;
     };

@@ -35,14 +35,14 @@ void ProcessGroup::all_reduce(float *buffer, size_t count, ReduceOp reduce_op, i
 
     // Copy this rank's data into staging
     rank_buffers_[static_cast<size_t>(rank)].assign(buffer, buffer + count);
-    
+
     // Store expected count to detect mismatches across ranks
     if (arrived_ == 0) {
         expected_count_ = count;
     } else if (expected_count_ != count) {
         throw std::runtime_error("AllReduce: count mismatch across ranks in ProcessGroup");
     }
-    
+
     arrived_++;
 
     if (arrived_ == world_size_) {
@@ -116,7 +116,7 @@ void ProcessGroup::broadcast(float *buffer, size_t count, int root, int rank)
     if (rank == root) {
         result_buffer_.assign(buffer, buffer + count);
     }
-    
+
     if (arrived_ == 0) {
         expected_count_ = count;
     } else if (expected_count_ != count) {
@@ -152,7 +152,7 @@ void ProcessGroup::all_gather(const float *send_buf, size_t send_count, float *r
     int gen = generation_;
 
     rank_buffers_[static_cast<size_t>(rank)].assign(send_buf, send_buf + send_count);
-    
+
     if (arrived_ == 0) {
         expected_count_ = send_count;
     } else if (expected_count_ != send_count) {
@@ -170,8 +170,8 @@ void ProcessGroup::all_gather(const float *send_buf, size_t send_count, float *r
 
     // Concatenate all rank buffers into recv_buf
     for (int rank_idx = 0; rank_idx < world_size_; ++rank_idx) {
-        std::memcpy(recv_buf + (static_cast<size_t>(rank_idx) * send_count), rank_buffers_[static_cast<size_t>(rank_idx)].data(),
-                    send_count * sizeof(float));
+        std::memcpy(recv_buf + (static_cast<size_t>(rank_idx) * send_count),
+                    rank_buffers_[static_cast<size_t>(rank_idx)].data(), send_count * sizeof(float));
     }
 
     departed_++;
@@ -184,14 +184,15 @@ void ProcessGroup::all_gather(const float *send_buf, size_t send_count, float *r
     }
 }
 
-void ProcessGroup::reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp reduce_op, int rank)
+void ProcessGroup::reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp reduce_op,
+                                  int rank)
 {
     std::unique_lock<std::mutex> lock(mutex_);
     int gen = generation_;
 
     size_t total = recv_count * static_cast<size_t>(world_size_);
     rank_buffers_[static_cast<size_t>(rank)].assign(send_buf, send_buf + total);
-    
+
     if (arrived_ == 0) {
         expected_count_ = recv_count;
     } else if (expected_count_ != recv_count) {
@@ -286,7 +287,7 @@ void ProcessGroup::recv(float *buffer, size_t count, int src, int dst)
     cv_.wait(lock, [&] { return mailbox.ready && !mailbox.consumed; });
 
     if (mailbox.data.size() != count) {
-        throw std::runtime_error("P2P: Send/Recv count mismatch in ProcessGroup mailbox (" + 
+        throw std::runtime_error("P2P: Send/Recv count mismatch in ProcessGroup mailbox (" +
                                  std::to_string(mailbox.data.size()) + " vs " + std::to_string(count) + ")");
     }
     std::memcpy(buffer, mailbox.data.data(), count * sizeof(float));
@@ -370,7 +371,7 @@ void LocalCommunicator::all_gather(const float *send_buf, size_t send_count, flo
 
 void LocalCommunicator::all_gather(const core::Tensor &send_tensor, core::Tensor &recv_tensor)
 {
-    const_cast<core::Tensor&>(send_tensor).syncToHost();
+    const_cast<core::Tensor &>(send_tensor).syncToHost();
     recv_tensor.syncToHost();
     all_gather(send_tensor.data(), send_tensor.size(), recv_tensor.data());
 }
@@ -421,8 +422,7 @@ std::vector<std::unique_ptr<LocalCommunicator>> create_local_group(int world_siz
     return comms;
 }
 
-std::unique_ptr<Communicator> Communicator::create(CommBackend backend, int world_size,
-                                                   int /*rank*/)
+std::unique_ptr<Communicator> Communicator::create(CommBackend backend, int world_size, int /*rank*/)
 {
     switch (backend) {
         case CommBackend::Local:
@@ -435,8 +435,7 @@ std::unique_ptr<Communicator> Communicator::create(CommBackend backend, int worl
 
         case CommBackend::NCCL:
 #ifdef SERIUS_USE_NCCL
-            throw std::runtime_error(
-                "NCCL communicator creation requires a shared ncclUniqueId; use create_nccl()");
+            throw std::runtime_error("NCCL communicator creation requires a shared ncclUniqueId; use create_nccl()");
 #else
             throw std::runtime_error("NCCL backend not available (compile with SERIUS_USE_NCCL)");
 #endif
@@ -453,8 +452,7 @@ std::unique_ptr<Communicator> Communicator::create(CommBackend backend, int worl
 }
 
 #ifdef SERIUS_USE_NCCL
-std::unique_ptr<Communicator> Communicator::create_nccl(int world_size, int rank,
-                                                        ncclUniqueId id, int local_rank)
+std::unique_ptr<Communicator> Communicator::create_nccl(int world_size, int rank, ncclUniqueId id, int local_rank)
 {
     return std::make_unique<NCCLCommunicator>(world_size, rank, id, local_rank);
 }

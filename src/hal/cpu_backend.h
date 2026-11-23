@@ -23,7 +23,7 @@ class CpuBackend : public IBackend
     void memcpy_d2h(void *dst, const void *src, size_t size) override;
     void memcpy_d2d(void *dst, const void *src, size_t size) override;
 
-    // Stream Management (Dummy for CPU)
+    // Stream Management (single-worker-thread streams; see cpu_backend.cpp)
     void *create_stream() override;
     void destroy_stream(void *stream) override;
     void sync_stream(void *stream) override;
@@ -32,7 +32,6 @@ class CpuBackend : public IBackend
     void memcpy_h2d_async(void *dst, const void *src, size_t size, void *stream) override;
     void memcpy_d2h_async(void *dst, const void *src, size_t size, void *stream) override;
     void memcpy_d2d_async(void *dst, const void *src, size_t size, void *stream) override;
-
 
     bool is_available() const override { return true; }  // CPU is always available
 };

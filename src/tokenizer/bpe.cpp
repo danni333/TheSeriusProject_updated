@@ -1,11 +1,12 @@
 #include "bpe.h"
-#include "gpt2_table.h"
-#include "../io/gguf_loader.h"
 
 #include <algorithm>
 #include <fstream>
 #include <map>
 #include <nlohmann/json.hpp>
+
+#include "../io/gguf_loader.h"
+#include "gpt2_table.h"
 
 namespace serius {
 
@@ -99,8 +100,10 @@ std::vector<TokenId> BPETokenizer::encode(const std::string &text) const
         } else if (is_sentencepiece_) {
             processed_chunk.reserve(chunk.length() + 8);
             for (char ch : chunk) {
-                if (ch == ' ') processed_chunk += "\xe2\x96\x81";
-                else processed_chunk += ch;
+                if (ch == ' ')
+                    processed_chunk += "\xe2\x96\x81";
+                else
+                    processed_chunk += ch;
             }
         } else {
             processed_chunk = chunk;
@@ -222,10 +225,14 @@ std::string BPETokenizer::decode(const std::vector<TokenId> &ids) const
                 for (size_t i = 0; i < t.length();) {
                     unsigned char c = static_cast<unsigned char>(t[i]);
                     size_t char_len = 1;
-                    if ((c & 0x80) == 0) char_len = 1;
-                    else if ((c & 0xE0) == 0xC0) char_len = 2;
-                    else if ((c & 0xF0) == 0xE0) char_len = 3;
-                    else if ((c & 0xF8) == 0xF0) char_len = 4;
+                    if ((c & 0x80) == 0)
+                        char_len = 1;
+                    else if ((c & 0xE0) == 0xC0)
+                        char_len = 2;
+                    else if ((c & 0xF0) == 0xE0)
+                        char_len = 3;
+                    else if ((c & 0xF8) == 0xF0)
+                        char_len = 4;
                     if (i + char_len > t.length()) char_len = 1;
 
                     std::string ch = t.substr(i, char_len);
@@ -309,7 +316,8 @@ void BPETokenizer::load(const std::string &path_str)
     nlohmann::json json_in;
     try {
         file_in >> json_in;
-    } catch (...) {
+    }
+    catch (...) {
         return;
     }
 
@@ -335,7 +343,7 @@ void BPETokenizer::load(const std::string &path_str)
                 }
             }
         }
-    } 
+    }
     // 2. Check for standard LLaMA vocab.json
     else if (json_in.is_object() && !json_in.contains("model")) {
         for (auto it = json_in.begin(); it != json_in.end(); ++it) {
@@ -344,22 +352,22 @@ void BPETokenizer::load(const std::string &path_str)
     }
     // 3. Check for HF tokenizer.json
     else if (json_in.contains("model") && json_in["model"].contains("vocab")) {
-        const auto& hf_vocab = json_in["model"]["vocab"];
+        const auto &hf_vocab = json_in["model"]["vocab"];
         for (auto it = hf_vocab.begin(); it != hf_vocab.end(); ++it) {
             vocab_.add_token(it.key(), it.value().get<TokenId>());
         }
-        
+
         if (json_in["model"].contains("merges")) {
-            for (const auto& merge_item : json_in["model"]["merges"]) {
+            for (const auto &merge_item : json_in["model"]["merges"]) {
                 std::string s = merge_item.get<std::string>();
                 size_t space_pos = s.find(' ');
                 if (space_pos != std::string::npos) {
                     std::string t1 = s.substr(0, space_pos);
                     std::string t2 = s.substr(space_pos + 1);
-                    
+
                     auto it1 = vocab_.token_to_id.find(t1);
                     auto it2 = vocab_.token_to_id.find(t2);
-                    
+
                     if (it1 != vocab_.token_to_id.end() && it2 != vocab_.token_to_id.end()) {
                         std::string combined = t1 + t2;
                         auto it_c = vocab_.token_to_id.find(combined);
@@ -404,25 +412,30 @@ void BPETokenizer::load(const std::string &path_str)
     try_add_special("<unk>");
     try_add_special("<pad>");
 
-    std::sort(special_tokens_.begin(), special_tokens_.end(), [](const std::string &a, const std::string &b) {
-        return a.length() > b.length();
-    });
+    std::sort(special_tokens_.begin(), special_tokens_.end(),
+              [](const std::string &a, const std::string &b) { return a.length() > b.length(); });
 }
 
 void BPETokenizer::load_from_gguf(const io::GGUFTokenizerData &data)
 {
-    if (!data.valid) { return; }
+    if (!data.valid) {
+        return;
+    }
 
     vocab_.token_to_id.clear();
     vocab_.id_to_token.clear();
     vocab_.merges.clear();
     special_tokens_.clear();
     is_gpt2_byte_level_ = false;
-    is_sentencepiece_   = false;
+    is_sentencepiece_ = false;
     bos_id_ = static_cast<TokenId>(data.bos_token_id);
     eos_id_ = static_cast<TokenId>(data.eos_token_id);
-    if (bos_id_ >= data.tokens.size()) { bos_id_ = BOS_ID; }
-    if (eos_id_ >= data.tokens.size()) { eos_id_ = EOS_ID; }
+    if (bos_id_ >= data.tokens.size()) {
+        bos_id_ = BOS_ID;
+    }
+    if (eos_id_ >= data.tokens.size()) {
+        eos_id_ = EOS_ID;
+    }
 
     // Build vocab from token list (index = token-id).
     // GGUF token_type: 1=normal, 3=control/special, 6=byte.
@@ -445,18 +458,21 @@ void BPETokenizer::load_from_gguf(const io::GGUFTokenizerData &data)
     // Detect tokenizer style
     is_gpt2_byte_level_ = (vocab_.token_to_id.find("\xc4\xa0") != vocab_.token_to_id.end() &&
                            vocab_.token_to_id.find(" ") == vocab_.token_to_id.end());
-    is_sentencepiece_   = (!is_gpt2_byte_level_ &&
-                           vocab_.token_to_id.find("\xe2\x96\x81") != vocab_.token_to_id.end());
+    is_sentencepiece_ = (!is_gpt2_byte_level_ && vocab_.token_to_id.find("\xe2\x96\x81") != vocab_.token_to_id.end());
 
     // Build merge table from BPE merges ("token_a token_b" pairs)
     for (const std::string &merge_str : data.merges) {
         size_t space = merge_str.find(' ');
-        if (space == std::string::npos) { continue; }
+        if (space == std::string::npos) {
+            continue;
+        }
         std::string t1 = merge_str.substr(0, space);
         std::string t2 = merge_str.substr(space + 1);
         auto it1 = vocab_.token_to_id.find(t1);
         auto it2 = vocab_.token_to_id.find(t2);
-        if (it1 == vocab_.token_to_id.end() || it2 == vocab_.token_to_id.end()) { continue; }
+        if (it1 == vocab_.token_to_id.end() || it2 == vocab_.token_to_id.end()) {
+            continue;
+        }
         std::string combined = t1 + t2;
         auto itc = vocab_.token_to_id.find(combined);
         if (itc != vocab_.token_to_id.end()) {

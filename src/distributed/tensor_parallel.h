@@ -35,8 +35,7 @@ class TensorParallelLinear
    public:
     /// @param comm       Communicator for the tensor parallel group
     /// @param config     TP configuration
-    explicit TensorParallelLinear(Communicator *comm,
-                                 const TensorParallelConfig &config = TensorParallelConfig{});
+    explicit TensorParallelLinear(Communicator *comm, const TensorParallelConfig &config = TensorParallelConfig{});
 
     /// Column-parallel forward: Y = X * W where W is split along columns.
     /// Each rank holds W_local of shape [in_features, out_features / tp_size].
@@ -48,8 +47,7 @@ class TensorParallelLinear
     /// @param batch_size Number of rows in X
     /// @param in_features Number of input features
     /// @param local_out_features Number of output features on this rank (out_features / tp_size)
-    void column_parallel_forward(const float *X, const float *W_local, float *Y,
-                                 size_t batch_size, size_t in_features,
+    void column_parallel_forward(const float *X, const float *W_local, float *Y, size_t batch_size, size_t in_features,
                                  size_t local_out_features);
 
     /// Row-parallel forward: Y = X * W where W is split along rows.
@@ -63,9 +61,8 @@ class TensorParallelLinear
     /// @param batch_size Number of rows in X
     /// @param local_in_features Number of input features on this rank
     /// @param out_features Number of output features
-    void row_parallel_forward(const float *X_local, const float *W_local, float *Y,
-                              size_t batch_size, size_t local_in_features,
-                              size_t out_features);
+    void row_parallel_forward(const float *X_local, const float *W_local, float *Y, size_t batch_size,
+                              size_t local_in_features, size_t out_features);
 
     /// Scatter input features for row-parallel: splits X along the feature dimension.
     /// X [batch_size, in_features] → X_local [batch_size, in_features / tp_size]
@@ -74,8 +71,7 @@ class TensorParallelLinear
     /// @param X_local     Output local shard [batch_size, local_in_features]
     /// @param batch_size  Number of rows
     /// @param in_features Total input features
-    void scatter_input(const float *X, float *X_local,
-                       size_t batch_size, size_t in_features);
+    void scatter_input(const float *X, float *X_local, size_t batch_size, size_t in_features);
 
     int tp_rank() const { return comm_->rank(); }
     int tp_size() const { return config_.tp_size; }

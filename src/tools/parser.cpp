@@ -5,7 +5,7 @@
 namespace serius {
 namespace tools {
 
-std::string FunctionCallParser::extract_json(const std::string& text) const
+std::string FunctionCallParser::extract_json(const std::string &text) const
 {
     // Look for JSON object pattern: { ... }
     std::regex json_pattern(R"(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})");
@@ -18,7 +18,7 @@ std::string FunctionCallParser::extract_json(const std::string& text) const
     return "";
 }
 
-bool FunctionCallParser::has_function_call(const std::string& text) const
+bool FunctionCallParser::has_function_call(const std::string &text) const
 {
     std::string json_str = extract_json(text);
     if (json_str.empty()) {
@@ -28,12 +28,13 @@ bool FunctionCallParser::has_function_call(const std::string& text) const
     try {
         json j = json::parse(json_str);
         return j.contains("function") && j.contains("arguments");
-    } catch (...) {
+    }
+    catch (...) {
         return false;
     }
 }
 
-std::optional<FunctionCall> FunctionCallParser::parse(const std::string& text) const
+std::optional<FunctionCall> FunctionCallParser::parse(const std::string &text) const
 {
     std::string json_str = extract_json(text);
     if (json_str.empty()) {
@@ -49,7 +50,8 @@ std::optional<FunctionCall> FunctionCallParser::parse(const std::string& text) c
             call.arguments = j["arguments"];
             return call;
         }
-    } catch (...) {
+    }
+    catch (...) {
         // Invalid JSON, return nullopt
     }
 

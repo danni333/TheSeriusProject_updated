@@ -4,8 +4,8 @@
 
 #include <cstddef>
 
-#include "../autograd/node.h"
-#include "../tensor/tensor.h"
+#include "autograd/node.h"
+#include "tensor/tensor.h"
 
 namespace serius {
 namespace multimodal {

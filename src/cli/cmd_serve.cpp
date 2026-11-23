@@ -1,13 +1,15 @@
 #include "cli/cmd_serve.h"
-#include "cli/args_parser.h"
-#include "../common/defaults.h"
-#include "../hub/downloader.h"
-#include "../server/server.h"
 
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
+
+#include "../common/defaults.h"
+#include "../hub/downloader.h"
+#include "../server/server.h"
+#include "cli/args_parser.h"
+#include "cli/download_progress.h"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -120,10 +122,11 @@ int cmd_serve(int argc, char **argv)
         hub::ModelDownloader dl;
         std::cout << "[Serius] Resolving hf://" << repo_id << " ...\n";
         std::string chosen, local;
-        if (!dl.resolve_hf_gguf(repo_id, quant_want, local, chosen)) {
+        const bool resolved = dl.resolve_hf_gguf(repo_id, quant_want, local, chosen, "", make_download_progress());
+        finish_download_progress();
+        if (!resolved) {
             if (!quant_want.empty()) {
-                std::cerr << "[Serius] No GGUF matching --quant=" << quant_want
-                          << " in hf://" << repo_id << ".\n";
+                std::cerr << "[Serius] No GGUF matching --quant=" << quant_want << " in hf://" << repo_id << ".\n";
             } else {
                 std::cerr << "[Serius] No .gguf files in hf://" << repo_id
                           << " — use a '-GGUF' repo, or 'serius import' for safetensors.\n";
@@ -148,14 +151,13 @@ int cmd_serve(int argc, char **argv)
     if (!name.empty()) {
         config.model_name = name;
     }
-    config.max_new_tokens = static_cast<size_t>(
-        parser.get_int("max-tokens", static_cast<int>(defaults::kMaxNewTokens)));
+    config.max_new_tokens =
+        static_cast<size_t>(parser.get_int("max-tokens", static_cast<int>(defaults::kMaxNewTokens)));
     config.default_temperature = parser.get_float("temperature", defaults::kTemperature);
     config.default_top_k = parser.get_int("top-k", defaults::kTopK);
     config.default_top_p = parser.get_float("top-p", defaults::kTopP);
     config.ui_dir = resolve_ui_dir(parser.get("ui"));
-    config.health_port = static_cast<uint16_t>(
-        parser.get_int("health-port", 0));
+    config.health_port = static_cast<uint16_t>(parser.get_int("health-port", 0));
     if (gpu == "cpu") {
         config.gpu_mode = server::ServerConfig::GpuMode::kCpu;
         std::cout << "[Serius] CPU inference (--gpu cpu)\n";
@@ -165,8 +167,7 @@ int cmd_serve(int argc, char **argv)
     }
     config.gpu_layers = parser.get_int("gpu-layers", -1);
     if (config.gpu_layers > 0) {
-        std::cout << "[Serius] Partial GPU offload: " << config.gpu_layers
-                  << " layers on GPU (--gpu-layers)\n";
+        std::cout << "[Serius] Partial GPU offload: " << config.gpu_layers << " layers on GPU (--gpu-layers)\n";
     }
 
     std::cout << "[Serius] Starting server on " << config.host << ":" << config.port;

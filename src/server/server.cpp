@@ -1,19 +1,18 @@
 #include "server.h"
-#include "server_internal.h"
+
+#include <spdlog/spdlog.h>
 
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <mutex>
-#include <random>
 #include <nlohmann/json.hpp>
-#include <spdlog/spdlog.h>
+#include <random>
 
-#include "metrics.h"
-#include "static_files.h"
 #include "../hub/downloader.h"
 #include "../infer/llama_inference.h"
 #include "../infer/sampler.h"
@@ -24,17 +23,20 @@
 #include "../transformer/llama_model.h"
 #include "../transformer/model.h"
 #include "../transformer/qwen_model.h"
+#include "metrics.h"
+#include "server_internal.h"
+#include "static_files.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
-#include <windows.h>
 #include <psapi.h>
+#include <windows.h>
 #pragma comment(lib, "psapi.lib")
 #elif defined(__linux__)
-#include <fstream>
 #include <cstdlib>
+#include <fstream>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #endif
@@ -53,9 +55,7 @@ size_t process_ram_bytes()
 {
 #if defined(_WIN32)
     PROCESS_MEMORY_COUNTERS_EX pmc{};
-    if (GetProcessMemoryInfo(GetCurrentProcess(),
-                             reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc),
-                             sizeof(pmc))) {
+    if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS *>(&pmc), sizeof(pmc))) {
         return static_cast<size_t>(pmc.WorkingSetSize);
     }
 #elif defined(__linux__)
@@ -69,8 +69,8 @@ size_t process_ram_bytes()
 #elif defined(__APPLE__)
     mach_task_basic_info info;
     mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
-                  reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info), &count) ==
+        KERN_SUCCESS) {
         return static_cast<size_t>(info.resident_size);
     }
 #endif
@@ -109,14 +109,87 @@ constexpr size_t kMaxNewTokens = 32768;
 /// Cap on the number of inputs accepted by /v1/embeddings per request.
 constexpr size_t kMaxEmbeddingInputs = 256;
 
+/// Bearer token required on model-management routes (POST /v1/models/load,
+/// DELETE /v1/models/{id}) when the SERIUS_ADMIN_TOKEN env var is set.
+/// Empty env = open mode, kept for local development.
+std::string admin_token()
+{
+    const char *t = std::getenv("SERIUS_ADMIN_TOKEN");
+    return t ? std::string(t) : std::string();
+}
+
+bool token_matches(const std::string &presented, const std::string &expected)
+{
+    if (presented.size() != expected.size()) {
+        return false;
+    }
+    uint8_t diff = 0;
+    for (size_t i = 0; i < expected.size(); ++i) {
+        diff |= static_cast<uint8_t>(presented[i] ^ expected[i]);
+    }
+    return diff == 0;
+}
+
+/// Returns true and fills `res` with 401 when the request lacks a valid
+/// admin token. No-op (returns true) when SERIUS_ADMIN_TOKEN is unset.
+bool admin_authorized(const httplib::Request &req, httplib::Response &res)
+{
+    const std::string token = admin_token();
+    if (token.empty()) {
+        return true;
+    }
+    const std::string auth = req.get_header_value("Authorization");
+    const std::string prefix = "Bearer ";
+    const bool ok = auth.rfind(prefix, 0) == 0 && token_matches(auth.substr(prefix.size()), token);
+    if (!ok) {
+        res.status = 401;
+        res.set_content(
+            nlohmann::json{{"error", {{"message", "admin token required"}, {"type", "authentication_error"}}}}.dump(),
+            "application/json");
+    }
+    return ok;
+}
+
+/// When SERIUS_MODEL_ROOTS is set (';'-separated directories), a model path
+/// must canonicalize inside one of them. Unset = any existing path allowed.
+bool model_path_allowed(const std::string &path)
+{
+    const char *roots = std::getenv("SERIUS_MODEL_ROOTS");
+    if (!roots || !*roots) {
+        return true;
+    }
+    std::error_code ec;
+    const auto canon = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        return false;
+    }
+    std::string list(roots);
+    size_t pos = 0;
+    while (pos <= list.size()) {
+        const size_t sep = list.find(';', pos);
+        std::string root = list.substr(pos, sep == std::string::npos ? sep : sep - pos);
+        pos = sep == std::string::npos ? list.size() + 1 : sep + 1;
+        if (root.empty()) {
+            continue;
+        }
+        std::error_code ec2;
+        const auto root_canon = std::filesystem::weakly_canonical(root, ec2);
+        if (ec2) {
+            continue;
+        }
+        const auto &c = canon.string();
+        const auto &r = root_canon.string();
+        if (c == r || (c.size() > r.size() && c.compare(0, r.size(), r) == 0 &&
+                       (r.back() == '/' || r.back() == '\\' || c[r.size()] == '/' || c[r.size()] == '\\'))) {
+            return true;
+        }
+    }
+    return false;
+}
 
 }  // namespace
 
-
-Server::Server(uint16_t port)
-    : Server(ServerConfig{port})
-{
-}
+Server::Server(uint16_t port) : Server(ServerConfig{port}) {}
 
 LoadedModel::~LoadedModel() = default;
 
@@ -195,39 +268,39 @@ void Server::maybe_offload_to_gpu(model::LLaMAModel &model)
     }
     // --gpu-layers N: partial offload (GPU prefix + CPU suffix). Returns
     // false for N >= layer count, which falls through to the full offload.
-    if (config_.gpu_layers > 0 &&
-        infer::offload_llama_model_partial(model, static_cast<size_t>(config_.gpu_layers))) {
-        spdlog::info("LLaMA model partial offload: {} layers on GPU, rest CPU",
-                     config_.gpu_layers);
+    if (config_.gpu_layers > 0 && infer::offload_llama_model_partial(model, static_cast<size_t>(config_.gpu_layers))) {
+        spdlog::info("LLaMA model partial offload: {} layers on GPU, rest CPU", config_.gpu_layers);
         return;
     }
-    const auto mode = (config_.gpu_mode == ServerConfig::GpuMode::kCuda)
-        ? infer::LlamaGpuMode::kCuda : infer::LlamaGpuMode::kAuto;
+    const auto mode =
+        (config_.gpu_mode == ServerConfig::GpuMode::kCuda) ? infer::LlamaGpuMode::kCuda : infer::LlamaGpuMode::kAuto;
     const auto dec = infer::resolve_llama_gpu(model, mode);
     if (!dec.use_gpu) {
         if (dec.fit == infer::LlamaGpuFit::kInsufficientVram) {
-            spdlog::warn("Model ~{:.1f}B params needs ~{:.1f} GiB VRAM but only "
-                         "{:.1f} GiB free — staying on CPU ({})",
-                         dec.est_params / 1e9, dec.need_bytes / 1073741824.0,
-                         dec.free_bytes / 1073741824.0, dec.reason);
+            spdlog::warn(
+                "Model ~{:.1f}B params needs ~{:.1f} GiB VRAM but only "
+                "{:.1f} GiB free — staying on CPU ({})",
+                dec.est_params / 1e9, dec.need_bytes / 1073741824.0, dec.free_bytes / 1073741824.0, dec.reason);
         } else {
             spdlog::info("LLaMA model stays on CPU ({})", dec.reason);
         }
         return;
     }
     if (dec.fit == infer::LlamaGpuFit::kInsufficientVram) {
-        spdlog::warn("GPU forced but estimate needs ~{:.1f} GiB vs {:.1f} GiB free — "
-                     "attempting offload anyway", dec.need_bytes / 1073741824.0,
-                     dec.free_bytes / 1073741824.0);
+        spdlog::warn(
+            "GPU forced but estimate needs ~{:.1f} GiB vs {:.1f} GiB free — "
+            "attempting offload anyway",
+            dec.need_bytes / 1073741824.0, dec.free_bytes / 1073741824.0);
     }
     try {
         if (infer::offload_llama_model_to_gpu(model)) {
-            spdlog::info("LLaMA model ~{:.1f}B params offloaded to GPU "
-                         "(~{:.1f} GiB VRAM, {})",
-                         dec.est_params / 1e9, dec.need_bytes / 1073741824.0,
-                         dec.reason);
+            spdlog::info(
+                "LLaMA model ~{:.1f}B params offloaded to GPU "
+                "(~{:.1f} GiB VRAM, {})",
+                dec.est_params / 1e9, dec.need_bytes / 1073741824.0, dec.reason);
         }
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         spdlog::error("GPU offload failed ({}): {} — staying on CPU", dec.reason, e.what());
     }
 }
@@ -256,8 +329,7 @@ std::string derive_model_name(const std::string &path)
 
 }  // namespace
 
-std::string Server::pick_model_name(const std::string &explicit_name,
-                                    const std::string &derived)
+std::string Server::pick_model_name(const std::string &explicit_name, const std::string &derived)
 {
     std::string base;
     if (!explicit_name.empty() && explicit_name != "default") {
@@ -314,10 +386,9 @@ LoadedModel Server::load_llama_dir(const std::string &model_dir_or_config)
 
     model::LLamaConfig config;
     bool vocab_known = false;
-    const bool has_config_json =
-        actual_config_path.size() >= 5 &&
-        actual_config_path.compare(actual_config_path.size() - 5, 5, ".json") == 0 &&
-        std::filesystem::exists(actual_config_path);
+    const bool has_config_json = actual_config_path.size() >= 5 &&
+                                 actual_config_path.compare(actual_config_path.size() - 5, 5, ".json") == 0 &&
+                                 std::filesystem::exists(actual_config_path);
     if (has_config_json) {
         config = io::load_llama_config(actual_config_path);
         vocab_known = config.vocab_size > 0;
@@ -395,8 +466,7 @@ LoadedModel Server::load_transformer_entry(const std::string &model_dir_or_confi
     return entry;
 }
 
-bool Server::load_model(const std::string &model_dir_or_config, const std::string &type,
-                        const std::string &name)
+bool Server::load_model(const std::string &model_dir_or_config, const std::string &type, const std::string &name)
 {
     // Serialize loads against each other, but NOT against inference: the
     // slow weight loading below runs without inference_mutex_ so other
@@ -405,13 +475,10 @@ bool Server::load_model(const std::string &model_dir_or_config, const std::strin
 
     LoadedModel entry;
     if (type == "llama") {
-        const bool is_gguf =
-            !model_dir_or_config.empty() &&
-            model_dir_or_config.size() >= 5 &&
-            model_dir_or_config.compare(model_dir_or_config.size() - 5, 5, ".gguf") == 0 &&
-            std::filesystem::is_regular_file(model_dir_or_config);
-        entry = is_gguf ? load_llama_gguf(model_dir_or_config)
-                        : load_llama_dir(model_dir_or_config);
+        const bool is_gguf = !model_dir_or_config.empty() && model_dir_or_config.size() >= 5 &&
+                             model_dir_or_config.compare(model_dir_or_config.size() - 5, 5, ".gguf") == 0 &&
+                             std::filesystem::is_regular_file(model_dir_or_config);
+        entry = is_gguf ? load_llama_gguf(model_dir_or_config) : load_llama_dir(model_dir_or_config);
         if (!entry.llama) {
             return false;
         }
@@ -432,8 +499,8 @@ bool Server::load_model(const std::string &model_dir_or_config, const std::strin
         model_type_ = type;
         entry.name = pick_model_name(name, derive_model_name(model_dir_or_config));
         entry.created = static_cast<int64_t>(
-            std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
         entry_name = entry.name;
         models_[entry_name] = std::move(entry);
         last_loaded_name_ = entry_name;
@@ -475,8 +542,7 @@ void Server::set_llama_model(std::unique_ptr<model::LLaMAModel> model, std::uniq
     entry.name = model_name_;
     entry.type = "llama";
     entry.created = static_cast<int64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     entry.llama = std::move(model);
     auto it = models_.find(entry.name);
     if (tokenizer) {
@@ -491,15 +557,15 @@ void Server::set_llama_model(std::unique_ptr<model::LLaMAModel> model, std::uniq
     model_type_ = "llama";
 }
 
-void Server::set_transformer_model(std::unique_ptr<model::TransformerModel> model, std::unique_ptr<BPETokenizer> tokenizer)
+void Server::set_transformer_model(std::unique_ptr<model::TransformerModel> model,
+                                   std::unique_ptr<BPETokenizer> tokenizer)
 {
     std::lock_guard<std::mutex> lock(inference_mutex_);
     LoadedModel entry;
     entry.name = model_name_;
     entry.type = "transformer";
     entry.created = static_cast<int64_t>(
-        std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     entry.transformer = std::move(model);
     auto it = models_.find(entry.name);
     if (tokenizer) {
@@ -542,17 +608,17 @@ void Server::setup_routes()
 
     // Log handler exceptions and return an OpenAI-style error payload instead
     // of httplib's bare 500 + EXCEPTION_WHAT header.
-    server_.set_exception_handler([](const httplib::Request &, httplib::Response &res,
-                                     std::exception_ptr ep) {
+    server_.set_exception_handler([](const httplib::Request &, httplib::Response &res, std::exception_ptr ep) {
         try {
             std::rethrow_exception(ep);
-        } catch (const std::exception &e) {
+        }
+        catch (const std::exception &e) {
             spdlog::error("Request handler exception: {}", e.what());
             res.status = 500;
-            res.set_content(
-                nlohmann::json{{"error", {{"message", e.what()}, {"type", "internal_error"}}}}.dump(),
-                "application/json");
-        } catch (...) {
+            res.set_content(nlohmann::json{{"error", {{"message", e.what()}, {"type", "internal_error"}}}}.dump(),
+                            "application/json");
+        }
+        catch (...) {
             spdlog::error("Request handler exception: unknown");
             res.status = 500;
             res.set_content("{\"error\":{\"message\":\"internal error\",\"type\":\"internal_error\"}}",
@@ -563,13 +629,9 @@ void Server::setup_routes()
     // Setup static file serving for web UI
     setup_static_routes(server_, config_.ui_dir);
 
-    server_.Get("/health", [this](const httplib::Request &req, httplib::Response &res) {
-        handle_health(req, res);
-    });
+    server_.Get("/health", [this](const httplib::Request &req, httplib::Response &res) { handle_health(req, res); });
 
-    server_.Get("/metrics", [this](const httplib::Request &req, httplib::Response &res) {
-        handle_metrics(req, res);
-    });
+    server_.Get("/metrics", [this](const httplib::Request &req, httplib::Response &res) { handle_metrics(req, res); });
 
     server_.Get("/v1/models", [this](const httplib::Request &, httplib::Response &res) {
         nlohmann::json out;
@@ -582,21 +644,15 @@ void Server::setup_routes()
         if (models_.empty()) {
             // No model loaded yet: still advertise the configured default
             // name so clients have something to select (backward compat).
-            out["data"].push_back({
-                {"id", model_name_},
-                {"object", "model"},
-                {"created", created_now},
-                {"owned_by", "serius"}
-            });
+            out["data"].push_back(
+                {{"id", model_name_}, {"object", "model"}, {"created", created_now}, {"owned_by", "serius"}});
         } else {
             for (const auto &[name, m] : models_) {
-                out["data"].push_back({
-                    {"id", name},
-                    {"object", "model"},
-                    {"created", m.created != 0 ? m.created : created_now},
-                    {"owned_by", "serius"},
-                    {"type", m.type}
-                });
+                out["data"].push_back({{"id", name},
+                                       {"object", "model"},
+                                       {"created", m.created != 0 ? m.created : created_now},
+                                       {"owned_by", "serius"},
+                                       {"type", m.type}});
             }
         }
         res.set_content(out.dump(), "application/json");
@@ -609,8 +665,8 @@ void Server::setup_routes()
         if (!models_.empty() && models_.find(requested) == models_.end()) {
             res.status = 404;
             res.set_content(
-                nlohmann::json{{"error", {{"message", "model not found: " + requested},
-                                           {"type", "invalid_request_error"}}}}
+                nlohmann::json{
+                    {"error", {{"message", "model not found: " + requested}, {"type", "invalid_request_error"}}}}
                     .dump(),
                 "application/json");
             return;
@@ -618,7 +674,8 @@ void Server::setup_routes()
         nlohmann::json out;
         out["id"] = requested;
         out["object"] = "model";
-        out["created"] = static_cast<int64_t>(std::chrono::duration_cast<std::chrono::seconds>(g_start_time.time_since_epoch()).count());
+        out["created"] = static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::seconds>(g_start_time.time_since_epoch()).count());
         out["owned_by"] = "serius";
         res.set_content(out.dump(), "application/json");
     });
@@ -627,10 +684,14 @@ void Server::setup_routes()
     // path: directory, config.json or .gguf file. name defaults to the
     // derived path name; an explicit name that already exists -> 409.
     server_.Post("/v1/models/load", [this](const httplib::Request &req, httplib::Response &res) {
+        if (!admin_authorized(req, res)) {
+            return;
+        }
         nlohmann::json body;
         try {
             body = nlohmann::json::parse(req.body.empty() ? "{}" : req.body);
-        } catch (const std::exception &) {
+        }
+        catch (const std::exception &) {
             res.status = 400;
             res.set_content("{\"error\":{\"message\":\"Invalid JSON\"}}", "application/json");
             return;
@@ -653,22 +714,33 @@ void Server::setup_routes()
             const std::string repo_id = path.substr(5);
             if (!hub::ModelDownloader::is_valid_repo_id(repo_id)) {
                 res.status = 400;
-                res.set_content(
-                    nlohmann::json{{"error", {{"message", "invalid HuggingFace repo id (expected owner/name)"},
-                                               {"type", "invalid_request_error"}}}}
-                        .dump(),
-                    "application/json");
+                res.set_content(nlohmann::json{{"error",
+                                                {{"message", "invalid HuggingFace repo id (expected owner/name)"},
+                                                 {"type", "invalid_request_error"}}}}
+                                    .dump(),
+                                "application/json");
                 return;
             }
             hub::ModelDownloader dl;
             std::string local_path, chosen_name;
-            if (!dl.resolve_hf_gguf(repo_id, quant, local_path, chosen_name)) {
+            size_t last_logged_pct = 0;
+            const hub::ProgressFn progress = [&](size_t downloaded, size_t total) {
+                if (total == 0) {
+                    return;
+                }
+                const size_t pct = downloaded * 100 / total;
+                if (pct >= last_logged_pct + 10 || downloaded >= total) {
+                    last_logged_pct = pct;
+                    spdlog::info("hf://{} download: {}%", repo_id, pct);
+                }
+            };
+            if (!dl.resolve_hf_gguf(repo_id, quant, local_path, chosen_name, "", progress)) {
                 res.status = 400;
-                res.set_content(
-                    nlohmann::json{{"error", {{"message", "failed to resolve hf://" + repo_id},
-                                               {"type", "invalid_request_error"}}}}
-                        .dump(),
-                    "application/json");
+                res.set_content(nlohmann::json{{"error",
+                                                {{"message", "failed to resolve hf://" + repo_id},
+                                                 {"type", "invalid_request_error"}}}}
+                                    .dump(),
+                                "application/json");
                 return;
             }
             spdlog::info("hf://{} resolved to {}", repo_id, local_path);
@@ -684,8 +756,8 @@ void Server::setup_routes()
         if (type != "llama" && type != "transformer") {
             res.status = 400;
             res.set_content(
-                nlohmann::json{{"error", {{"message", "unsupported model type: " + type},
-                                           {"type", "invalid_request_error"}}}}
+                nlohmann::json{
+                    {"error", {{"message", "unsupported model type: " + type}, {"type", "invalid_request_error"}}}}
                     .dump(),
                 "application/json");
             return;
@@ -694,10 +766,19 @@ void Server::setup_routes()
         if (!std::filesystem::exists(std::filesystem::path(path), ec)) {
             res.status = 400;
             res.set_content(
-                nlohmann::json{{"error", {{"message", "path does not exist: " + path},
-                                           {"type", "invalid_request_error"}}}}
+                nlohmann::json{
+                    {"error", {{"message", "path does not exist: " + path}, {"type", "invalid_request_error"}}}}
                     .dump(),
                 "application/json");
+            return;
+        }
+        if (!model_path_allowed(path)) {
+            res.status = 403;
+            res.set_content(nlohmann::json{{"error",
+                                            {{"message", "model path is outside the allowed roots"},
+                                             {"type", "invalid_request_error"}}}}
+                                .dump(),
+                            "application/json");
             return;
         }
 
@@ -706,8 +787,8 @@ void Server::setup_routes()
             if (!name.empty() && name != "default" && models_.count(name) != 0) {
                 res.status = 409;
                 res.set_content(
-                    nlohmann::json{{"error", {{"message", "model already loaded: " + name},
-                                               {"type", "invalid_request_error"}}}}
+                    nlohmann::json{
+                        {"error", {{"message", "model already loaded: " + name}, {"type", "invalid_request_error"}}}}
                         .dump(),
                     "application/json");
                 return;
@@ -717,8 +798,7 @@ void Server::setup_routes()
         if (!load_model(path, type, name)) {
             res.status = 500;
             res.set_content(
-                nlohmann::json{{"error", {{"message", "failed to load model from: " + path},
-                                           {"type", "server_error"}}}}
+                nlohmann::json{{"error", {{"message", "failed to load model from: " + path}, {"type", "server_error"}}}}
                     .dump(),
                 "application/json");
             return;
@@ -741,12 +821,14 @@ void Server::setup_routes()
 
     // Unload a model: DELETE /v1/models/{id}
     server_.Delete(R"(/v1/models/([^/]+))", [this](const httplib::Request &req, httplib::Response &res) {
+        if (!admin_authorized(req, res)) {
+            return;
+        }
         const std::string name = req.matches[1];
         if (!unload_model(name)) {
             res.status = 404;
             res.set_content(
-                nlohmann::json{{"error", {{"message", "model not found: " + name},
-                                           {"type", "invalid_request_error"}}}}
+                nlohmann::json{{"error", {{"message", "model not found: " + name}, {"type", "invalid_request_error"}}}}
                     .dump(),
                 "application/json");
             return;
@@ -762,7 +844,8 @@ void Server::setup_routes()
         nlohmann::json body;
         try {
             body = nlohmann::json::parse(req.body.empty() ? "{}" : req.body);
-        } catch (const std::exception &) {
+        }
+        catch (const std::exception &) {
             res.status = 400;
             res.set_content("{\"error\":{\"message\":\"Invalid JSON\"}}", "application/json");
             return;
@@ -778,8 +861,8 @@ void Server::setup_routes()
         if (!has_messages && prompt_field.empty()) {
             res.status = 400;
             res.set_content(
-                nlohmann::json{{"error", {{"message", "messages or prompt is required"},
-                                           {"type", "invalid_request_error"}}}}
+                nlohmann::json{
+                    {"error", {{"message", "messages or prompt is required"}, {"type", "invalid_request_error"}}}}
                     .dump(),
                 "application/json");
             return;
@@ -810,8 +893,8 @@ void Server::setup_routes()
         if (!model_available) {
             res.status = 404;
             res.set_content(
-                nlohmann::json{{"error", {{"message", "model not found: " + requested_model},
-                                           {"type", "invalid_request_error"}}}}
+                nlohmann::json{
+                    {"error", {{"message", "model not found: " + requested_model}, {"type", "invalid_request_error"}}}}
                     .dump(),
                 "application/json");
             return;
@@ -838,13 +921,12 @@ void Server::setup_routes()
         {
             std::lock_guard<std::mutex> lock(inference_mutex_);
             if (LoadedModel *lm = find_model(requested_model)) {
-                if (lm->llama && lm->tokenizer &&
-                    prompt_exceeds_context(*lm->llama, *lm->tokenizer, prompt, max_new)) {
+                if (lm->llama && lm->tokenizer && prompt_exceeds_context(*lm->llama, *lm->tokenizer, prompt, max_new)) {
                     res.status = 400;
                     res.set_content(
-                        nlohmann::json{{"error", {{"message",
-                                                   "prompt + max_tokens exceeds the model context window"},
-                                               {"type", "invalid_request_error"}}}}
+                        nlohmann::json{{"error",
+                                        {{"message", "prompt + max_tokens exceeds the model context window"},
+                                         {"type", "invalid_request_error"}}}}
                             .dump(),
                         "application/json");
                     return;
@@ -853,7 +935,8 @@ void Server::setup_routes()
         }
 
         const bool stream = body.value("stream", false);
-        const std::string req_id = "chatcmpl-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        const std::string req_id =
+            "chatcmpl-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 
         infer::Sampler sampler(temp, top_k, top_p, resolve_seed(body));
 
@@ -863,7 +946,8 @@ void Server::setup_routes()
             res.set_header("Connection", "keep-alive");
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [this, prompt, max_new, sampler, req_id, requested_model](size_t offset, httplib::DataSink &sink) -> bool {
+                [this, prompt, max_new, sampler, req_id, requested_model](size_t offset,
+                                                                          httplib::DataSink &sink) -> bool {
                     if (offset > 0) {
                         sink.done();
                         return true;
@@ -876,16 +960,23 @@ void Server::setup_routes()
                     try {
                         LoadedModel *lm = find_model(requested_model);
                         if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
-                            stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id, requested_model, sink, metrics_.get(), &lm->cached_token_ids);
+                            stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id,
+                                         requested_model, sink, metrics_.get(), &lm->cached_token_ids);
                         } else if (lm && lm->transformer && lm->tokenizer) {
-                            stream_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, req_id, requested_model, sink, metrics_.get());
+                            stream_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, req_id,
+                                               requested_model, sink, metrics_.get());
                         } else {
-                            stream_fallback("Serius API is running without a loaded model. Load a model to get live completions.", req_id, requested_model, sink);
+                            stream_fallback(
+                                "Serius API is running without a loaded model. Load a model to get live completions.",
+                                req_id, requested_model, sink);
                         }
-                    } catch (const std::exception &e) {
-                        const std::string err = "data: " + nlohmann::json{{"error", e.what()}}.dump() + "\n\ndata: [DONE]\n\n";
+                    }
+                    catch (const std::exception &e) {
+                        const std::string err =
+                            "data: " + nlohmann::json{{"error", e.what()}}.dump() + "\n\ndata: [DONE]\n\n";
                         sink.write(err.data(), err.size());
-                    } catch (...) {
+                    }
+                    catch (...) {
                     }
 
                     auto t_end = std::chrono::steady_clock::now();
@@ -904,7 +995,8 @@ void Server::setup_routes()
         GenerationResult gen_res;
         LoadedModel *lm = find_model(requested_model);
         if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
-            gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, metrics_.get(), &lm->cached_token_ids);
+            gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache,
+                                     metrics_.get(), &lm->cached_token_ids);
         } else if (lm && lm->transformer && lm->tokenizer) {
             gen_res = generate_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, metrics_.get());
         } else {
@@ -916,7 +1008,8 @@ void Server::setup_routes()
         metrics_->on_request_end(std::chrono::duration<float>(t_end - t_start).count());
 
         const auto created = static_cast<int64_t>(
-            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
 
         nlohmann::json out;
         out["id"] = req_id;
@@ -924,16 +1017,11 @@ void Server::setup_routes()
         out["created"] = created;
         out["model"] = requested_model;
         out["choices"] = nlohmann::json::array();
-        out["choices"].push_back({
-            {"index", 0},
-            {"message", {{"role", "assistant"}, {"content", gen_res.text}}},
-            {"finish_reason", "stop"}
-        });
-        out["usage"] = {
-            {"prompt_tokens", gen_res.prompt_tokens},
-            {"completion_tokens", gen_res.completion_tokens},
-            {"total_tokens", gen_res.prompt_tokens + gen_res.completion_tokens}
-        };
+        out["choices"].push_back(
+            {{"index", 0}, {"message", {{"role", "assistant"}, {"content", gen_res.text}}}, {"finish_reason", "stop"}});
+        out["usage"] = {{"prompt_tokens", gen_res.prompt_tokens},
+                        {"completion_tokens", gen_res.completion_tokens},
+                        {"total_tokens", gen_res.prompt_tokens + gen_res.completion_tokens}};
         res.set_content(out.dump(), "application/json");
     });
 
@@ -941,7 +1029,8 @@ void Server::setup_routes()
         nlohmann::json body;
         try {
             body = nlohmann::json::parse(req.body.empty() ? "{}" : req.body);
-        } catch (const std::exception &) {
+        }
+        catch (const std::exception &) {
             res.status = 400;
             res.set_content("{\"error\":{\"message\":\"Invalid JSON\"}}", "application/json");
             return;
@@ -970,26 +1059,26 @@ void Server::setup_routes()
             LoadedModel *lm = find_model(requested_model);
             if (!lm && !(models_.empty() && requested_model == model_name_)) {
                 res.status = 404;
-                res.set_content(
-                    nlohmann::json{{"error", {{"message", "model not found: " + requested_model},
-                                               {"type", "invalid_request_error"}}}}
-                        .dump(),
-                    "application/json");
+                res.set_content(nlohmann::json{{"error",
+                                                {{"message", "model not found: " + requested_model},
+                                                 {"type", "invalid_request_error"}}}}
+                                    .dump(),
+                                "application/json");
                 return;
             }
             if (lm && lm->llama && lm->tokenizer &&
                 prompt_exceeds_context(*lm->llama, *lm->tokenizer, prompt, max_new)) {
                 res.status = 400;
-                res.set_content(
-                    nlohmann::json{{"error", {{"message",
-                                               "prompt + max_tokens exceeds the model context window"},
-                                           {"type", "invalid_request_error"}}}}
-                        .dump(),
-                    "application/json");
+                res.set_content(nlohmann::json{{"error",
+                                                {{"message", "prompt + max_tokens exceeds the model context window"},
+                                                 {"type", "invalid_request_error"}}}}
+                                    .dump(),
+                                "application/json");
                 return;
             }
         }
-        const std::string req_id = "cmpl-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+        const std::string req_id =
+            "cmpl-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 
         infer::Sampler sampler(temp, top_k, top_p, resolve_seed(body));
 
@@ -999,7 +1088,8 @@ void Server::setup_routes()
             res.set_header("Connection", "keep-alive");
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [this, prompt, max_new, sampler, req_id, requested_model](size_t offset, httplib::DataSink &sink) -> bool {
+                [this, prompt, max_new, sampler, req_id, requested_model](size_t offset,
+                                                                          httplib::DataSink &sink) -> bool {
                     if (offset > 0) {
                         sink.done();
                         return true;
@@ -1011,11 +1101,15 @@ void Server::setup_routes()
 
                     LoadedModel *lm = find_model(requested_model);
                     if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
-                        stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id, requested_model, sink, metrics_.get(), &lm->cached_token_ids);
+                        stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id,
+                                     requested_model, sink, metrics_.get(), &lm->cached_token_ids);
                     } else if (lm && lm->transformer && lm->tokenizer) {
-                        stream_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, req_id, requested_model, sink, metrics_.get());
+                        stream_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, req_id,
+                                           requested_model, sink, metrics_.get());
                     } else {
-                        stream_fallback("Serius API is running without a loaded model. Load a model to get live completions.", req_id, requested_model, sink);
+                        stream_fallback(
+                            "Serius API is running without a loaded model. Load a model to get live completions.",
+                            req_id, requested_model, sink);
                     }
 
                     auto t_end = std::chrono::steady_clock::now();
@@ -1033,7 +1127,8 @@ void Server::setup_routes()
         GenerationResult gen_res;
         LoadedModel *lm = find_model(requested_model);
         if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
-            gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, metrics_.get(), &lm->cached_token_ids);
+            gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache,
+                                     metrics_.get(), &lm->cached_token_ids);
         } else if (lm && lm->transformer && lm->tokenizer) {
             gen_res = generate_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, metrics_.get());
         } else {
@@ -1044,7 +1139,8 @@ void Server::setup_routes()
         metrics_->on_request_end(std::chrono::duration<float>(t_end - t_start).count());
 
         const auto created = static_cast<int64_t>(
-            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+            std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
 
         nlohmann::json out;
         out["id"] = req_id;
@@ -1052,16 +1148,10 @@ void Server::setup_routes()
         out["created"] = created;
         out["model"] = requested_model;
         out["choices"] = nlohmann::json::array();
-        out["choices"].push_back({
-            {"text", gen_res.text},
-            {"index", 0},
-            {"finish_reason", "stop"}
-        });
-        out["usage"] = {
-            {"prompt_tokens", gen_res.prompt_tokens},
-            {"completion_tokens", gen_res.completion_tokens},
-            {"total_tokens", gen_res.prompt_tokens + gen_res.completion_tokens}
-        };
+        out["choices"].push_back({{"text", gen_res.text}, {"index", 0}, {"finish_reason", "stop"}});
+        out["usage"] = {{"prompt_tokens", gen_res.prompt_tokens},
+                        {"completion_tokens", gen_res.completion_tokens},
+                        {"total_tokens", gen_res.prompt_tokens + gen_res.completion_tokens}};
         res.set_content(out.dump(), "application/json");
     });
 
@@ -1069,7 +1159,8 @@ void Server::setup_routes()
         nlohmann::json body;
         try {
             body = nlohmann::json::parse(req.body.empty() ? "{}" : req.body);
-        } catch (const std::exception &) {
+        }
+        catch (const std::exception &) {
             res.status = 400;
             res.set_content("{\"error\":{\"message\":\"Invalid JSON\"}}", "application/json");
             return;
@@ -1140,17 +1231,10 @@ void Server::setup_routes()
                 emb_vector = {0.0f, 0.0f, 0.0f};
             }
 
-            out["data"].push_back({
-                {"object", "embedding"},
-                {"embedding", emb_vector},
-                {"index", idx}
-            });
+            out["data"].push_back({{"object", "embedding"}, {"embedding", emb_vector}, {"index", idx}});
         }
 
-        out["usage"] = {
-            {"prompt_tokens", total_prompt_tokens},
-            {"total_tokens", total_prompt_tokens}
-        };
+        out["usage"] = {{"prompt_tokens", total_prompt_tokens}, {"total_tokens", total_prompt_tokens}};
         metrics_->on_request_end(0.0f);
         res.set_content(out.dump(), "application/json");
     });
@@ -1192,25 +1276,24 @@ int Server::run()
     // health_port gives monitoring its own listener that never queues.
     if (config_.health_port != 0 && config_.health_port != config_.port) {
         ops_server_ = std::make_unique<httplib::Server>();
-        ops_server_->Get("/health", [this](const httplib::Request &req, httplib::Response &res) {
-            handle_health(req, res);
-        });
-        ops_server_->Get("/metrics", [this](const httplib::Request &req, httplib::Response &res) {
-            handle_metrics(req, res);
-        });
+        ops_server_->Get("/health",
+                         [this](const httplib::Request &req, httplib::Response &res) { handle_health(req, res); });
+        ops_server_->Get("/metrics",
+                         [this](const httplib::Request &req, httplib::Response &res) { handle_metrics(req, res); });
         ops_thread_ = std::thread([this] {
             // Same resilience as the main listener: a fatal accept() error
             // closes the socket, so re-bind and retry until stop().
             while (!stop_requested_.load()) {
                 ops_server_->listen(host_.c_str(), static_cast<int>(config_.health_port));
-                if (stop_requested_.load()) { break; }
+                if (stop_requested_.load()) {
+                    break;
+                }
                 spdlog::warn("Ops listener failed; re-binding in 1s");
                 std::this_thread::sleep_for(std::chrono::seconds(1));
             }
         });
         ops_thread_.detach();
-        spdlog::info("Ops endpoints (/health, /metrics) also listening on {}:{}",
-                     host_, config_.health_port);
+        spdlog::info("Ops endpoints (/health, /metrics) also listening on {}:{}", host_, config_.health_port);
     }
 
     spdlog::info("Serius server listening on {}:{}", host_, port_);
@@ -1225,10 +1308,13 @@ int Server::run()
         return 1;
     }
     while (!stop_requested_.load()) {
-        if (server_.listen_after_bind()) { return 0; }
-        if (stop_requested_.load()) { return 0; }
-        spdlog::warn("Listener socket error on {}:{}; re-binding in 1s",
-                     host_, port_);
+        if (server_.listen_after_bind()) {
+            return 0;
+        }
+        if (stop_requested_.load()) {
+            return 0;
+        }
+        spdlog::warn("Listener socket error on {}:{}; re-binding in 1s", host_, port_);
         std::this_thread::sleep_for(std::chrono::seconds(1));
         if (!server_.bind_to_port(host_.c_str(), static_cast<int>(port_))) {
             spdlog::warn("Re-bind of {}:{} failed; retrying", host_, port_);
@@ -1241,8 +1327,12 @@ void Server::stop()
 {
     stop_requested_.store(true);
     server_.stop();
-    if (ops_server_) { ops_server_->stop(); }
-    if (ops_thread_.joinable()) { ops_thread_.join(); }
+    if (ops_server_) {
+        ops_server_->stop();
+    }
+    if (ops_thread_.joinable()) {
+        ops_thread_.join();
+    }
 }
 
 std::string extract_last_user_message(const std::string &json_body)
@@ -1250,7 +1340,8 @@ std::string extract_last_user_message(const std::string &json_body)
     try {
         auto body = nlohmann::json::parse(json_body.empty() ? "{}" : json_body);
         return extract_user_prompt(body);
-    } catch (...) {
+    }
+    catch (...) {
         return "";
     }
 }

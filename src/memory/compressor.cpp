@@ -1,13 +1,11 @@
 #include "compressor.h"
 
 #include <algorithm>
-#include <cstddef>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <random>
-#include <sstream>
-
-#include <nlohmann/json.hpp>
+#include <vector>
 
 namespace serius {
 namespace memory {
@@ -21,11 +19,6 @@ float dot_product(const float *a, const float *b, size_t n)
         s += a[i] * b[i];
     }
     return s;
-}
-
-float vector_norm(const float *a, size_t n)
-{
-    return std::sqrt(dot_product(a, a, n));
 }
 
 void softmax_inplace(float *scores, size_t n)
@@ -176,9 +169,7 @@ core::Tensor StateCompressor::load_memory(const std::string &path) const
 
     core::Tensor state({rows, cols});
     in.read(reinterpret_cast<char *>(state.data()), rows * cols * sizeof(float));
-    if (!in) {
-        // Partial read: return what we have.
-    }
+    // Partial read: return what we have.
     return state;
 }
 

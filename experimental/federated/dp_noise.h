@@ -5,7 +5,7 @@
 #include <cmath>
 #include <string>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 
 namespace serius {
 namespace federated {

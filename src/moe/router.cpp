@@ -39,8 +39,7 @@ std::vector<float> softmax(const std::vector<float> &scores)
 }  // namespace
 
 Router::Router(size_t d_model, size_t num_experts, size_t top_k, unsigned seed)
-    : d_model_(d_model), num_experts_(num_experts), top_k_(top_k),
-      gate_weight_(nullptr), gate_bias_(nullptr)
+    : d_model_(d_model), num_experts_(num_experts), top_k_(top_k), gate_weight_(nullptr), gate_bias_(nullptr)
 {
     if (d_model_ == 0 || num_experts_ == 0 || top_k_ == 0 || top_k_ > num_experts_) {
         throw std::invalid_argument("Router requires d_model > 0 and 0 < top_k <= num_experts");
@@ -160,8 +159,7 @@ RouterOutput route(const core::Tensor &x, const core::Tensor &gate_weight, size_
     return route(x, gate_weight, core::Tensor({gate_weight.shape()[1]}), top_k);
 }
 
-RouterOutput route(const core::Tensor &x, const core::Tensor &gate_weight,
-                   const core::Tensor &gate_bias, size_t top_k)
+RouterOutput route(const core::Tensor &x, const core::Tensor &gate_weight, const core::Tensor &gate_bias, size_t top_k)
 {
     if (x.ndim() != 1) {
         throw std::invalid_argument("route() expects a flattened token (1D tensor)");
@@ -175,7 +173,7 @@ RouterOutput route(const core::Tensor &x, const core::Tensor &gate_weight,
         throw std::invalid_argument("gate_bias shape mismatch in route()");
     }
     if (num_experts == 0) {
-        return { {}, {}, {} };
+        return {{}, {}, {}};
     }
 
     const size_t effective_top_k = std::min(top_k == 0 ? num_experts : top_k, num_experts);
@@ -192,9 +190,7 @@ RouterOutput route(const core::Tensor &x, const core::Tensor &gate_weight,
     for (size_t i = 0; i < num_experts; ++i) {
         order[i] = i;
     }
-    std::sort(order.begin(), order.end(), [&scores](size_t a, size_t b) {
-        return scores[a] > scores[b];
-    });
+    std::sort(order.begin(), order.end(), [&scores](size_t a, size_t b) { return scores[a] > scores[b]; });
 
     RouterOutput out;
     out.scores.reserve(effective_top_k);

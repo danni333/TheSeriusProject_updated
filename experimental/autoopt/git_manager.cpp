@@ -6,6 +6,8 @@
 #include <sstream>
 #include <iomanip>
 
+#include "common/process_utils.h"
+
 namespace serius {
 namespace autoopt {
 
@@ -43,8 +45,10 @@ bool GitManager::commit_optimization(const std::string &kernel_name,
         return true;
     }
 
-    std::string cmd = "git -C \"" + repo_path_ + "\" commit -am \"" + msg + "\"";
-    int ret = std::system(cmd.c_str());
+    // Argument vector, no shell: the commit message and repo path are data,
+    // never re-parsed as shell syntax.
+    const int ret = serius::common::run_process(
+        {"git", "-C", repo_path_, "commit", "-am", msg});
     return (ret == 0);
 }
 

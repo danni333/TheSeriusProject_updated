@@ -3,9 +3,7 @@
 namespace serius {
 namespace distributed {
 
-DataParallel::DataParallel(Communicator *comm) : comm_(comm)
-{
-}
+DataParallel::DataParallel(Communicator *comm) : comm_(comm) {}
 
 void DataParallel::sync_gradients(const std::vector<std::pair<float *, size_t>> &grad_buffers)
 {

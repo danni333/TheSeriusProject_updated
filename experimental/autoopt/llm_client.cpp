@@ -1,19 +1,56 @@
 #include "llm_client.h"
 
+#include <httplib.h>
 #include <nlohmann/json.hpp>
 
-#include <fstream>
+#include <cstdlib>
 #include <sstream>
-#include <stdexcept>
 
-#ifdef _WIN32
-#define _CRT_SECURE_NO_WARNINGS
-#define popen _popen
-#define pclose _pclose
-#endif
+namespace {
 
-// For HTTP requests, we'll use a simple approach with system curl
-// In production, consider using libcurl or cpp-httplib
+// Split "scheme://authority/path" into client parameters. Returns false on
+// unsupported schemes or missing host.
+bool split_url(const std::string &url, bool &ssl, std::string &host, int &port,
+               std::string &path)
+{
+    const size_t scheme_end = url.find("://");
+    if (scheme_end == std::string::npos) { return false; }
+    const std::string scheme = url.substr(0, scheme_end);
+    ssl = scheme == "https";
+    if (!ssl && scheme != "http") { return false; }
+
+    const size_t path_start = url.find('/', scheme_end + 3);
+    std::string authority = url.substr(scheme_end + 3,
+                                       path_start == std::string::npos
+                                           ? std::string::npos
+                                           : path_start - (scheme_end + 3));
+    path = path_start == std::string::npos ? "/" : url.substr(path_start);
+
+    // Strip any userinfo component.
+    const size_t at = authority.rfind('@');
+    if (at != std::string::npos) { authority = authority.substr(at + 1); }
+
+    const size_t colon = authority.rfind(':');
+    if (colon != std::string::npos) {
+        host = authority.substr(0, colon);
+        port = std::atoi(authority.substr(colon + 1).c_str());
+    } else {
+        host = authority;
+        port = ssl ? 443 : 80;
+    }
+    return !host.empty() && port > 0;
+}
+
+template <typename Client>
+std::string post_json(Client &cli, const std::string &path, const httplib::Headers &headers,
+                      const std::string &body)
+{
+    auto res = cli.Post(path, headers, body, "application/json");
+    if (!res) { return ""; }
+    return res->body;
+}
+
+}  // namespace
 
 namespace serius {
 namespace autoopt {
@@ -70,45 +107,37 @@ std::string LLMClient::extract_code_from_response(const std::string &response) c
 
 std::string LLMClient::http_post(const std::string &url, const std::string &json_body) const
 {
-    // Write JSON body to temp file
-    std::string temp_file = "llm_request_" + std::to_string(std::hash<std::string>{}(json_body)) + ".json";
-    std::ofstream out(temp_file);
-    if (!out) {
+    // Direct HTTP via cpp-httplib: no shell, no temp files, and the URL /
+    // API key are passed as data — never interpolated into a command line.
+    bool ssl = false;
+    std::string host, path;
+    int port = 0;
+    if (!split_url(url, ssl, host, port, path)) {
         return "";
     }
-    out << json_body;
-    out.close();
 
-    // Build curl command
-    std::ostringstream cmd;
-    cmd << "curl -s -X POST \"" << url << "\"";
-    cmd << " -H \"Content-Type: application/json\"";
-
+    httplib::Headers headers = {{"Content-Type", "application/json"}};
     if (!config_.api_key.empty()) {
-        cmd << " -H \"Authorization: Bearer " << config_.api_key << "\"";
+        headers.emplace("Authorization", "Bearer " + config_.api_key);
     }
 
-    cmd << " -d @" << temp_file;
-
-    // Execute curl
-    FILE* pipe = popen(cmd.str().c_str(), "r");
-    if (!pipe) {
-        std::remove(temp_file.c_str());
+#ifdef CPPHTTPLIB_OPENSSL_SUPPORT
+    if (ssl) {
+        httplib::SSLClient cli(host, port);
+        cli.set_connection_timeout(10);
+        cli.set_read_timeout(120);
+        return post_json(cli, path, headers, json_body);
+    }
+#endif
+    if (ssl) {
+        // HTTPS requires an OpenSSL-enabled httplib build.
         return "";
     }
 
-    // Read response
-    char buffer[4096];
-    std::string response;
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        response += buffer;
-    }
-    pclose(pipe);
-
-    // Clean up temp file
-    std::remove(temp_file.c_str());
-
-    return response;
+    httplib::Client cli(host, port);
+    cli.set_connection_timeout(10);
+    cli.set_read_timeout(120);
+    return post_json(cli, path, headers, json_body);
 }
 
 std::string LLMClient::generate(const std::string &prompt) const

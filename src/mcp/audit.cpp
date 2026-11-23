@@ -34,11 +34,9 @@ std::string Audit::timestamp()
     return oss.str();
 }
 
-void Audit::log(const std::string &tool, const std::string &args,
-                const std::string &outcome)
+void Audit::log(const std::string &tool, const std::string &args, const std::string &outcome)
 {
-    std::string line = timestamp() + " | " + tool + " | args=" + args +
-                       " | outcome=" + outcome + "\n";
+    std::string line = timestamp() + " | " + tool + " | args=" + args + " | outcome=" + outcome + "\n";
     if (log_file_.is_open()) {
         log_file_ << line;
         log_file_.flush();

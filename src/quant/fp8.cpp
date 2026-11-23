@@ -7,7 +7,6 @@
 
 #include "quant_kernels.h"
 #include "quant_matmul.h"
-#include "../hal/device.h"
 
 namespace serius {
 namespace quant {
@@ -434,9 +433,8 @@ void fp8_dequant_matmul(const uint8_t *fp8_data, const float *scales, const floa
 }
 
 #ifdef SERIUS_USE_CUDA
-void fp8_dequant_matmul_cuda(const uint8_t *fp8_data, const float *scales,
-                             const float *X, float *Y, int M, int N, int K,
-                             int block_size, bool use_e4m3)
+void fp8_dequant_matmul_cuda(const uint8_t *fp8_data, const float *scales, const float *X, float *Y, int M, int N,
+                             int K, int block_size, bool use_e4m3)
 {
     cuda::fp8_dequant_matmul_cuda(fp8_data, scales, X, Y, M, N, K, block_size, use_e4m3);
 }

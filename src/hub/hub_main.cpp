@@ -1,11 +1,15 @@
+#include "../common/defaults.h"
 #include "metadata_manager.h"
 #include "model_hub_server.h"
-#include "../common/defaults.h"
 // #include "auth_manager.h"
 #include <signal.h>
 
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
 #include <thread>
 
 #include "plugin_manager.h"
@@ -13,7 +17,8 @@
 
 namespace serius::hub {
 
-static std::unique_ptr<ModelHubServer> g_server;
+// Non-static: main() lives at global scope and reaches it qualified.
+std::unique_ptr<ModelHubServer> g_server;
 static std::unique_ptr<MetadataManager> g_metadata_manager;
 // static std::unique_ptr<AuthManager> g_auth_manager;
 static std::unique_ptr<PluginManager> g_plugin_manager;
@@ -75,8 +80,6 @@ void print_usage()
 
 int main(int argc, char *argv[])
 {
-    using namespace serius::hub;
-
     int port = serius::defaults::kHubPort;
 
     // Parse command line arguments
@@ -85,21 +88,21 @@ int main(int argc, char *argv[])
         if (arg == "--port" && i + 1 < argc) {
             port = std::stoi(argv[++i]);
         } else if (arg == "--help") {
-            print_usage();
+            serius::hub::print_usage();
             return 0;
         } else {
             std::cerr << "Unknown argument: " << arg << "\n";
-            print_usage();
+            serius::hub::print_usage();
             return 1;
         }
     }
 
     // Setup signal handlers
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    signal(SIGINT, serius::hub::signal_handler);
+    signal(SIGTERM, serius::hub::signal_handler);
 
     // Initialize components
-    if (!initialize_components(port)) {
+    if (!serius::hub::initialize_components(port)) {
         std::cerr << "Failed to initialize hub components\n";
         return 1;
     }
@@ -121,7 +124,7 @@ int main(int argc, char *argv[])
 
     // Start server
     try {
-        g_server->start();
+        serius::hub::g_server->start();
     }
     catch (const std::exception &e) {
         std::cerr << "Server error: " << e.what() << "\n";

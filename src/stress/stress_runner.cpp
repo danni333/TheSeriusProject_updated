@@ -1,12 +1,23 @@
 #include "stress_runner.h"
-#include "worker.h"
+
 #include <algorithm>
 #include <cmath>
-#include <thread>
-#include <sstream>
-#include <numeric>
 #include <cstdlib>
+#include <numeric>
+#include <sstream>
+#include <thread>
+
+#include "worker.h"
+#if defined(_MSC_VER)
+// cpp-httplib 0.67 trips C4702 (unreachable code) inside its own headers;
+// MSVC's -external:W0 does not suppress it under /WX.
+#pragma warning(push)
+#pragma warning(disable : 4702)
+#endif
 #include <httplib.h>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 #include <nlohmann/json.hpp>
 
 namespace serius {
@@ -16,27 +27,28 @@ namespace {
 
 /// Base URL used for /health memory sampling: the dedicated ops port when
 /// configured, otherwise the main server URL.
-std::string health_base(const StressConfig& cfg) {
+std::string health_base(const StressConfig &cfg)
+{
     return cfg.health_url.empty() ? cfg.server_url : cfg.health_url;
 }
 
 /// Spawn `count` worker threads running StressWorker with the given config.
-void spawn_workers(int count, const StressConfig& cfg,
-                   std::atomic<bool>& running, StressResult& result,
-                   std::mutex& mtx, std::vector<std::thread>& workers) {
+void spawn_workers(int count, const StressConfig &cfg, std::atomic<bool> &running, StressResult &result,
+                   std::mutex &mtx, std::vector<std::thread> &workers)
+{
     workers.reserve(workers.size() + static_cast<size_t>(count));
     for (int i = 0; i < count; ++i) {
         workers.emplace_back([&cfg, &running, &result, &mtx]() {
-            StressWorker worker(cfg.server_url, cfg.prompt, cfg.max_tokens,
-                                cfg.model_name, cfg.endpoint,
+            StressWorker worker(cfg.server_url, cfg.prompt, cfg.max_tokens, cfg.model_name, cfg.endpoint,
                                 cfg.http_timeout_seconds, cfg.request_interval_ms);
             worker.run(running, result, mtx);
         });
     }
 }
 
-void join_workers(std::vector<std::thread>& workers) {
-    for (auto& w : workers) {
+void join_workers(std::vector<std::thread> &workers)
+{
+    for (auto &w : workers) {
         if (w.joinable()) w.join();
     }
     workers.clear();
@@ -44,7 +56,8 @@ void join_workers(std::vector<std::thread>& workers) {
 
 }  // namespace
 
-StressResult StressRunner::run_ramp(const StressConfig& cfg) {
+StressResult StressRunner::run_ramp(const StressConfig &cfg)
+{
     StressResult result;
     std::mutex mtx;
     std::atomic<bool> running{true};
@@ -68,8 +81,7 @@ StressResult StressRunner::run_ramp(const StressConfig& cfg) {
         std::this_thread::sleep_for(std::chrono::seconds(cfg.ramp_step_seconds));
 
         // Record metrics for this step only (delta since step start)
-        auto step_elapsed = std::chrono::duration<float>(
-            std::chrono::steady_clock::now() - step_start).count();
+        auto step_elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - step_start).count();
         const auto [ram_bytes, vram_bytes] = sample_server_memory(health_base(cfg));
         {
             std::lock_guard<std::mutex> lock(mtx);
@@ -93,7 +105,8 @@ StressResult StressRunner::run_ramp(const StressConfig& cfg) {
     return result;
 }
 
-StressResult StressRunner::run_soak(const StressConfig& cfg) {
+StressResult StressRunner::run_soak(const StressConfig &cfg)
+{
     StressResult result;
     std::mutex mtx;
     std::atomic<bool> running{true};
@@ -110,14 +123,11 @@ StressResult StressRunner::run_soak(const StressConfig& cfg) {
         std::this_thread::sleep_for(std::chrono::seconds(
             std::min<int64_t>(cfg.soak_sample_interval_seconds, std::max<int64_t>(remaining.count(), 1))));
 
-        auto elapsed = std::chrono::duration<float>(
-            std::chrono::steady_clock::now() - start_time).count();
+        auto elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
         const auto [ram_bytes, vram_bytes] = sample_server_memory(health_base(cfg));
         {
             std::lock_guard<std::mutex> lock(mtx);
-            float tps = elapsed > 0.0f
-                ? static_cast<float>(result.total_tokens) / elapsed
-                : 0.0f;
+            float tps = elapsed > 0.0f ? static_cast<float>(result.total_tokens) / elapsed : 0.0f;
             result.tps_timeline.push_back({elapsed, tps});
             result.vram_timeline.push_back({elapsed, vram_bytes});
             result.ram_timeline.push_back({elapsed, ram_bytes});
@@ -131,7 +141,8 @@ StressResult StressRunner::run_soak(const StressConfig& cfg) {
     return result;
 }
 
-StressResult StressRunner::run_spike(const StressConfig& cfg) {
+StressResult StressRunner::run_spike(const StressConfig &cfg)
+{
     StressResult result;
     std::mutex mtx;
     std::atomic<bool> running{true};
@@ -166,18 +177,17 @@ StressResult StressRunner::run_spike(const StressConfig& cfg) {
     return result;
 }
 
-ChaosResult StressRunner::run_chaos(const StressConfig& cfg) {
+ChaosResult StressRunner::run_chaos(const StressConfig &cfg)
+{
     ChaosResult result;
     httplib::Client cli(cfg.server_url);
     cli.set_connection_timeout(cfg.http_timeout_seconds);
     cli.set_read_timeout(cfg.http_timeout_seconds);
 
-    auto probe = [&](const char *name, const std::string &body,
-                     bool expect_client_error) {
+    auto probe = [&](const char *name, const std::string &body, bool expect_client_error) {
         auto res = cli.Post(cfg.endpoint, body, "application/json");
         const bool got_response = static_cast<bool>(res);
-        const bool ok = got_response &&
-            (!expect_client_error || (res->status >= 400 && res->status < 500));
+        const bool ok = got_response && (!expect_client_error || (res->status >= 400 && res->status < 500));
         if (ok) {
             ++result.checks_passed;
         } else {
@@ -200,8 +210,7 @@ ChaosResult StressRunner::run_chaos(const StressConfig& cfg) {
     {
         nlohmann::json body;
         body["model"] = cfg.model_name;
-        body["messages"] = {{{"role", "user"},
-                             {"content", std::string(cfg.chaos_long_prompt_chars, 'a')}}};
+        body["messages"] = {{{"role", "user"}, {"content", std::string(cfg.chaos_long_prompt_chars, 'a')}}};
         body["max_tokens"] = cfg.chaos_max_tokens;
         body["stream"] = false;
         probe("long context", body.dump(), false);
@@ -217,8 +226,9 @@ ChaosResult StressRunner::run_chaos(const StressConfig& cfg) {
     return result;
 }
 
-void StressRunner::finalize_metrics(StressResult& result, std::mutex& mtx,
-                                    std::chrono::steady_clock::time_point start_time) {
+void StressRunner::finalize_metrics(StressResult &result, std::mutex &mtx,
+                                    std::chrono::steady_clock::time_point start_time)
+{
     std::lock_guard<std::mutex> lock(mtx);
     if (!result.latencies_ms.empty()) {
         std::sort(result.latencies_ms.begin(), result.latencies_ms.end());
@@ -228,14 +238,12 @@ void StressRunner::finalize_metrics(StressResult& result, std::mutex& mtx,
     if (result.total_requests > 0) {
         result.error_rate = static_cast<float>(result.total_errors) / result.total_requests;
     }
-    auto total_elapsed = std::chrono::duration<float>(
-        std::chrono::steady_clock::now() - start_time).count();
-    result.avg_tps = total_elapsed > 0.0f
-        ? static_cast<float>(result.total_tokens) / total_elapsed
-        : 0.0f;
+    auto total_elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
+    result.avg_tps = total_elapsed > 0.0f ? static_cast<float>(result.total_tokens) / total_elapsed : 0.0f;
 }
 
-std::pair<size_t, size_t> StressRunner::sample_server_memory(const std::string &server_url) {
+std::pair<size_t, size_t> StressRunner::sample_server_memory(const std::string &server_url)
+{
     httplib::Client cli(server_url);
     cli.set_connection_timeout(defaults::kStressChaosTimeoutSec);
     cli.set_read_timeout(defaults::kStressChaosTimeoutSec);
@@ -243,13 +251,15 @@ std::pair<size_t, size_t> StressRunner::sample_server_memory(const std::string &
         try {
             const auto j = nlohmann::json::parse(res->body);
             return {j.value("ram_bytes", size_t{0}), j.value("vram_bytes", size_t{0})};
-        } catch (...) {
+        }
+        catch (...) {
         }
     }
     return {0, 0};
 }
 
-float StressRunner::calculate_percentile(std::vector<float>& values, float percentile) {
+float StressRunner::calculate_percentile(std::vector<float> &values, float percentile)
+{
     if (values.empty()) return 0.0f;
 
     std::sort(values.begin(), values.end());

@@ -11,21 +11,15 @@
 namespace serius {
 namespace safety {
 
-enum class AttackCategory
-{
-    Jailbreak,
-    PromptInjection,
-    DataExtraction,
-    MaliciousCode
-};
+enum class AttackCategory { Jailbreak, PromptInjection, DataExtraction, MaliciousCode };
 
 struct AttackResult
 {
     std::string prompt;
     std::string response;
     AttackCategory category;
-    float severity;   // 0-1
-    bool success;     // true = attack succeeded (unsafe)
+    float severity;  // 0-1
+    bool success;    // true = attack succeeded (unsafe)
 };
 
 /// Toxicity scorer (0 = safe, 1 = toxic).
@@ -69,14 +63,11 @@ class ToxicityClassifier
     float score(const std::string &text) const;
 
    private:
-    ToxicityClassifier(common::TextEmbedFn embedder,
-                       std::vector<std::string> toxic,
-                       std::vector<std::string> benign);
+    ToxicityClassifier(common::TextEmbedFn embedder, std::vector<std::string> toxic, std::vector<std::string> benign);
 
     float lexical_score(const std::string &text) const;
     float semantic_score(const std::string &text) const;
-    float max_prototype_similarity(const std::vector<float> &emb,
-                                   const std::vector<std::string> &prototypes) const;
+    float max_prototype_similarity(const std::vector<float> &emb, const std::vector<std::string> &prototypes) const;
     const std::vector<float> &prototype_embedding(const std::string &text) const;
 
     common::TextEmbedFn embedder_;

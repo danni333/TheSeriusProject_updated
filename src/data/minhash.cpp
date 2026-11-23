@@ -1,6 +1,5 @@
 #include "minhash.h"
 
-#include <algorithm>
 #include <cstdint>
 #include <random>
 #include <string>
@@ -39,9 +38,7 @@ uint64_t hash64(const std::string &s)
     return h;
 }
 
-std::vector<uint32_t> minhash_signature(const std::string &text,
-                                        int num_hashes,
-                                        int ngram)
+std::vector<uint32_t> minhash_signature(const std::string &text, int num_hashes, int ngram)
 {
     std::vector<uint32_t> signature(static_cast<size_t>(num_hashes), UINT32_MAX);
     if (num_hashes <= 0) {
@@ -71,8 +68,7 @@ std::vector<uint32_t> minhash_signature(const std::string &text,
     return signature;
 }
 
-float minhash_jaccard(const std::vector<uint32_t> &a,
-                      const std::vector<uint32_t> &b)
+float minhash_jaccard(const std::vector<uint32_t> &a, const std::vector<uint32_t> &b)
 {
     if (a.empty() || b.empty() || a.size() != b.size()) {
         return 0.0f;

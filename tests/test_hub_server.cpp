@@ -1,3 +1,4 @@
+#include <exception>
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -13,6 +14,18 @@ using namespace serius::hub;
 
 namespace {
 
+struct TerminateProbe
+{
+    TerminateProbe()
+    {
+        std::set_terminate([] {
+            std::fprintf(stderr, "[TerminateProbe] std::terminate called\n");
+            std::abort();
+        });
+    }
+};
+TerminateProbe g_terminate_probe;
+
 int find_free_port()
 {
     httplib::Server port_probe;
@@ -27,25 +40,41 @@ int find_free_port()
 
 struct ServerGuard
 {
-    ModelHubServer server;
+    // Constructed inside the ctor body, AFTER the chdir into workdir:
+    // ModelHubServer captures users_path_ = absolute("hub_users.json") at
+    // construction time, so building it before the chdir would leak state
+    // into (and read stale state from) the test's working directory.
+    std::unique_ptr<ModelHubServer> server;
     std::thread thread;
     std::filesystem::path old_cwd;
     std::filesystem::path workdir;
     int port;
 
-    explicit ServerGuard() : server(find_free_port()), port(server.get_port())
+    explicit ServerGuard() : port(0)
     {
-        workdir = std::filesystem::temp_directory_path() / ("serius_hub_server_test_" + std::to_string(port));
+        workdir = std::filesystem::temp_directory_path() / ("serius_hub_server_test_" + std::to_string(find_free_port()));
         std::filesystem::remove_all(workdir);
         std::filesystem::create_directories(workdir);
         old_cwd = std::filesystem::current_path();
         std::filesystem::current_path(workdir);
-        thread = std::thread([this] { server.start(); });
+        server = std::make_unique<ModelHubServer>(find_free_port());
+        port = server->get_port();
+        thread = std::thread([this] {
+            try {
+                server->start();
+            }
+            catch (const std::exception &e) {
+                std::fprintf(stderr, "[ServerGuard] server thread exception: %s\n", e.what());
+            }
+            catch (...) {
+                std::fprintf(stderr, "[ServerGuard] server thread unknown exception\n");
+            }
+        });
     }
 
     ~ServerGuard()
     {
-        server.stop();
+        server->stop();
         if (thread.joinable()) { thread.join(); }
         std::filesystem::current_path(old_cwd);
         std::filesystem::remove_all(workdir);
@@ -109,7 +138,7 @@ TEST(ModelHubServer, RegisterUploadSearchDownloadDelete)
     const httplib::Headers auth = {{"Authorization", "Bearer " + api_key}};
 
     // upload without auth -> 401
-    httplib::MultipartFormDataItems noauth_items = {
+    httplib::UploadFormDataItems noauth_items = {
         {"model", "GGUFfakebytes", "fake.gguf", "application/octet-stream"},
         {"metadata", "{\"name\":\"m\",\"author\":\"a\"}", "meta.json", "application/json"},
     };
@@ -124,7 +153,7 @@ TEST(ModelHubServer, RegisterUploadSearchDownloadDelete)
                        {"description", "a tiny test model"},
                        {"tags", {"llm", "tiny"}},
                        {"model_type", "gguf"}}.dump();
-    httplib::MultipartFormDataItems items = {
+    httplib::UploadFormDataItems items = {
         {"model", "GGUFfakebytes0123456789", "fake.gguf", "application/octet-stream"},
         {"metadata", meta_json, "meta.json", "application/json"},
     };

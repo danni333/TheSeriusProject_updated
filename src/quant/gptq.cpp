@@ -1,13 +1,11 @@
 #include "gptq.h"
 
-#include "quant_matmul.h"
-
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <numeric>
 #include <stdexcept>
 #include <vector>
+
+#include "quant_matmul.h"
 
 namespace serius {
 namespace quant {

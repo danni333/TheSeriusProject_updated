@@ -14,14 +14,12 @@ namespace serius {
 /// A single training batch containing input_ids, target_ids, and padding mask.
 struct Batch
 {
-    core::Tensor input_ids;    // (batch_size, seq_len)
-    core::Tensor target_ids;   // (batch_size, seq_len)
-    core::Tensor padding_mask; // (batch_size, seq_len) - 1.0 for real tokens, 0.0 for padding
+    core::Tensor input_ids;     // (batch_size, seq_len)
+    core::Tensor target_ids;    // (batch_size, seq_len)
+    core::Tensor padding_mask;  // (batch_size, seq_len) - 1.0 for real tokens, 0.0 for padding
 
     Batch(size_t batch_size, size_t seq_len)
-        : input_ids({batch_size, seq_len}),
-          target_ids({batch_size, seq_len}),
-          padding_mask({batch_size, seq_len})
+        : input_ids({batch_size, seq_len}), target_ids({batch_size, seq_len}), padding_mask({batch_size, seq_len})
     {
     }
 

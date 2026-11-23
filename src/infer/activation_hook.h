@@ -20,16 +20,14 @@ struct ActivationHooks
     /// After each transformer layer (post attention+MLP residual):
     ///   hidden[layer][s][d], row-major [seq_len, hidden_dim].
     /// For single-token decode seq_len == 1.
-    void (*layer_hidden)(int layer_idx, const float *hidden,
-                         size_t seq_len, size_t hidden_dim) = nullptr;
+    void (*layer_hidden)(int layer_idx, const float *hidden, size_t seq_len, size_t hidden_dim) = nullptr;
 
     /// Attention distribution for one query row of one head, right after
     /// the causal softmax:
     ///   probs[kj] = attention weight on key position kj, kj in [0, npos).
     /// Entries beyond npos are masked (~0). query_idx is the row index
     /// within the current forward call (0 for single-token decode).
-    void (*attention_row)(int layer_idx, int head_idx, size_t query_idx,
-                          const float *probs, size_t npos) = nullptr;
+    void (*attention_row)(int layer_idx, int head_idx, size_t query_idx, const float *probs, size_t npos) = nullptr;
 };
 
 /// Install hooks process-wide. Pass {} (or clear) to disable.

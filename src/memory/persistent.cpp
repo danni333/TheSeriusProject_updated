@@ -7,9 +7,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
-#include <sstream>
-
 #include <nlohmann/json.hpp>
+#include <sstream>
 
 namespace serius {
 namespace memory {
@@ -23,7 +22,7 @@ using json = nlohmann::json;
 
 std::string PersistentMemory::make_timestamp()
 {
-    auto now  = std::chrono::system_clock::now();
+    auto now = std::chrono::system_clock::now();
     auto time = std::chrono::system_clock::to_time_t(now);
     std::ostringstream oss;
 #if defined(_MSC_VER)
@@ -41,8 +40,7 @@ std::string PersistentMemory::make_session_id()
     // Use a combination of timestamp and a short random suffix to avoid
     // collisions when two sessions are created in the same second.
     auto ts = make_timestamp();
-    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                  std::chrono::system_clock::now().time_since_epoch())
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
                   .count();
     return "session_" + ts + "_" + std::to_string(ms % 100000);
 }
@@ -78,23 +76,23 @@ std::vector<SessionMeta> PersistentMemory::read_index(const std::string &user_id
         in >> j;
         for (const auto &entry : j["sessions"]) {
             SessionMeta m;
-            m.session_id       = entry.value("session_id", "");
-            m.user_id          = entry.value("user_id", user_id);
-            m.timestamp        = entry.value("timestamp", "");
-            m.num_vectors      = entry.value("num_vectors", static_cast<size_t>(0));
-            m.d_model          = entry.value("d_model", static_cast<size_t>(0));
+            m.session_id = entry.value("session_id", "");
+            m.user_id = entry.value("user_id", user_id);
+            m.timestamp = entry.value("timestamp", "");
+            m.num_vectors = entry.value("num_vectors", static_cast<size_t>(0));
+            m.d_model = entry.value("d_model", static_cast<size_t>(0));
             m.information_ratio = entry.value("information_ratio", 0.0f);
-            m.file_path        = entry.value("file_path", "");
+            m.file_path = entry.value("file_path", "");
             sessions.push_back(std::move(m));
         }
-    } catch (...) {
+    }
+    catch (...) {
         // Corrupt index — treat as empty.
     }
     return sessions;
 }
 
-bool PersistentMemory::write_index(const std::string &user_id,
-                                   const std::vector<SessionMeta> &sessions) const
+bool PersistentMemory::write_index(const std::string &user_id, const std::vector<SessionMeta> &sessions) const
 {
     std::string dir = user_dir(user_id);
     std::error_code ec;
@@ -105,13 +103,13 @@ bool PersistentMemory::write_index(const std::string &user_id,
     json arr = json::array();
     for (const auto &m : sessions) {
         json entry;
-        entry["session_id"]        = m.session_id;
-        entry["user_id"]           = m.user_id;
-        entry["timestamp"]         = m.timestamp;
-        entry["num_vectors"]       = m.num_vectors;
-        entry["d_model"]           = m.d_model;
+        entry["session_id"] = m.session_id;
+        entry["user_id"] = m.user_id;
+        entry["timestamp"] = m.timestamp;
+        entry["num_vectors"] = m.num_vectors;
+        entry["d_model"] = m.d_model;
         entry["information_ratio"] = m.information_ratio;
-        entry["file_path"]         = m.file_path;
+        entry["file_path"] = m.file_path;
         arr.push_back(std::move(entry));
     }
     j["sessions"] = std::move(arr);
@@ -137,8 +135,7 @@ bool PersistentMemory::save_tensor(const std::string &path, const core::Tensor &
     uint32_t cols = static_cast<uint32_t>(t.shape()[1]);
     out.write(reinterpret_cast<const char *>(&rows), sizeof(rows));
     out.write(reinterpret_cast<const char *>(&cols), sizeof(cols));
-    out.write(reinterpret_cast<const char *>(t.data()),
-              static_cast<std::streamsize>(rows) * cols * sizeof(float));
+    out.write(reinterpret_cast<const char *>(t.data()), static_cast<std::streamsize>(rows) * cols * sizeof(float));
     return out.good();
 }
 
@@ -157,8 +154,7 @@ core::Tensor PersistentMemory::load_tensor(const std::string &path, size_t expec
     }
 
     core::Tensor t({static_cast<size_t>(rows), static_cast<size_t>(cols)});
-    in.read(reinterpret_cast<char *>(t.data()),
-            static_cast<std::streamsize>(rows) * cols * sizeof(float));
+    in.read(reinterpret_cast<char *>(t.data()), static_cast<std::streamsize>(rows) * cols * sizeof(float));
     return t;
 }
 
@@ -166,31 +162,28 @@ core::Tensor PersistentMemory::load_tensor(const std::string &path, size_t expec
 // Public API
 // ──────────────────────────────────────────────────────────────────────────
 
-PersistentMemory::PersistentMemory(const std::string &root_dir, size_t d_model)
-    : root_dir_(root_dir), d_model_(d_model)
+PersistentMemory::PersistentMemory(const std::string &root_dir, size_t d_model) : root_dir_(root_dir), d_model_(d_model)
 {
     std::error_code ec;
     fs::create_directories(root_dir_, ec);
 }
 
-SessionMeta PersistentMemory::save_session(const std::string &user_id,
-                                           const core::Tensor &state,
-                                           float info_ratio)
+SessionMeta PersistentMemory::save_session(const std::string &user_id, const core::Tensor &state, float info_ratio)
 {
     SessionMeta meta;
     if (state.ndim() != 2 || state.shape()[1] != d_model_) {
         return meta;  // empty session_id signals failure
     }
 
-    meta.session_id       = make_session_id();
-    meta.user_id          = user_id;
-    meta.timestamp        = make_timestamp();
-    meta.num_vectors      = state.shape()[0];
-    meta.d_model          = d_model_;
+    meta.session_id = make_session_id();
+    meta.user_id = user_id;
+    meta.timestamp = make_timestamp();
+    meta.num_vectors = state.shape()[0];
+    meta.d_model = d_model_;
     meta.information_ratio = info_ratio;
 
     std::string dir = user_dir(user_id, /*create=*/true);
-    meta.file_path  = dir + "/" + meta.session_id + ".bin";
+    meta.file_path = dir + "/" + meta.session_id + ".bin";
 
     if (!save_tensor(meta.file_path, state)) {
         meta.session_id.clear();
@@ -205,8 +198,7 @@ SessionMeta PersistentMemory::save_session(const std::string &user_id,
     return meta;
 }
 
-core::Tensor PersistentMemory::load_session(const std::string &user_id,
-                                            const std::string &session_id) const
+core::Tensor PersistentMemory::load_session(const std::string &user_id, const std::string &session_id) const
 {
     auto sessions = read_index(user_id);
     for (const auto &m : sessions) {
@@ -222,8 +214,7 @@ std::vector<SessionMeta> PersistentMemory::list_sessions(const std::string &user
     return read_index(user_id);
 }
 
-bool PersistentMemory::delete_session(const std::string &user_id,
-                                      const std::string &session_id)
+bool PersistentMemory::delete_session(const std::string &user_id, const std::string &session_id)
 {
     auto sessions = read_index(user_id);
     auto it = std::find_if(sessions.begin(), sessions.end(),
@@ -239,8 +230,7 @@ bool PersistentMemory::delete_session(const std::string &user_id,
     return true;
 }
 
-core::Tensor PersistentMemory::build_user_context(const std::string &user_id,
-                                                  size_t max_sessions) const
+core::Tensor PersistentMemory::build_user_context(const std::string &user_id, size_t max_sessions) const
 {
     auto sessions = read_index(user_id);
     if (sessions.empty()) {
@@ -249,9 +239,7 @@ core::Tensor PersistentMemory::build_user_context(const std::string &user_id,
 
     // Sort by timestamp (lexicographic is fine for our format).
     std::sort(sessions.begin(), sessions.end(),
-              [](const SessionMeta &a, const SessionMeta &b) {
-                  return a.timestamp < b.timestamp;
-              });
+              [](const SessionMeta &a, const SessionMeta &b) { return a.timestamp < b.timestamp; });
 
     if (max_sessions > 0 && sessions.size() > max_sessions) {
         sessions.erase(sessions.begin(),
@@ -277,9 +265,7 @@ core::Tensor PersistentMemory::build_user_context(const std::string &user_id,
     core::Tensor context({total_rows, d_model_});
     size_t offset = 0;
     for (const auto &t : parts) {
-        std::memcpy(context.data() + offset * d_model_,
-                    t.data(),
-                    t.shape()[0] * d_model_ * sizeof(float));
+        std::memcpy(context.data() + offset * d_model_, t.data(), t.shape()[0] * d_model_ * sizeof(float));
         offset += t.shape()[0];
     }
     return context;

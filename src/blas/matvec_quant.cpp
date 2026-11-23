@@ -1,10 +1,9 @@
-#include "blas.h"
-
-#include "../quant/quant_weight.h"
-
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+#include "../quant/quant_weight.h"
+#include "blas.h"
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
@@ -34,7 +33,7 @@ namespace {
 inline float fp16_to_fp32_fast(uint16_t h)
 {
     const uint32_t sign = (static_cast<uint32_t>(h) & 0x8000u) << 16;
-    const uint32_t exp  = (static_cast<uint32_t>(h) >> 10) & 0x1Fu;
+    const uint32_t exp = (static_cast<uint32_t>(h) >> 10) & 0x1Fu;
     const uint32_t mant = static_cast<uint32_t>(h) & 0x3FFu;
     const uint32_t bits = sign | ((exp + 112u) << 23) | (mant << 13);
     float f;
@@ -76,13 +75,15 @@ inline float q80_elem(const uint8_t *blk, size_t e, float d)
 
 // Two-row variant: processes rows row0/row1 together, sharing x vector loads
 // and doubling outstanding memory streams (helps DRAM-latency-bound decode).
-void q40_row2_avx512(const uint8_t *row0, const uint8_t *row1,
-                     size_t in, const float *x, float &out0, float &out1)
+void q40_row2_avx512(const uint8_t *row0, const uint8_t *row1, size_t in, const float *x, float &out0, float &out1)
 {
     const size_t full_blocks = in / 32;
     __m512 acc0[8];
     __m512 acc1[8];
-    for (int i = 0; i < 8; ++i) { acc0[i] = _mm512_setzero_ps(); acc1[i] = _mm512_setzero_ps(); }
+    for (int i = 0; i < 8; ++i) {
+        acc0[i] = _mm512_setzero_ps();
+        acc1[i] = _mm512_setzero_ps();
+    }
     const __m512i nib_mask = _mm512_set1_epi32(0x0F);
     const __m512i eight = _mm512_set1_epi32(8);
 
@@ -101,7 +102,7 @@ void q40_row2_avx512(const uint8_t *row0, const uint8_t *row1,
                 const __m512i hi = _mm512_and_si512(_mm512_srli_epi32(bytes, 4), nib_mask);
                 const __m512 wlo = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(lo, eight)), d);
                 const __m512 whi = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(hi, eight)), d);
-                acc0[2 * i]     = _mm512_fmadd_ps(wlo, xlo, acc0[2 * i]);
+                acc0[2 * i] = _mm512_fmadd_ps(wlo, xlo, acc0[2 * i]);
                 acc0[2 * i + 1] = _mm512_fmadd_ps(whi, xhi, acc0[2 * i + 1]);
             }
             {
@@ -113,7 +114,7 @@ void q40_row2_avx512(const uint8_t *row0, const uint8_t *row1,
                 const __m512i hi = _mm512_and_si512(_mm512_srli_epi32(bytes, 4), nib_mask);
                 const __m512 wlo = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(lo, eight)), d);
                 const __m512 whi = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(hi, eight)), d);
-                acc1[2 * i]     = _mm512_fmadd_ps(wlo, xlo, acc1[2 * i]);
+                acc1[2 * i] = _mm512_fmadd_ps(wlo, xlo, acc1[2 * i]);
                 acc1[2 * i + 1] = _mm512_fmadd_ps(whi, xhi, acc1[2 * i + 1]);
             }
         }
@@ -147,9 +148,9 @@ void q40_row2_avx512(const uint8_t *row0, const uint8_t *row1,
         }
     }
     auto hsum = [](__m512 *acc) {
-        return _mm512_reduce_add_ps(_mm512_add_ps(
-            _mm512_add_ps(_mm512_add_ps(acc[0], acc[1]), _mm512_add_ps(acc[2], acc[3])),
-            _mm512_add_ps(_mm512_add_ps(acc[4], acc[5]), _mm512_add_ps(acc[6], acc[7]))));
+        return _mm512_reduce_add_ps(
+            _mm512_add_ps(_mm512_add_ps(_mm512_add_ps(acc[0], acc[1]), _mm512_add_ps(acc[2], acc[3])),
+                          _mm512_add_ps(_mm512_add_ps(acc[4], acc[5]), _mm512_add_ps(acc[6], acc[7]))));
     };
     out0 = hsum(acc0);
     out1 = hsum(acc1);
@@ -166,7 +167,9 @@ void q40_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
 {
     const size_t full_blocks = in / 32;
     __m512 acc[16];
-    for (int i = 0; i < 16; ++i) { acc[i] = _mm512_setzero_ps(); }
+    for (int i = 0; i < 16; ++i) {
+        acc[i] = _mm512_setzero_ps();
+    }
     const __m512i nib_mask = _mm512_set1_epi32(0x0F);
     const __m512i eight = _mm512_set1_epi32(8);
 
@@ -183,7 +186,7 @@ void q40_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
             const __m512i hi = _mm512_and_si512(_mm512_srli_epi32(bytes, 4), nib_mask);
             const __m512 wlo = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(lo, eight)), d);
             const __m512 whi = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(hi, eight)), d);
-            acc[2 * i]     = _mm512_fmadd_ps(wlo, _mm512_loadu_ps(x + k + 32 * i),      acc[2 * i]);
+            acc[2 * i] = _mm512_fmadd_ps(wlo, _mm512_loadu_ps(x + k + 32 * i), acc[2 * i]);
             acc[2 * i + 1] = _mm512_fmadd_ps(whi, _mm512_loadu_ps(x + k + 32 * i + 16), acc[2 * i + 1]);
         }
     }
@@ -196,7 +199,7 @@ void q40_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
         const __m512i hi = _mm512_and_si512(_mm512_srli_epi32(bytes, 4), nib_mask);
         const __m512 wlo = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(lo, eight)), d);
         const __m512 whi = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_sub_epi32(hi, eight)), d);
-        acc[0] = _mm512_fmadd_ps(wlo, _mm512_loadu_ps(x + k),      acc[0]);
+        acc[0] = _mm512_fmadd_ps(wlo, _mm512_loadu_ps(x + k), acc[0]);
         acc[1] = _mm512_fmadd_ps(whi, _mm512_loadu_ps(x + k + 16), acc[1]);
     }
     __m512 s01 = _mm512_add_ps(_mm512_add_ps(acc[0], acc[1]), _mm512_add_ps(acc[2], acc[3]));
@@ -214,7 +217,9 @@ void q41_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
 {
     const size_t full_blocks = in / 32;
     __m512 acc[16];
-    for (int i = 0; i < 16; ++i) { acc[i] = _mm512_setzero_ps(); }
+    for (int i = 0; i < 16; ++i) {
+        acc[i] = _mm512_setzero_ps();
+    }
     const __m512i nib_mask = _mm512_set1_epi32(0x0F);
 
     size_t k = 0;
@@ -231,7 +236,7 @@ void q41_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
             const __m512i hi = _mm512_and_si512(_mm512_srli_epi32(bytes, 4), nib_mask);
             const __m512 wlo = _mm512_fmadd_ps(_mm512_cvtepi32_ps(lo), d, m);
             const __m512 whi = _mm512_fmadd_ps(_mm512_cvtepi32_ps(hi), d, m);
-            acc[2 * i]     = _mm512_fmadd_ps(wlo, _mm512_loadu_ps(x + k + 32 * i),      acc[2 * i]);
+            acc[2 * i] = _mm512_fmadd_ps(wlo, _mm512_loadu_ps(x + k + 32 * i), acc[2 * i]);
             acc[2 * i + 1] = _mm512_fmadd_ps(whi, _mm512_loadu_ps(x + k + 32 * i + 16), acc[2 * i + 1]);
         }
     }
@@ -245,7 +250,7 @@ void q41_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
         const __m512i hi = _mm512_and_si512(_mm512_srli_epi32(bytes, 4), nib_mask);
         const __m512 wlo = _mm512_fmadd_ps(_mm512_cvtepi32_ps(lo), d, m);
         const __m512 whi = _mm512_fmadd_ps(_mm512_cvtepi32_ps(hi), d, m);
-        acc[0] = _mm512_fmadd_ps(wlo, _mm512_loadu_ps(x + k),      acc[0]);
+        acc[0] = _mm512_fmadd_ps(wlo, _mm512_loadu_ps(x + k), acc[0]);
         acc[1] = _mm512_fmadd_ps(whi, _mm512_loadu_ps(x + k + 16), acc[1]);
     }
     __m512 s01 = _mm512_add_ps(_mm512_add_ps(acc[0], acc[1]), _mm512_add_ps(acc[2], acc[3]));
@@ -263,7 +268,9 @@ void q80_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
 {
     const size_t full_blocks = in / 32;
     __m512 acc[16];
-    for (int i = 0; i < 16; ++i) { acc[i] = _mm512_setzero_ps(); }
+    for (int i = 0; i < 16; ++i) {
+        acc[i] = _mm512_setzero_ps();
+    }
 
     size_t k = 0;
     size_t b = 0;
@@ -276,7 +283,7 @@ void q80_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
             const __m128i q1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 18));
             const __m512 w0 = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(q0)), d);
             const __m512 w1 = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(q1)), d);
-            acc[2 * i]     = _mm512_fmadd_ps(w0, _mm512_loadu_ps(x + k + 32 * i),      acc[2 * i]);
+            acc[2 * i] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(x + k + 32 * i), acc[2 * i]);
             acc[2 * i + 1] = _mm512_fmadd_ps(w1, _mm512_loadu_ps(x + k + 32 * i + 16), acc[2 * i + 1]);
         }
     }
@@ -287,7 +294,7 @@ void q80_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
         const __m128i q1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 18));
         const __m512 w0 = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(q0)), d);
         const __m512 w1 = _mm512_mul_ps(_mm512_cvtepi32_ps(_mm512_cvtepi8_epi32(q1)), d);
-        acc[0] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(x + k),      acc[0]);
+        acc[0] = _mm512_fmadd_ps(w0, _mm512_loadu_ps(x + k), acc[0]);
         acc[1] = _mm512_fmadd_ps(w1, _mm512_loadu_ps(x + k + 16), acc[1]);
     }
     __m512 s01 = _mm512_add_ps(_mm512_add_ps(acc[0], acc[1]), _mm512_add_ps(acc[2], acc[3]));
@@ -298,6 +305,75 @@ void q80_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
     for (size_t e = in - (in % 32); e < in; ++e) {
         const uint8_t *blk = row + (e / 32) * 34;
         out += q80_elem(blk, e % 32, fp16_to_fp32_fast(load_fp16(blk))) * x[e];
+    }
+}
+
+// Q4_K superblock: 256 weights / 144B, 8 sub-blocks of 32.
+// w = d*sc*nib - dmin*m. Each 32B qs group feeds two sub-blocks: even sb
+// uses low nibbles, odd sb high nibbles. 16 zmm accumulators cover the
+// 256 positions of one superblock.
+void q4k_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    const size_t nsb = in / 256;
+    __m512 acc[16];
+    for (int i = 0; i < 16; ++i) { acc[i] = _mm512_setzero_ps(); }
+    const __m512i nib8 = _mm512_set1_epi8(0x0F);
+
+    size_t k = 0;
+    for (size_t s = 0; s < nsb; ++s, k += 256) {
+        const uint8_t *blk = row + s * 144;
+        _mm_prefetch(reinterpret_cast<const char *>(blk + 144), _MM_HINT_T0);
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        const uint8_t *sc = blk + 4;
+        const uint8_t *qs = blk + 16;
+        for (int g = 0; g < 4; ++g) {
+            // One 32B group -> lo/hi nibble pairs, each expanded to two
+            // __m512i of 16 i32 lanes (weights 0..15, 16..31 of the sub-block).
+            const __m512i by = _mm512_loadu_si512(reinterpret_cast<const void *>(qs + g * 32));
+            const __m512i lo_b = _mm512_and_si512(by, nib8);
+            const __m512i hi_b = _mm512_and_si512(_mm512_srli_epi16(by, 4), nib8);
+            const __m512i lo0 = _mm512_cvtepu8_epi32(_mm512_castsi512_si128(lo_b));
+            const __m512i lo1 = _mm512_cvtepu8_epi32(_mm512_extracti32x4_epi32(lo_b, 1));
+            const __m512i hi0 = _mm512_cvtepu8_epi32(_mm512_castsi512_si128(hi_b));
+            const __m512i hi1 = _mm512_cvtepu8_epi32(_mm512_extracti32x4_epi32(hi_b, 1));
+            const size_t xo = k + g * 64;  // group covers weights [64g, 64g+64)
+            for (int half = 0; half < 2; ++half) {
+                // half=0 -> sub-block sb=2g (lo nibbles), half=1 -> sb=2g+1 (hi)
+                const int sb = 2 * g + half;
+                int d6, m6;
+                q4k_scale_min(sc, sb, d6, m6);
+                const __m512 D = _mm512_set1_ps(d * static_cast<float>(d6));
+                const __m512 M = _mm512_set1_ps(-dmin * static_cast<float>(m6));
+                const __m512i n0 = half ? hi0 : lo0;
+                const __m512i n1 = half ? hi1 : lo1;
+                const size_t xoff = xo + half * 32;
+                const __m512 w0 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(n0), D, M);
+                const __m512 w1 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(n1), D, M);
+                acc[sb * 2]     = _mm512_fmadd_ps(w0, _mm512_loadu_ps(x + xoff),      acc[sb * 2]);
+                acc[sb * 2 + 1] = _mm512_fmadd_ps(w1, _mm512_loadu_ps(x + xoff + 16), acc[sb * 2 + 1]);
+            }
+        }
+    }
+    __m512 s01 = _mm512_add_ps(_mm512_add_ps(acc[0], acc[1]), _mm512_add_ps(acc[2], acc[3]));
+    __m512 s23 = _mm512_add_ps(_mm512_add_ps(acc[4], acc[5]), _mm512_add_ps(acc[6], acc[7]));
+    __m512 s45 = _mm512_add_ps(_mm512_add_ps(acc[8], acc[9]), _mm512_add_ps(acc[10], acc[11]));
+    __m512 s67 = _mm512_add_ps(_mm512_add_ps(acc[12], acc[13]), _mm512_add_ps(acc[14], acc[15]));
+    out = _mm512_reduce_add_ps(_mm512_add_ps(_mm512_add_ps(s01, s23), _mm512_add_ps(s45, s67)));
+    for (size_t e = in - (in % 256); e < in; ++e) {
+        const size_t s = e / 256;
+        const size_t sb = (e % 256) / 32;
+        const uint8_t *blk = row + s * 144;
+        const uint8_t *sc = blk + 4;
+        const uint8_t *qb = blk + 16 + (sb >> 1) * 32;
+        const int l = static_cast<int>(e % 32);
+        const uint8_t byte = qb[l];
+        const int nib = (sb & 1) ? (byte >> 4) : (byte & 0xF);
+        int d6, m6;
+        q4k_scale_min(sc, static_cast<int>(sb), d6, m6);
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        out += (d * d6 * nib - dmin * m6) * x[e];
     }
 }
 
@@ -322,8 +398,8 @@ void q40_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
         const uint8_t *blk = row + b * 18;
         const __m256 d = _mm256_set1_ps(fp16_to_fp32_fast(load_fp16(blk)));
         const __m128i q = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 2));
-        const __m256i bytes = _mm256_cvtepu8_epi16(q);          // 16 x u16
-        const __m256i lo16 = _mm256_and_si256(bytes, nib_lo);   // weights 0..15
+        const __m256i bytes = _mm256_cvtepu8_epi16(q);                               // 16 x u16
+        const __m256i lo16 = _mm256_and_si256(bytes, nib_lo);                        // weights 0..15
         const __m256i hi16 = _mm256_and_si256(_mm256_srli_epi16(bytes, 4), nib_lo);  // 16..31
 
         const __m256i l0 = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(lo16));
@@ -336,18 +412,20 @@ void q40_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
         const __m256 w2 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(h0, eight)), d);
         const __m256 w3 = _mm256_mul_ps(_mm256_cvtepi32_ps(_mm256_sub_epi32(h1, eight)), d);
 
-        acc0 = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k + 0),  acc0);
-        acc1 = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + k + 8),  acc1);
+        acc0 = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k + 0), acc0);
+        acc1 = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + k + 8), acc1);
         acc2 = _mm256_fmadd_ps(w2, _mm256_loadu_ps(x + k + 16), acc2);
         acc3 = _mm256_fmadd_ps(w3, _mm256_loadu_ps(x + k + 24), acc3);
     }
     alignas(32) float buf[32];
-    _mm256_store_ps(buf + 0,  acc0);
-    _mm256_store_ps(buf + 8,  acc1);
+    _mm256_store_ps(buf + 0, acc0);
+    _mm256_store_ps(buf + 8, acc1);
     _mm256_store_ps(buf + 16, acc2);
     _mm256_store_ps(buf + 24, acc3);
     out = 0.0f;
-    for (int i = 0; i < 32; ++i) { out += buf[i]; }
+    for (int i = 0; i < 32; ++i) {
+        out += buf[i];
+    }
     for (size_t e = in - (in % 32); e < in; ++e) {
         const uint8_t *blk = row + (e / 32) * 18;
         out += q40_elem(blk, e % 32, fp16_to_fp32_fast(load_fp16(blk))) * x[e];
@@ -383,18 +461,20 @@ void q41_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
         const __m256 w2 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(h0), d, m);
         const __m256 w3 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(h1), d, m);
 
-        acc0 = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k + 0),  acc0);
-        acc1 = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + k + 8),  acc1);
+        acc0 = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k + 0), acc0);
+        acc1 = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + k + 8), acc1);
         acc2 = _mm256_fmadd_ps(w2, _mm256_loadu_ps(x + k + 16), acc2);
         acc3 = _mm256_fmadd_ps(w3, _mm256_loadu_ps(x + k + 24), acc3);
     }
     alignas(32) float buf[32];
-    _mm256_store_ps(buf + 0,  acc0);
-    _mm256_store_ps(buf + 8,  acc1);
+    _mm256_store_ps(buf + 0, acc0);
+    _mm256_store_ps(buf + 8, acc1);
     _mm256_store_ps(buf + 16, acc2);
     _mm256_store_ps(buf + 24, acc3);
     out = 0.0f;
-    for (int i = 0; i < 32; ++i) { out += buf[i]; }
+    for (int i = 0; i < 32; ++i) {
+        out += buf[i];
+    }
     for (size_t e = in - (in % 32); e < in; ++e) {
         const uint8_t *blk = row + (e / 32) * 20;
         out += q41_elem(blk, e % 32, fp16_to_fp32_fast(load_fp16(blk)), fp16_to_fp32_fast(load_fp16(blk + 2))) * x[e];
@@ -424,18 +504,20 @@ void q80_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
         const __m256 w1 = _mm256_mul_ps(_mm256_cvtepi32_ps(j1), d);
         const __m256 w2 = _mm256_mul_ps(_mm256_cvtepi32_ps(j2), d);
         const __m256 w3 = _mm256_mul_ps(_mm256_cvtepi32_ps(j3), d);
-        acc0 = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k + 0),  acc0);
-        acc1 = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + k + 8),  acc1);
+        acc0 = _mm256_fmadd_ps(w0, _mm256_loadu_ps(x + k + 0), acc0);
+        acc1 = _mm256_fmadd_ps(w1, _mm256_loadu_ps(x + k + 8), acc1);
         acc2 = _mm256_fmadd_ps(w2, _mm256_loadu_ps(x + k + 16), acc2);
         acc3 = _mm256_fmadd_ps(w3, _mm256_loadu_ps(x + k + 24), acc3);
     }
     alignas(32) float buf[32];
-    _mm256_store_ps(buf + 0,  acc0);
-    _mm256_store_ps(buf + 8,  acc1);
+    _mm256_store_ps(buf + 0, acc0);
+    _mm256_store_ps(buf + 8, acc1);
     _mm256_store_ps(buf + 16, acc2);
     _mm256_store_ps(buf + 24, acc3);
     out = 0.0f;
-    for (int i = 0; i < 32; ++i) { out += buf[i]; }
+    for (int i = 0; i < 32; ++i) {
+        out += buf[i];
+    }
     for (size_t e = in - (in % 32); e < in; ++e) {
         const uint8_t *blk = row + (e / 32) * 34;
         out += q80_elem(blk, e % 32, fp16_to_fp32_fast(load_fp16(blk))) * x[e];
@@ -459,7 +541,9 @@ inline void bytes32_to_i32x8(const uint8_t *p, __m256i out[4])
 inline void nibbles32_to_i32x8(const uint8_t *p, bool high, __m256i out[4])
 {
     __m256i v = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(p));
-    if (high) { v = _mm256_srli_epi16(v, 4); }
+    if (high) {
+        v = _mm256_srli_epi16(v, 4);
+    }
     v = _mm256_and_si256(v, _mm256_set1_epi8(0x0F));
     const __m256i a = _mm256_cvtepu8_epi16(_mm256_castsi256_si128(v));
     const __m256i b = _mm256_cvtepu8_epi16(_mm256_extracti128_si256(v, 1));
@@ -500,17 +584,26 @@ void q4k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
                 const __m256 w = _mm256_fmadd_ps(_mm256_cvtepi32_ps(nib[i]), D, M);
                 const __m256 xa = (i == 0) ? acc0 : (i == 1) ? acc1 : (i == 2) ? acc2 : acc3;
                 const __m256 r = _mm256_fmadd_ps(w, _mm256_loadu_ps(x + xo + 8 * i), xa);
-                if (i == 0) acc0 = r; else if (i == 1) acc1 = r; else if (i == 2) acc2 = r; else acc3 = r;
+                if (i == 0)
+                    acc0 = r;
+                else if (i == 1)
+                    acc1 = r;
+                else if (i == 2)
+                    acc2 = r;
+                else
+                    acc3 = r;
             }
         }
     }
     alignas(32) float buf[32];
-    _mm256_store_ps(buf + 0,  acc0);
-    _mm256_store_ps(buf + 8,  acc1);
+    _mm256_store_ps(buf + 0, acc0);
+    _mm256_store_ps(buf + 8, acc1);
     _mm256_store_ps(buf + 16, acc2);
     _mm256_store_ps(buf + 24, acc3);
     out = 0.0f;
-    for (int i = 0; i < 32; ++i) { out += buf[i]; }
+    for (int i = 0; i < 32; ++i) {
+        out += buf[i];
+    }
     for (size_t e = in - (in % 256); e < in; ++e) {
         // Tail (only reachable if in % 256 != 0): fall back per element.
         const size_t s = e / 256;
@@ -571,8 +664,7 @@ void q5k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
             const __m256i bit_mask = _mm256_set1_epi32(1 << bitpos);
             const __m256i sixteen = _mm256_set1_epi32(16);
             for (int i = 0; i < 4; ++i) {
-                const __m256i is_set = _mm256_cmpeq_epi32(
-                    _mm256_and_si256(hb_all[i], bit_mask), bit_mask);
+                const __m256i is_set = _mm256_cmpeq_epi32(_mm256_and_si256(hb_all[i], bit_mask), bit_mask);
                 nib[i] = _mm256_add_epi32(nib[i], _mm256_and_si256(is_set, sixteen));
             }
             const size_t xo = k + sb * 32;
@@ -580,17 +672,26 @@ void q5k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
                 const __m256 w = _mm256_fmadd_ps(_mm256_cvtepi32_ps(nib[i]), D, M);
                 const __m256 xa = (i == 0) ? acc0 : (i == 1) ? acc1 : (i == 2) ? acc2 : acc3;
                 const __m256 r = _mm256_fmadd_ps(w, _mm256_loadu_ps(x + xo + 8 * i), xa);
-                if (i == 0) acc0 = r; else if (i == 1) acc1 = r; else if (i == 2) acc2 = r; else acc3 = r;
+                if (i == 0)
+                    acc0 = r;
+                else if (i == 1)
+                    acc1 = r;
+                else if (i == 2)
+                    acc2 = r;
+                else
+                    acc3 = r;
             }
         }
     }
     alignas(32) float buf[32];
-    _mm256_store_ps(buf + 0,  acc0);
-    _mm256_store_ps(buf + 8,  acc1);
+    _mm256_store_ps(buf + 0, acc0);
+    _mm256_store_ps(buf + 8, acc1);
     _mm256_store_ps(buf + 16, acc2);
     _mm256_store_ps(buf + 24, acc3);
     out = 0.0f;
-    for (int i = 0; i < 32; ++i) { out += buf[i]; }
+    for (int i = 0; i < 32; ++i) {
+        out += buf[i];
+    }
 }
 
 #endif  // AVX2
@@ -601,10 +702,11 @@ void q5k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
 // accumulated lane-wise into a float accumulator scaled by (d_w * d_x).
 // Q4_0 needs -8*sum(x_q) correction per block; Q4_1 needs +m*sum(x_q) term.
 
-struct XQuant {
-    std::vector<int8_t> q;   // in bytes, in%32==0
-    std::vector<float> d;    // per-block activation scale
-    std::vector<float> c;    // per-block d * sum(x_q)  (for corrections)
+struct XQuant
+{
+    std::vector<int8_t> q;  // in bytes, in%32==0
+    std::vector<float> d;   // per-block activation scale
+    std::vector<float> c;   // per-block d * sum(x_q)  (for corrections)
 };
 
 #if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
@@ -643,7 +745,9 @@ void quantize_x_q8_avx2(const float *x, size_t in, XQuant &xq)
         alignas(32) float mb[8];
         _mm256_store_ps(mb, mx);
         float amax = mb[0];
-        for (int i = 1; i < 8; ++i) { amax = std::max(amax, mb[i]); }
+        for (int i = 1; i < 8; ++i) {
+            amax = std::max(amax, mb[i]);
+        }
         const float d = (amax > 1e-20F) ? (amax / 127.0F) : 1.0F;
         const __m256 id = _mm256_set1_ps(1.0F / d);
         __m256i q0 = _mm256_cvtps_epi32(_mm256_mul_ps(m0, id));
@@ -651,8 +755,7 @@ void quantize_x_q8_avx2(const float *x, size_t in, XQuant &xq)
         __m256i q2 = _mm256_cvtps_epi32(_mm256_mul_ps(m2, id));
         __m256i q3 = _mm256_cvtps_epi32(_mm256_mul_ps(m3, id));
         // sum of quantized values
-        const float xs = hsum256_epi32(_mm256_add_epi32(
-            _mm256_add_epi32(q0, q1), _mm256_add_epi32(q2, q3)));
+        const float xs = hsum256_epi32(_mm256_add_epi32(_mm256_add_epi32(q0, q1), _mm256_add_epi32(q2, q3)));
         // pack 4x epi32x8 -> 32 x i8, in order
         __m128i p0 = _mm_packs_epi32(_mm256_castsi256_si128(q0), _mm256_extracti128_si256(q0, 1));
         __m128i p1 = _mm_packs_epi32(_mm256_castsi256_si128(q1), _mm256_extracti128_si256(q1, 1));
@@ -683,7 +786,7 @@ void q40i_row_avx2(const uint8_t *row, size_t in, const XQuant &xq, float &out)
         const __m128i qs = _mm_loadu_si128(reinterpret_cast<const __m128i *>(blk + 2));
         const __m128i lo = _mm_and_si128(qs, _mm_set1_epi8(0x0F));
         const __m128i hi = _mm_and_si128(_mm_srli_epi16(qs, 4), _mm_set1_epi8(0x0F));
-        const __m256i w = _mm256_set_m128i(hi, lo);   // [lo|hi] = 32 u8 weights
+        const __m256i w = _mm256_set_m128i(hi, lo);  // [lo|hi] = 32 u8 weights
         const __m256i xqv = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(xq.q.data() + b * 32));
         const __m256i prod = _mm256_madd_epi16(_mm256_maddubs_epi16(w, xqv), ones);
         const __m256 sc = _mm256_set1_ps(dw * xq.d[b]);
@@ -794,7 +897,9 @@ void q40i_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out
     _mm256_store_ps(buf, acc0);
     _mm256_store_ps(buf + 8, acc1);
     float sum = 0.0F;
-    for (int i = 0; i < 16; ++i) { sum += buf[i]; }
+    for (int i = 0; i < 16; ++i) {
+        sum += buf[i];
+    }
     if (b < nb) {
         sum += q40i_blk_tail_avx2(row + b * row_b, xq, b);
     }
@@ -843,7 +948,9 @@ void q41i_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out
     _mm256_store_ps(buf, acc0);
     _mm256_store_ps(buf + 8, acc1);
     float sum = 0.0F;
-    for (int i = 0; i < 16; ++i) { sum += buf[i]; }
+    for (int i = 0; i < 16; ++i) {
+        sum += buf[i];
+    }
     if (b < nb) {
         sum += q41i_blk_tail_avx2(row + b * row_b, xq, b);
     }
@@ -884,9 +991,13 @@ inline void i8x16_to_f32x4(int8x16_t v, float32x4_t out[4])
 inline float neon_hsum8(const float32x4_t acc[8])
 {
     alignas(16) float buf[32];
-    for (int i = 0; i < 8; ++i) { vst1q_f32(buf + i * 4, acc[i]); }
+    for (int i = 0; i < 8; ++i) {
+        vst1q_f32(buf + i * 4, acc[i]);
+    }
     float s = 0.0f;
-    for (int i = 0; i < 32; ++i) { s += buf[i]; }
+    for (int i = 0; i < 32; ++i) {
+        s += buf[i];
+    }
     return s;
 }
 
@@ -894,7 +1005,9 @@ void q40_row_neon(const uint8_t *row, size_t in, const float *x, float &out)
 {
     const size_t full_blocks = in / 32;
     float32x4_t acc[8];
-    for (int i = 0; i < 8; ++i) { acc[i] = vdupq_n_f32(0.0f); }
+    for (int i = 0; i < 8; ++i) {
+        acc[i] = vdupq_n_f32(0.0f);
+    }
     const uint8x16_t nib_lo = vdupq_n_u8(0x0F);
     const float32x4_t eight = vdupq_n_f32(8.0f);
 
@@ -904,7 +1017,7 @@ void q40_row_neon(const uint8_t *row, size_t in, const float *x, float &out)
         const float32x4_t d = vdupq_n_f32(fp16_to_fp32_fast(load_fp16(blk)));
         const uint8x16_t q = vld1q_u8(blk + 2);
         float32x4_t w[8];
-        u8x16_to_f32x4(vandq_u8(q, nib_lo), w);                    // weights 0..15
+        u8x16_to_f32x4(vandq_u8(q, nib_lo), w);                     // weights 0..15
         u8x16_to_f32x4(vandq_u8(vshrq_n_u8(q, 4), nib_lo), w + 4);  // weights 16..31
         for (int i = 0; i < 8; ++i) {
             const float32x4_t wf = vmulq_f32(vsubq_f32(w[i], eight), d);
@@ -922,7 +1035,9 @@ void q41_row_neon(const uint8_t *row, size_t in, const float *x, float &out)
 {
     const size_t full_blocks = in / 32;
     float32x4_t acc[8];
-    for (int i = 0; i < 8; ++i) { acc[i] = vdupq_n_f32(0.0f); }
+    for (int i = 0; i < 8; ++i) {
+        acc[i] = vdupq_n_f32(0.0f);
+    }
     const uint8x16_t nib_lo = vdupq_n_u8(0x0F);
 
     size_t k = 0;
@@ -950,7 +1065,9 @@ void q80_row_neon(const uint8_t *row, size_t in, const float *x, float &out)
 {
     const size_t full_blocks = in / 32;
     float32x4_t acc[8];
-    for (int i = 0; i < 8; ++i) { acc[i] = vdupq_n_f32(0.0f); }
+    for (int i = 0; i < 8; ++i) {
+        acc[i] = vdupq_n_f32(0.0f);
+    }
 
     size_t k = 0;
     for (size_t b = 0; b < full_blocks; ++b, k += 32) {
@@ -958,7 +1075,7 @@ void q80_row_neon(const uint8_t *row, size_t in, const float *x, float &out)
         const float32x4_t d = vdupq_n_f32(fp16_to_fp32_fast(load_fp16(blk)));
         float32x4_t w[8];
         i8x16_to_f32x4(vld1q_s8(reinterpret_cast<const int8_t *>(blk + 2)), w);       // qs[0..15]
-        i8x16_to_f32x4(vld1q_s8(reinterpret_cast<const int8_t *>(blk + 18)), w + 4); // qs[16..31]
+        i8x16_to_f32x4(vld1q_s8(reinterpret_cast<const int8_t *>(blk + 18)), w + 4);  // qs[16..31]
         for (int i = 0; i < 8; ++i) {
             const float32x4_t wf = vmulq_f32(w[i], d);
             acc[i] = vfmaq_f32(acc[i], wf, vld1q_f32(x + k + i * 4));
@@ -1062,8 +1179,8 @@ void q5k_row_scalar(const uint8_t *row, size_t in, const float *x, float &out)
         const uint8_t *ql = blk + 48;
         const size_t base = s * 256;
         for (int sb = 0; sb < 8; ++sb) {
-            const int g = sb >> 1;      // 64-weight group (0..3)
-            const bool hi = (sb & 1);   // high nibble within group
+            const int g = sb >> 1;     // 64-weight group (0..3)
+            const bool hi = (sb & 1);  // high nibble within group
             uint8_t sc, m;
             if (sb < 4) {
                 sc = scales[sb] & 63;
@@ -1119,40 +1236,62 @@ RowFn pick_row_fn(quant::QuantType type)
     }();
     if (info.has_avx512f && !no_avx512) {
         switch (type) {
-            case quant::QuantType::Q4_0: return q40_row_avx512;
-            case quant::QuantType::Q4_1: return q41_row_avx512;
-            case quant::QuantType::Q8_0: return q80_row_avx512;
-            default: break;
+            case quant::QuantType::Q4_0:
+                return q40_row_avx512;
+            case quant::QuantType::Q4_1:
+                return q41_row_avx512;
+            case quant::QuantType::Q8_0:
+                return q80_row_avx512;
+            case quant::QuantType::Q4_K:
+                return q4k_row_avx512;
+            default:
+                break;
         }
     }
 #endif
 #if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
     if (info.has_avx2) {
         switch (type) {
-            case quant::QuantType::Q4_0: return q40_row_avx2;
-            case quant::QuantType::Q4_1: return q41_row_avx2;
-            case quant::QuantType::Q8_0: return q80_row_avx2;
-            case quant::QuantType::Q4_K: return q4k_row_avx2;
-            case quant::QuantType::Q5_K: return q5k_row_avx2;
-            default: break;
+            case quant::QuantType::Q4_0:
+                return q40_row_avx2;
+            case quant::QuantType::Q4_1:
+                return q41_row_avx2;
+            case quant::QuantType::Q8_0:
+                return q80_row_avx2;
+            case quant::QuantType::Q4_K:
+                return q4k_row_avx2;
+            case quant::QuantType::Q5_K:
+                return q5k_row_avx2;
+            default:
+                break;
         }
     }
 #endif
 #if defined(_M_ARM64) || defined(__ARM_NEON) || defined(__aarch64__)
     switch (type) {
-        case quant::QuantType::Q4_0: return q40_row_neon;
-        case quant::QuantType::Q4_1: return q41_row_neon;
-        case quant::QuantType::Q8_0: return q80_row_neon;
-        default: break;
+        case quant::QuantType::Q4_0:
+            return q40_row_neon;
+        case quant::QuantType::Q4_1:
+            return q41_row_neon;
+        case quant::QuantType::Q8_0:
+            return q80_row_neon;
+        default:
+            break;
     }
 #endif
     switch (type) {
-        case quant::QuantType::Q4_0: return q40_row_scalar;
-        case quant::QuantType::Q4_1: return q41_row_scalar;
-        case quant::QuantType::Q8_0: return q80_row_scalar;
-        case quant::QuantType::Q4_K: return q4k_row_scalar;
-        case quant::QuantType::Q5_K: return q5k_row_scalar;
-        default: return nullptr;
+        case quant::QuantType::Q4_0:
+            return q40_row_scalar;
+        case quant::QuantType::Q4_1:
+            return q41_row_scalar;
+        case quant::QuantType::Q8_0:
+            return q80_row_scalar;
+        case quant::QuantType::Q4_K:
+            return q4k_row_scalar;
+        case quant::QuantType::Q5_K:
+            return q5k_row_scalar;
+        default:
+            return nullptr;
     }
 }
 
@@ -1162,7 +1301,9 @@ RowFn pick_row_fn(quant::QuantType type)
 /// W is packed ggml-style rows [N][row_bytes]; x has `in` floats; y has `out` floats.
 void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
 {
-    if (!w.valid() || x == nullptr || y == nullptr) { return; }
+    if (!w.valid() || x == nullptr || y == nullptr) {
+        return;
+    }
     const size_t K = w.in;
     const size_t N = w.out;
 
@@ -1181,9 +1322,8 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
         return std::getenv("SERIUS_INTDOT") != nullptr;
 #endif
     }();
-    if (yes_intdot &&
-        (w.type == quant::QuantType::Q4_0 || w.type == quant::QuantType::Q4_1) &&
-        (K % 32) == 0 && K >= 32) {
+    if (yes_intdot && (w.type == quant::QuantType::Q4_0 || w.type == quant::QuantType::Q4_1) && (K % 32) == 0 &&
+        K >= 32) {
         const auto info = get_cpu_info();
         using IRowFn = void (*)(const uint8_t *, size_t, const XQuant &, float &);
         IRowFn ifn = nullptr;
@@ -1202,7 +1342,9 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
         }
 #endif
         if (ifn == nullptr) {
-            if (!info.has_avx2) { goto fp_path; }
+            if (!info.has_avx2) {
+                goto fp_path;
+            }
             ifn = (w.type == quant::QuantType::Q4_0) ? q40i_row_avx2 : q41i_row_avx2;
         }
         {
@@ -1210,7 +1352,7 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
             quantize_x_q8_avx2(x, K, xq);
             const size_t row_bytes = w.row_bytes();
             const uint8_t *base = w.bytes.data();
-            #pragma omp parallel for schedule(static) if (N >= 256)
+#pragma omp parallel for schedule(static) if (N >= 256)
             for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
                 const size_t r = static_cast<size_t>(j);
                 float sum = 0.0F;
@@ -1224,7 +1366,9 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
 
 fp_path:
     RowFn fn = pick_row_fn(w.type);
-    if (fn == nullptr) { return; }
+    if (fn == nullptr) {
+        return;
+    }
 
     const size_t row_bytes = w.row_bytes();
     const uint8_t *base = w.bytes.data();
@@ -1233,12 +1377,11 @@ fp_path:
 #if defined(__AVX512F__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
     if (fn == q40_row_avx512) {
         const int64_t pairs = static_cast<int64_t>(N / 2);
-        #pragma omp parallel for schedule(static) if (pairs >= 128)
+#pragma omp parallel for schedule(static) if (pairs >= 128)
         for (int64_t p = 0; p < pairs; ++p) {
             const size_t r0 = static_cast<size_t>(2 * p);
             const size_t r1 = r0 + 1;
-            q40_row2_avx512(base + r0 * row_bytes, base + r1 * row_bytes,
-                            K, x, y[r0], y[r1]);
+            q40_row2_avx512(base + r0 * row_bytes, base + r1 * row_bytes, K, x, y[r0], y[r1]);
         }
         if ((N & 1) != 0) {
             const size_t r = N - 1;
@@ -1250,7 +1393,7 @@ fp_path:
     }
 #endif
 
-    #pragma omp parallel for schedule(static) if (N >= 256)
+#pragma omp parallel for schedule(static) if (N >= 256)
     for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
         const size_t r = static_cast<size_t>(j);
         float sum = 0.0f;
@@ -1264,11 +1407,13 @@ fp_path:
 /// subsequent matvec_q hits L3 instead of paying full DRAM latency.
 void prefetch_quant_weight(const quant::QuantWeight &w)
 {
-    if (!w.valid()) { return; }
+    if (!w.valid()) {
+        return;
+    }
     const uint8_t *p = w.bytes.data();
     const size_t n = w.bytes.size();
     const int64_t lines = static_cast<int64_t>((n + 63) / 64);
-    #pragma omp parallel for schedule(static) if (lines >= 256)
+#pragma omp parallel for schedule(static) if (lines >= 256)
     for (int64_t i = 0; i < lines; ++i) {
         _mm_prefetch(reinterpret_cast<const char *>(p) + i * 64, _MM_HINT_T0);
     }

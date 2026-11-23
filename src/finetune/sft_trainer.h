@@ -16,21 +16,20 @@ namespace finetune {
 struct SFTTrainerConfig
 {
     size_t epochs = 1;
-    size_t max_steps = 0;              // 0 = run until end of epochs * dataset
+    size_t max_steps = 0;  // 0 = run until end of epochs * dataset
     float learning_rate = 1e-4f;
     float grad_clip = 1.0f;
     size_t gradient_accumulation_steps = 1;
     size_t log_interval = 10;
     bool verbose = false;
-    std::string checkpoint_dir = "";   // Empty = no checkpointing
-    size_t checkpoint_interval = 0;    // 0 = disabled
+    std::string checkpoint_dir = "";  // Empty = no checkpointing
+    size_t checkpoint_interval = 0;   // 0 = disabled
 };
 
 class SFTTrainer
 {
-public:
-    SFTTrainer(model::TransformerModel &model,
-               optim::AdamW &optimizer,
+   public:
+    SFTTrainer(model::TransformerModel &model, optim::AdamW &optimizer,
                const SFTTrainerConfig &config = SFTTrainerConfig());
     ~SFTTrainer() = default;
 
@@ -67,7 +66,7 @@ public:
     const std::vector<float> &loss_history() const noexcept { return loss_history_; }
     const SFTTrainerConfig &config() const noexcept { return config_; }
 
-private:
+   private:
     model::TransformerModel &model_;
     optim::AdamW &optimizer_;
     SFTTrainerConfig config_;
@@ -77,8 +76,7 @@ private:
     std::unordered_set<core::autograd::Node *> model_params_set_;
 
     void refresh_model_params_set();
-    void cleanup_graph(core::autograd::Node *loss_node,
-                       core::autograd::Node *input_node,
+    void cleanup_graph(core::autograd::Node *loss_node, core::autograd::Node *input_node,
                        core::autograd::Node *target_node) const;
 };
 

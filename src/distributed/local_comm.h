@@ -1,10 +1,10 @@
 #pragma once
 
-#include "comm.h"
-
 #include <condition_variable>
 #include <mutex>
 #include <vector>
+
+#include "comm.h"
 
 namespace serius {
 namespace distributed {
@@ -36,12 +36,10 @@ class ProcessGroup
     void broadcast(float *buffer, size_t count, int root, int rank);
 
     /// AllGather: each rank submits send_count floats, receives all concatenated.
-    void all_gather(const float *send_buf, size_t send_count,
-                    float *recv_buf, int rank);
+    void all_gather(const float *send_buf, size_t send_count, float *recv_buf, int rank);
 
     /// ReduceScatter: reduce then scatter.
-    void reduce_scatter(const float *send_buf, float *recv_buf,
-                        size_t recv_count, ReduceOp reduce_op, int rank);
+    void reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp reduce_op, int rank);
 
     /// Point-to-point send/recv using internal mailboxes.
     void send(const float *buffer, size_t count, int src, int dst);
@@ -56,9 +54,9 @@ class ProcessGroup
     std::condition_variable cv_;
 
     // Staging area for collective ops
-    int arrived_ = 0;              // Number of ranks that have arrived
-    int departed_ = 0;             // Number of ranks that have departed
-    int generation_ = 0;           // Incremented after each collective completes
+    int arrived_ = 0;                               // Number of ranks that have arrived
+    int departed_ = 0;                              // Number of ranks that have departed
+    int generation_ = 0;                            // Incremented after each collective completes
     size_t expected_count_ = 0;                     // Expected count for consistency check
     std::vector<std::vector<float>> rank_buffers_;  // Per-rank staging data
     std::vector<float> result_buffer_;              // Reduced result

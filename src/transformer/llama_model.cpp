@@ -1,8 +1,8 @@
 #include "llama_model.h"
 
 #include <cmath>
-#include <vector>
 #include <string>
+#include <vector>
 
 #include "../autograd/ops.h"
 
@@ -14,9 +14,11 @@ using core::autograd::Node;
 
 namespace {
 constexpr float ATTENTION_MASK_VAL = -1e9F;
-} // namespace
+}  // namespace
 
 using core::autograd::ops::add;
+using core::autograd::ops::contiguous;
+using core::autograd::ops::fused_masked_softmax;
 using core::autograd::ops::matmul;
 using core::autograd::ops::mul_scalar;
 using core::autograd::ops::reshape;
@@ -24,8 +26,6 @@ using core::autograd::ops::rmsnorm;
 using core::autograd::ops::rope;
 using core::autograd::ops::silu;
 using core::autograd::ops::transpose;
-using core::autograd::ops::contiguous;
-using core::autograd::ops::fused_masked_softmax;
 
 namespace {
 
@@ -84,9 +84,15 @@ Node *LLaMABlock::forward(Node *input, size_t pos_offset) const
     Node *query_node = matmul(normed, q_proj.get());
     Node *key_node = matmul(normed, k_proj.get());
     Node *value_node = matmul(normed, v_proj.get());
-    if (q_bias) { query_node = add(query_node, q_bias.get()); }
-    if (k_bias) { key_node = add(key_node, k_bias.get()); }
-    if (v_bias) { value_node = add(value_node, v_bias.get()); }
+    if (q_bias) {
+        query_node = add(query_node, q_bias.get());
+    }
+    if (k_bias) {
+        key_node = add(key_node, k_bias.get());
+    }
+    if (v_bias) {
+        value_node = add(value_node, v_bias.get());
+    }
 
     RoPEResult rope_out = rope(query_node, key_node, head_dim_, rope_theta_, pos_offset);
     query_node = rope_out.queries;
@@ -155,9 +161,15 @@ void LLaMABlock::set_device(hal::DeviceType device) const
     q_proj->data.set_device(device);
     k_proj->data.set_device(device);
     v_proj->data.set_device(device);
-    if (q_bias) { q_bias->data.set_device(device); }
-    if (k_bias) { k_bias->data.set_device(device); }
-    if (v_bias) { v_bias->data.set_device(device); }
+    if (q_bias) {
+        q_bias->data.set_device(device);
+    }
+    if (k_bias) {
+        k_bias->data.set_device(device);
+    }
+    if (v_bias) {
+        v_bias->data.set_device(device);
+    }
     o_proj->data.set_device(device);
     post_attention_layernorm_weight->data.set_device(device);
     gate_proj->data.set_device(device);
@@ -167,12 +179,8 @@ void LLaMABlock::set_device(hal::DeviceType device) const
 
 // --- LLaMAModel ---
 
-LLaMAModel::LLaMAModel(const LLamaConfig &config, const distributed::DistributedTopology &topology) 
-    : config_(config), 
-      topology_(topology),
-      embed_tokens_(nullptr),
-      norm_weight_(nullptr),
-      lm_head_(nullptr)
+LLaMAModel::LLaMAModel(const LLamaConfig &config, const distributed::DistributedTopology &topology)
+    : config_(config), topology_(topology), embed_tokens_(nullptr), norm_weight_(nullptr), lm_head_(nullptr)
 {
     const size_t pp_size = static_cast<size_t>(topology.pp_size);
     const size_t pp_rank = static_cast<size_t>(topology.pp_rank);
@@ -180,7 +188,7 @@ LLaMAModel::LLaMAModel(const LLamaConfig &config, const distributed::Distributed
 
     const size_t start_layer = pp_rank * layers_per_stage;
     size_t end_layer = start_layer + layers_per_stage;
-    if (pp_rank == pp_size - 1) { // Final stage takes any remainder
+    if (pp_rank == pp_size - 1) {  // Final stage takes any remainder
         end_layer = config.num_hidden_layers;
     }
 
@@ -206,7 +214,7 @@ core::autograd::Node *LLaMAModel::forward(core::autograd::Node *token_ids) const
     // Auto-grad pipeline parallelism is not officially supported by this test forward layer yet.
     // Use llama_forward_inference for real usage.
     using namespace core::autograd::ops;
-    
+
     // Fallback logic for single stage to keep tests passing:
     const core::Tensor &ids_tensor = token_ids->data;
     const size_t seq_len = ids_tensor.size();
@@ -222,13 +230,13 @@ core::autograd::Node *LLaMAModel::forward(core::autograd::Node *token_ids) const
             }
         }
     }
-    
+
     Node *hidden_node = new Node(std::move(hidden_states));
     hidden_node->requires_grad = false;
     for (size_t layer_idx = 0; layer_idx < layers_.size(); ++layer_idx) {
         hidden_node = layers_[layer_idx]->forward(hidden_node, 0);
     }
-        
+
     if (norm_weight_ != nullptr && lm_head_ != nullptr) {
         hidden_node = rmsnorm(hidden_node, norm_weight_.get(), config_.rms_norm_eps);
         return matmul(hidden_node, lm_head_.get());

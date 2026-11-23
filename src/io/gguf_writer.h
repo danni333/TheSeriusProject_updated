@@ -27,9 +27,7 @@ struct GGUFWritOptions
 ///                 passed directly — its parent dir is used).
 /// @param out_path Destination .gguf path.
 /// @return true on success.
-bool write_hf_dir_to_gguf(const std::string &hf_dir,
-                          const std::string &out_path,
-                          const GGUFWritOptions &opt = {});
+bool write_hf_dir_to_gguf(const std::string &hf_dir, const std::string &out_path, const GGUFWritOptions &opt = {});
 
 }  // namespace io
 }  // namespace serius

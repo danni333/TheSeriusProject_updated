@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 #include "semantic_hash.h"
 
 namespace serius {

@@ -144,9 +144,10 @@ void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
 
 #ifdef SERIUS_USE_CUDA
     hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
-    bool any_on_gpu = (A.is_gpu_dirty() || B.is_gpu_dirty() || C.is_gpu_dirty() || A.location() == Tensor::DataLocation::GPU);
+    bool any_on_gpu =
+        (A.is_gpu_dirty() || B.is_gpu_dirty() || C.is_gpu_dirty() || A.location() == Tensor::DataLocation::GPU);
     size_t problem_size = A.shape()[0] * B.shape()[1] * A.shape()[1];
-    
+
     // Non-Float32 dtypes have no CPU kernel: always prefer CUDA when the
     // backend is available (same rule as matvec/batched_matmul below).
     if (backend && backend->is_available() &&
@@ -154,7 +155,7 @@ void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
         A.syncToDevice();
         B.syncToDevice();
         C.syncToDevice();
-        
+
         // A CPU stream must never reach the CUDA path as a cudaStream_t.
         void *cuda_stream = hal::is_cpu_stream(stream) ? nullptr : stream;
         matmul_cuda(A.raw_data_gpu(), B.raw_data_gpu(), C.raw_data_gpu(), A.shape()[0], B.shape()[1], A.shape()[1],
@@ -162,7 +163,7 @@ void matmul(const Tensor &A, const Tensor &B, Tensor &C, void *stream)
         C.mark_dirty(Tensor::DataLocation::GPU);
         return;
     }
-    
+
     // Fallback to CPU: ensure host data is current
     A.syncToHost();
     B.syncToHost();
@@ -214,7 +215,8 @@ void matvec(const Tensor &mat_a, const Tensor &vec_x, Tensor &vec_y)
         vec_x.syncToDevice();
         vec_y.syncToDevice();
 
-        matmul_cuda(mat_a.raw_data_gpu(), vec_x.raw_data_gpu(), vec_y.raw_data_gpu(), rows_m, 1, inner_k, lda, 1, 1, mat_a.dtype());
+        matmul_cuda(mat_a.raw_data_gpu(), vec_x.raw_data_gpu(), vec_y.raw_data_gpu(), rows_m, 1, inner_k, lda, 1, 1,
+                    mat_a.dtype());
 
         vec_y.mark_dirty(Tensor::DataLocation::GPU);
         return;
@@ -277,12 +279,11 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
 #ifdef SERIUS_USE_CUDA
     size_t total_flops = 2 * batch_size * rows_m * cols_n * inner_k;
     hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
-    
+
     bool any_on_gpu = (mat_a.is_gpu_dirty() || mat_b.is_gpu_dirty() || mat_c.is_gpu_dirty());
 
-    if (backend && backend->is_available() && 
+    if (backend && backend->is_available() &&
         (total_flops > 1000000 || mat_a.dtype() != hal::DType::Float32 || any_on_gpu)) {
-        
         // CUDA kernels for matmul currently assume row-major layout with inner stride 1.
         // We ensure contiguity here. NOTE: `cond ? mat_a : mat_a.contiguous()`
         // yields a prvalue and would deep-copy the tensor (cudaMalloc + sync
@@ -290,8 +291,14 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
         Tensor a_storage, b_storage;
         const Tensor *a_ptr = &mat_a;
         const Tensor *b_ptr = &mat_b;
-        if (!mat_a.is_contiguous()) { a_storage = mat_a.contiguous(); a_ptr = &a_storage; }
-        if (!mat_b.is_contiguous()) { b_storage = mat_b.contiguous(); b_ptr = &b_storage; }
+        if (!mat_a.is_contiguous()) {
+            a_storage = mat_a.contiguous();
+            a_ptr = &a_storage;
+        }
+        if (!mat_b.is_contiguous()) {
+            b_storage = mat_b.contiguous();
+            b_ptr = &b_storage;
+        }
         const Tensor &a_cont = *a_ptr;
         const Tensor &b_cont = *b_ptr;
 
@@ -308,8 +315,9 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
         size_t stride_c = mat_c.strides()[0];
 
         void *cuda_stream = hal::is_cpu_stream(stream) ? nullptr : stream;
-        batched_matmul_cuda(a_cont.raw_data_gpu(), b_cont.raw_data_gpu(), mat_c.raw_data_gpu(), batch_size, rows_m, cols_n, inner_k,
-                            lda_c, ldb_c, ldc_c, stride_a, stride_b, stride_c, a_cont.dtype(), cuda_stream);
+        batched_matmul_cuda(a_cont.raw_data_gpu(), b_cont.raw_data_gpu(), mat_c.raw_data_gpu(), batch_size, rows_m,
+                            cols_n, inner_k, lda_c, ldb_c, ldc_c, stride_a, stride_b, stride_c, a_cont.dtype(),
+                            cuda_stream);
 
         mat_c.mark_dirty(Tensor::DataLocation::GPU);
         return;
@@ -326,7 +334,7 @@ void batched_matmul(const Tensor &mat_a, const Tensor &mat_b, Tensor &mat_c, voi
     }
 
     auto run_cpu = [&mat_a, &mat_b, &mat_c, batch_size, rows_m, cols_n, inner_k, lda, ldb, ldc, info]() {
-        #pragma omp parallel for
+#pragma omp parallel for
         for (int64_t b = 0; b < static_cast<int64_t>(batch_size); ++b) {
             size_t batch_idx = static_cast<size_t>(b);
             const float *a_ptr = mat_a.data() + (batch_idx * mat_a.strides()[0]);

@@ -10,27 +10,38 @@
 namespace serius {
 namespace infer {
 
-struct KVCacheLayer {
+struct KVCacheLayer
+{
     KVCacheLayer() : k({0, 0}), v({0, 0}), current_len(0) {}
-    core::Tensor k; // [max_seq_len, kv_dim]
-    core::Tensor v; // [max_seq_len, kv_dim]
+    core::Tensor k;  // [max_seq_len, kv_dim]
+    core::Tensor v;  // [max_seq_len, kv_dim]
     // FP16 KV cache (CPU decode path): halves DRAM traffic vs fp32.
     std::vector<uint16_t> k16, v16;  // [max_seq_len, kv_dim]
     size_t current_len = 0;
 };
 
-struct KVCache {
+struct KVCache
+{
     KVCache()
-        : scratch_h({0, 0}), scratch_normed({0, 0}), scratch_q({0, 0}),
-          scratch_k({0, 0}), scratch_v({0, 0}), scratch_attn_concat({0, 0}),
-          scratch_mlp_gate({0, 0}), scratch_mlp_up({0, 0}), scratch_mlp_down({0, 0}),
-          instance_id(next_instance_id()) {}
+        : scratch_h({0, 0}),
+          scratch_normed({0, 0}),
+          scratch_q({0, 0}),
+          scratch_k({0, 0}),
+          scratch_v({0, 0}),
+          scratch_attn_concat({0, 0}),
+          scratch_mlp_gate({0, 0}),
+          scratch_mlp_up({0, 0}),
+          scratch_mlp_down({0, 0}),
+          instance_id(next_instance_id())
+    {
+    }
 
     /// Unique per-instance id: stack/heap addresses get reused across turns,
     /// so pointer comparison alone can't detect a destroyed+recreated cache
     /// (the CUDA decode graph embeds raw KV pointers — a stale graph writes
     /// into freed/reused GPU memory and produces garbage tokens).
-    static uint64_t next_instance_id() {
+    static uint64_t next_instance_id()
+    {
         static std::atomic<uint64_t> counter{0};
         return ++counter;
     }
@@ -52,12 +63,13 @@ struct KVCache {
     core::Tensor scratch_mlp_gate;
     core::Tensor scratch_mlp_up;
     core::Tensor scratch_mlp_down;
-    std::vector<float> scratch_scores; // [n_heads * max_seq_len] for thread-safety
+    std::vector<float> scratch_scores;  // [n_heads * max_seq_len] for thread-safety
 
-    void clear() {
+    void clear()
+    {
         for (auto &l : layers) l.current_len = 0;
     }
-    
+
     bool empty() const { return layers.empty(); }
 };
 
@@ -69,15 +81,13 @@ struct KVCache {
 /// @return Logits tensor, shape [seq_len, vocab_size].
 ///         Empty tensor on non-last pipeline-parallel ranks (they only
 ///         forward hidden states; logits exist solely on the last rank).
-core::Tensor llama_forward_inference(const model::LLaMAModel &model,
-                                     const core::Tensor &token_ids,
+core::Tensor llama_forward_inference(const model::LLaMAModel &model, const core::Tensor &token_ids,
                                      KVCache *cache = nullptr);
 
 /// Same as llama_forward_inference but returns logits for the last position
 /// only, shape [1, vocab_size]. Cheaper on CUDA: skips the {seq_len, vocab}
 /// logits tensor and its host copy.
-core::Tensor llama_forward_inference_last(const model::LLaMAModel &model,
-                                          const core::Tensor &token_ids,
+core::Tensor llama_forward_inference_last(const model::LLaMAModel &model, const core::Tensor &token_ids,
                                           KVCache *cache = nullptr);
 
 /// Same but for a single token (optimized path for generation steps).
@@ -86,8 +96,7 @@ core::Tensor llama_forward_inference_last(const model::LLaMAModel &model,
 /// @param pos  Position offset for RoPE
 /// @param cache  Optional KV-cache to update and use
 /// @return Logits tensor, shape [1, vocab_size]
-core::Tensor llama_forward_single_token(const model::LLaMAModel &model,
-                                        int token_id, size_t pos,
+core::Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, size_t pos,
                                         KVCache *cache = nullptr);
 
 /// Offload a LLaMA model to the GPU: FP16 weights, transposed lm_head copies,
@@ -98,16 +107,17 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model);
 
 /// Whether a LLaMA model should be offloaded to the GPU.
 enum class LlamaGpuFit {
-    kFits,               ///< estimated footprint fits in free VRAM
-    kNoCuda,             ///< CUDA unavailable (compile-time or runtime)
-    kInsufficientVram,   ///< model needs more VRAM than is currently free
+    kFits,              ///< estimated footprint fits in free VRAM
+    kNoCuda,            ///< CUDA unavailable (compile-time or runtime)
+    kInsufficientVram,  ///< model needs more VRAM than is currently free
 };
 
 /// Plan for offloading `model` to the GPU: estimated footprint vs free VRAM.
-struct LlamaGpuPlan {
+struct LlamaGpuPlan
+{
     LlamaGpuFit fit = LlamaGpuFit::kNoCuda;
-    size_t need_bytes = 0;   ///< estimated GPU memory the offload will use
-    size_t free_bytes = 0;   ///< currently free VRAM (0 when unknown)
+    size_t need_bytes = 0;  ///< estimated GPU memory the offload will use
+    size_t free_bytes = 0;  ///< currently free VRAM (0 when unknown)
 };
 
 /// Estimate the GPU memory needed to offload this model (FP16 dense weights,
@@ -122,14 +132,15 @@ size_t estimate_llama_params(const model::LLaMAModel &model);
 
 /// User-facing GPU preference, shared by `serius serve` and `serius chat`.
 enum class LlamaGpuMode {
-    kAuto,   ///< plan from model size vs free VRAM (default)
-    kCpu,    ///< never touch the GPU
-    kCuda,   ///< require the GPU; warn and stay on CPU only if it cannot fit
+    kAuto,  ///< plan from model size vs free VRAM (default)
+    kCpu,   ///< never touch the GPU
+    kCuda,  ///< require the GPU; warn and stay on CPU only if it cannot fit
 };
 
 /// Outcome of resolve_llama_gpu: whether to offload plus a human-readable
 /// reason (logged by callers so the per-model decision is visible).
-struct LlamaGpuDecision {
+struct LlamaGpuDecision
+{
     bool use_gpu = false;
     LlamaGpuFit fit = LlamaGpuFit::kNoCuda;
     size_t need_bytes = 0;

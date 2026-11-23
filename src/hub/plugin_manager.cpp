@@ -1,7 +1,8 @@
 #include "plugin_manager.h"
 
-#include <algorithm>
 #include <spdlog/spdlog.h>
+
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -9,8 +10,8 @@
 
 #ifdef _WIN32
 #define NOMINMAX
-#include <windows.h>
 #include <psapi.h>
+#include <windows.h>
 #else
 #include <sys/resource.h>
 #include <unistd.h>
@@ -221,7 +222,7 @@ double PluginManager::get_process_cpu_usage()
 {
     static auto last_process_time = std::chrono::steady_clock::now();
     static double last_cpu_time = 0.0;
-    
+
     auto current_time = std::chrono::steady_clock::now();
     double cpu_time = 0.0;
 
@@ -240,7 +241,7 @@ double PluginManager::get_process_cpu_usage()
     struct rusage usage;
     if (getrusage(RUSAGE_SELF, &usage) == 0) {
         cpu_time = static_cast<double>(usage.ru_utime.tv_sec * 1000000 + usage.ru_utime.tv_usec +
-                                      usage.ru_stime.tv_sec * 1000000 + usage.ru_stime.tv_usec);
+                                       usage.ru_stime.tv_sec * 1000000 + usage.ru_stime.tv_usec);
     }
 #endif
 

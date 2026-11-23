@@ -50,8 +50,7 @@ std::string MCPClient::format_tools_for_prompt(const std::vector<MCPTool> &tools
     std::ostringstream oss;
     oss << "Available tools:\n";
     for (const auto &t : tools) {
-        oss << "- " << t.name << ": " << t.description
-            << " | Args: " << t.input_schema.dump() << "\n";
+        oss << "- " << t.name << ": " << t.description << " | Args: " << t.input_schema.dump() << "\n";
     }
     return oss.str();
 }

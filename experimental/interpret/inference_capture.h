@@ -7,8 +7,8 @@
 #include <utility>
 #include <vector>
 
-#include "../infer/activation_hook.h"
-#include "../tensor/tensor.h"
+#include "infer/activation_hook.h"
+#include "tensor/tensor.h"
 
 namespace serius {
 namespace model {

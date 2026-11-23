@@ -1,6 +1,7 @@
 #pragma once
 
 #include <httplib.h>
+
 #include <string>
 
 namespace serius {
@@ -12,4 +13,3 @@ void setup_static_routes(httplib::Server &server, const std::string &ui_dir = "u
 
 }  // namespace server
 }  // namespace serius
-

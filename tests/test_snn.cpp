@@ -3,10 +3,10 @@
 #include <cmath>
 #include <vector>
 
-#include "../src/neuro/encoder.h"
-#include "../src/neuro/event_engine.h"
-#include "../src/neuro/lif_neuron.h"
-#include "../src/neuro/spiking_layer.h"
+#include "neuro/encoder.h"
+#include "neuro/event_engine.h"
+#include "neuro/lif_neuron.h"
+#include "neuro/spiking_layer.h"
 
 using namespace serius::neuro;
 using serius::core::Tensor;

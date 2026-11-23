@@ -1,12 +1,13 @@
 // Prompt building, generation and SSE streaming helpers for the HTTP
 // server — split from server.cpp. Internal helpers shared with the routes
 // are declared in server_internal.h.
-#include "server_internal.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
 #include <random>
+
+#include "server_internal.h"
 namespace serius {
 namespace server {
 /// Decode one UTF-8 sequence at p[0..n).
@@ -25,11 +26,14 @@ int utf8_seq_len(const char *p, size_t n)
         return 1;
     }
     if ((u[0] & 0xE0) == 0xC0) {
-        len = 2; cp = u[0] & 0x1F;
+        len = 2;
+        cp = u[0] & 0x1F;
     } else if ((u[0] & 0xF0) == 0xE0) {
-        len = 3; cp = u[0] & 0x0F;
+        len = 3;
+        cp = u[0] & 0x0F;
     } else if ((u[0] & 0xF8) == 0xF0) {
-        len = 4; cp = u[0] & 0x07;
+        len = 4;
+        cp = u[0] & 0x07;
     } else {
         return 0;
     }
@@ -47,8 +51,7 @@ int utf8_seq_len(const char *p, size_t n)
         }
         cp = (cp << 6) | (u[j] & 0x3F);
     }
-    if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
-        (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
+    if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) || (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
         (cp >= 0xD800 && cp <= 0xDFFF)) {
         return 0;
     }
@@ -174,8 +177,7 @@ std::string message_text(const nlohmann::json &msg)
 /// models whose metadata eos differs.
 bool is_stop_token(const BPETokenizer &tokenizer, int next_id, const std::string &tok_str)
 {
-    return next_id == static_cast<int>(tokenizer.eos_id()) ||
-           tok_str == "<|im_end|>";
+    return next_id == static_cast<int>(tokenizer.eos_id()) || tok_str == "<|im_end|>";
 }
 
 size_t common_prefix_len(const std::vector<TokenId> &a, const std::vector<TokenId> &b)
@@ -203,9 +205,7 @@ void truncate_kv_cache(infer::KVCache &cache, size_t len)
 /// path is disabled while it produces degenerate output, and the
 /// single-token path dispatches to the CUDA decode graph for GPU models.
 /// Returns the logits row for the last prompt position.
-core::Tensor prefill_llama(const model::LLaMAModel &model,
-                           const std::vector<TokenId> &ids,
-                           infer::KVCache &cache,
+core::Tensor prefill_llama(const model::LLaMAModel &model, const std::vector<TokenId> &ids, infer::KVCache &cache,
                            std::vector<TokenId> *kv_ids)
 {
     size_t prefix = 0;
@@ -224,9 +224,7 @@ core::Tensor prefill_llama(const model::LLaMAModel &model,
     return last_logits;
 }
 
-bool prompt_exceeds_context(const model::LLaMAModel &model,
-                            BPETokenizer &tokenizer,
-                            const std::string &prompt,
+bool prompt_exceeds_context(const model::LLaMAModel &model, BPETokenizer &tokenizer, const std::string &prompt,
                             size_t max_new)
 {
     const size_t ctx = model.config().max_position_embeddings;
@@ -294,14 +292,9 @@ std::string build_chat_prompt(const nlohmann::json &body, bool chatml)
     return prompt;
 }
 
-GenerationResult generate_llama(const model::LLaMAModel &model,
-                                BPETokenizer &tokenizer,
-                                const std::string &prompt,
-                                size_t max_new_tokens,
-                                const infer::Sampler &sampler,
-                                infer::KVCache &cache,
-                                InferenceMetrics *metrics,
-                                std::vector<TokenId> *kv_ids)
+GenerationResult generate_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const std::string &prompt,
+                                size_t max_new_tokens, const infer::Sampler &sampler, infer::KVCache &cache,
+                                InferenceMetrics *metrics, std::vector<TokenId> *kv_ids)
 {
     GenerationResult res;
     std::vector<TokenId> ids = tokenizer.encode(prompt);
@@ -348,17 +341,10 @@ GenerationResult generate_llama(const model::LLaMAModel &model,
     return res;
 }
 
-void stream_llama(const model::LLaMAModel &model,
-                  BPETokenizer &tokenizer,
-                  const std::string &prompt,
-                  size_t max_new_tokens,
-                  const infer::Sampler &sampler,
-                  infer::KVCache &cache,
-                  const std::string &req_id,
-                  const std::string &model_name,
-                  httplib::DataSink &sink,
-                  InferenceMetrics *metrics,
-                  std::vector<TokenId> *kv_ids)
+void stream_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const std::string &prompt,
+                  size_t max_new_tokens, const infer::Sampler &sampler, infer::KVCache &cache,
+                  const std::string &req_id, const std::string &model_name, httplib::DataSink &sink,
+                  InferenceMetrics *metrics, std::vector<TokenId> *kv_ids)
 {
     std::vector<TokenId> ids = tokenizer.encode(prompt);
     if (ids.empty() || ids[0] != tokenizer.bos_id()) {
@@ -373,12 +359,7 @@ void stream_llama(const model::LLaMAModel &model,
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{
-            {"index", 0},
-            {"delta", {{"role", "assistant"}}},
-            {"finish_reason", nullptr}
-        }}}
-    };
+        {"choices", {{{"index", 0}, {"delta", {{"role", "assistant"}}}, {"finish_reason", nullptr}}}}};
     std::string intro_str = "data: " + intro.dump() + "\n\n";
     sink.write(intro_str.data(), intro_str.size());
 
@@ -411,12 +392,7 @@ void stream_llama(const model::LLaMAModel &model,
                 {"object", "chat.completion.chunk"},
                 {"created", created},
                 {"model", model_name},
-                {"choices", {{
-                    {"index", 0},
-                    {"delta", {{"content", emit}}},
-                    {"finish_reason", nullptr}
-                }}}
-            };
+                {"choices", {{{"index", 0}, {"delta", {{"content", emit}}}, {"finish_reason", nullptr}}}}};
             std::string chunk_str = "data: " + chunk.dump() + "\n\n";
             sink.write(chunk_str.data(), chunk_str.size());
         }
@@ -440,12 +416,7 @@ void stream_llama(const model::LLaMAModel &model,
             {"object", "chat.completion.chunk"},
             {"created", created},
             {"model", model_name},
-            {"choices", {{
-                {"index", 0},
-                {"delta", {{"content", tail}}},
-                {"finish_reason", nullptr}
-            }}}
-        };
+            {"choices", {{{"index", 0}, {"delta", {{"content", tail}}}, {"finish_reason", nullptr}}}}};
         std::string tail_str = "data: " + tail_chunk.dump() + "\n\n";
         sink.write(tail_str.data(), tail_str.size());
     }
@@ -455,12 +426,7 @@ void stream_llama(const model::LLaMAModel &model,
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{
-            {"index", 0},
-            {"delta", nlohmann::json::object()},
-            {"finish_reason", "stop"}
-        }}}
-    };
+        {"choices", {{{"index", 0}, {"delta", nlohmann::json::object()}, {"finish_reason", "stop"}}}}};
     std::string stop_str = "data: " + stop_chunk.dump() + "\n\n";
     sink.write(stop_str.data(), stop_str.size());
 
@@ -472,11 +438,8 @@ void stream_llama(const model::LLaMAModel &model,
     }
 }
 
-GenerationResult generate_transformer(const model::TransformerModel &model,
-                                      BPETokenizer &tokenizer,
-                                      const std::string &prompt,
-                                      size_t max_new_tokens,
-                                      const infer::Sampler &sampler,
+GenerationResult generate_transformer(const model::TransformerModel &model, BPETokenizer &tokenizer,
+                                      const std::string &prompt, size_t max_new_tokens, const infer::Sampler &sampler,
                                       InferenceMetrics *metrics)
 {
     GenerationResult res;
@@ -523,15 +486,9 @@ GenerationResult generate_transformer(const model::TransformerModel &model,
     return res;
 }
 
-void stream_transformer(const model::TransformerModel &model,
-                        BPETokenizer &tokenizer,
-                        const std::string &prompt,
-                        size_t max_new_tokens,
-                        const infer::Sampler &sampler,
-                        const std::string &req_id,
-                        const std::string &model_name,
-                        httplib::DataSink &sink,
-                        InferenceMetrics *metrics)
+void stream_transformer(const model::TransformerModel &model, BPETokenizer &tokenizer, const std::string &prompt,
+                        size_t max_new_tokens, const infer::Sampler &sampler, const std::string &req_id,
+                        const std::string &model_name, httplib::DataSink &sink, InferenceMetrics *metrics)
 {
     std::vector<TokenId> ids = tokenizer.encode(prompt);
     if (ids.empty()) {
@@ -546,12 +503,7 @@ void stream_transformer(const model::TransformerModel &model,
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{
-            {"index", 0},
-            {"delta", {{"role", "assistant"}}},
-            {"finish_reason", nullptr}
-        }}}
-    };
+        {"choices", {{{"index", 0}, {"delta", {{"role", "assistant"}}}, {"finish_reason", nullptr}}}}};
     std::string intro_str = "data: " + intro.dump() + "\n\n";
     sink.write(intro_str.data(), intro_str.size());
 
@@ -595,12 +547,7 @@ void stream_transformer(const model::TransformerModel &model,
                 {"object", "chat.completion.chunk"},
                 {"created", created},
                 {"model", model_name},
-                {"choices", {{
-                    {"index", 0},
-                    {"delta", {{"content", emit}}},
-                    {"finish_reason", nullptr}
-                }}}
-            };
+                {"choices", {{{"index", 0}, {"delta", {{"content", emit}}}, {"finish_reason", nullptr}}}}};
             std::string chunk_str = "data: " + chunk.dump() + "\n\n";
             sink.write(chunk_str.data(), chunk_str.size());
         }
@@ -615,12 +562,7 @@ void stream_transformer(const model::TransformerModel &model,
             {"object", "chat.completion.chunk"},
             {"created", created},
             {"model", model_name},
-            {"choices", {{
-                {"index", 0},
-                {"delta", {{"content", tail}}},
-                {"finish_reason", nullptr}
-            }}}
-        };
+            {"choices", {{{"index", 0}, {"delta", {{"content", tail}}}, {"finish_reason", nullptr}}}}};
         std::string tail_str = "data: " + tail_chunk.dump() + "\n\n";
         sink.write(tail_str.data(), tail_str.size());
     }
@@ -630,12 +572,7 @@ void stream_transformer(const model::TransformerModel &model,
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{
-            {"index", 0},
-            {"delta", nlohmann::json::object()},
-            {"finish_reason", "stop"}
-        }}}
-    };
+        {"choices", {{{"index", 0}, {"delta", nlohmann::json::object()}, {"finish_reason", "stop"}}}}};
     std::string stop_str = "data: " + stop_chunk.dump() + "\n\n";
     sink.write(stop_str.data(), stop_str.size());
 
@@ -648,15 +585,11 @@ GenerationResult fallback_generation(const std::string &prompt)
     GenerationResult res;
     res.prompt_tokens = 0;
     res.completion_tokens = 1;
-    res.text = prompt.empty()
-                   ? "Serius API is running. Load a model to get live completions."
-                   : prompt;
+    res.text = prompt.empty() ? "Serius API is running. Load a model to get live completions." : prompt;
     return res;
 }
 
-void stream_fallback(const std::string &content,
-                     const std::string &req_id,
-                     const std::string &model_name,
+void stream_fallback(const std::string &content, const std::string &req_id, const std::string &model_name,
                      httplib::DataSink &sink)
 {
     const auto created = static_cast<int64_t>(
@@ -667,12 +600,7 @@ void stream_fallback(const std::string &content,
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{
-            {"index", 0},
-            {"delta", {{"role", "assistant"}}},
-            {"finish_reason", nullptr}
-        }}}
-    };
+        {"choices", {{{"index", 0}, {"delta", {{"role", "assistant"}}}, {"finish_reason", nullptr}}}}};
     std::string s1 = "data: " + intro.dump() + "\n\n";
     sink.write(s1.data(), s1.size());
 
@@ -681,12 +609,7 @@ void stream_fallback(const std::string &content,
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{
-            {"index", 0},
-            {"delta", {{"content", content}}},
-            {"finish_reason", nullptr}
-        }}}
-    };
+        {"choices", {{{"index", 0}, {"delta", {{"content", content}}}, {"finish_reason", nullptr}}}}};
     std::string s2 = "data: " + chunk.dump() + "\n\n";
     sink.write(s2.data(), s2.size());
 
@@ -695,12 +618,7 @@ void stream_fallback(const std::string &content,
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{
-            {"index", 0},
-            {"delta", nlohmann::json::object()},
-            {"finish_reason", "stop"}
-        }}}
-    };
+        {"choices", {{{"index", 0}, {"delta", nlohmann::json::object()}, {"finish_reason", "stop"}}}}};
     std::string s3 = "data: " + stop_chunk.dump() + "\n\n";
     sink.write(s3.data(), s3.size());
 
@@ -710,4 +628,3 @@ void stream_fallback(const std::string &content,
 
 }  // namespace server
 }  // namespace serius
-

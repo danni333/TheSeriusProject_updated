@@ -43,8 +43,7 @@ class Router
 };
 
 RouterOutput route(const core::Tensor &x, const core::Tensor &gate_weight, size_t top_k);
-RouterOutput route(const core::Tensor &x, const core::Tensor &gate_weight,
-                   const core::Tensor &gate_bias, size_t top_k);
+RouterOutput route(const core::Tensor &x, const core::Tensor &gate_weight, const core::Tensor &gate_bias, size_t top_k);
 RouterOutput route(const core::Tensor &x, size_t top_k, const core::Tensor &gate_weight);
 
 }  // namespace model

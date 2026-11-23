@@ -24,15 +24,9 @@ class MappedFile
    public:
     MappedFile() = default;
 
-    explicit MappedFile(const std::string &path)
-    {
-        open(path);
-    }
+    explicit MappedFile(const std::string &path) { open(path); }
 
-    ~MappedFile()
-    {
-        close();
-    }
+    ~MappedFile() { close(); }
 
     // Non-copyable
     MappedFile(const MappedFile &) = delete;
@@ -40,10 +34,12 @@ class MappedFile
 
     // Movable
     MappedFile(MappedFile &&other) noexcept
-        : data_(other.data_), size_(other.size_)
+        : data_(other.data_),
+          size_(other.size_)
 #ifdef _WIN32
           ,
-          file_handle_(other.file_handle_), mapping_handle_(other.mapping_handle_)
+          file_handle_(other.file_handle_),
+          mapping_handle_(other.mapping_handle_)
 #else
           ,
           fd_(other.fd_)
@@ -84,8 +80,8 @@ class MappedFile
     {
         close();
 #ifdef _WIN32
-        file_handle_ =
-            CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        file_handle_ = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                                   FILE_ATTRIBUTE_NORMAL, nullptr);
         if (file_handle_ == INVALID_HANDLE_VALUE) {
             throw std::runtime_error("MappedFile: cannot open file: " + path);
         }

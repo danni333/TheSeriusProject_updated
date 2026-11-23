@@ -1,17 +1,18 @@
 #include "cli/cmd_think.h"
-#include "cli/args_parser.h"
-#include "cli/llama_loader.h"
-#include "agent/llama_model_adapter.h"
-#include "reasoning/agent_model_adapter.h"
-#include "reasoning/cot.h"
-#include "reasoning/mcts.h"
-#include "reasoning/verifier.h"
-#include "../hub/search_engine.h"
 
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <vector>
+
+#include "../hub/search_engine.h"
+#include "agent/llama_model_adapter.h"
+#include "cli/args_parser.h"
+#include "cli/llama_loader.h"
+#include "reasoning/agent_model_adapter.h"
+#include "reasoning/cot.h"
+#include "reasoning/mcts.h"
+#include "reasoning/verifier.h"
 
 namespace serius {
 namespace cli {
@@ -44,7 +45,8 @@ int cmd_think(int argc, char **argv)
     parser.add_flag({"show-thinking", "", "Print the thinking buffer (hidden by default)", false, ""});
     parser.add_flag({"gpu", "g", "GPU backend (auto/cpu/cuda)", true, "auto"});
     parser.add_flag({"reference", "", "Reference answer: enables MCTS search scored by EmbeddingVerifier", true, ""});
-    parser.add_flag({"embed-model", "", "Embedding model (GGUF/safetensors dir) for the verifier; lexical fallback if unset", true, ""});
+    parser.add_flag({"embed-model", "",
+                     "Embedding model (GGUF/safetensors dir) for the verifier; lexical fallback if unset", true, ""});
     parser.add_flag({"failure-keywords", "", "Comma-separated keywords penalized by the verifier", true, ""});
     parser.add_flag({"mcts-simulations", "", "MCTS simulations per search", true, "8"});
 
@@ -65,8 +67,7 @@ int cmd_think(int argc, char **argv)
         return 1;
     }
 
-    auto loaded = load_llama_cli_model(parser.get("model"), parser.get("gpu", "auto"),
-                                       parser.get("quant"));
+    auto loaded = load_llama_cli_model(parser.get("model"), parser.get("gpu", "auto"), parser.get("quant"));
     if (!loaded) {
         return 1;
     }
@@ -91,20 +92,16 @@ int cmd_think(int argc, char **argv)
                 std::cerr << "[think] embed model unavailable, lexical verifier fallback\n";
             }
         }
-        reasoning::EmbeddingVerifier verifier(embed_fn, reference,
-                                              split_csv(parser.get("failure-keywords")));
+        reasoning::EmbeddingVerifier verifier(embed_fn, reference, split_csv(parser.get("failure-keywords")));
         reasoning::AgentMCTSModel mcts_model(agent_model);
-        reasoning::MCTSReasoner reasoner(mcts_model, verifier,
-                                         parser.get_int("mcts-simulations", 8));
-        std::cout << "[Serius] MCTS search (" << parser.get_int("mcts-simulations", 8)
-                  << " simulations)...\n";
+        reasoning::MCTSReasoner reasoner(mcts_model, verifier, parser.get_int("mcts-simulations", 8));
+        std::cout << "[Serius] MCTS search (" << parser.get_int("mcts-simulations", 8) << " simulations)...\n";
         std::cout << reasoner.search(prompt) << "\n";
         return 0;
     }
 
     reasoning::AgentReasoningModel reasoning_model(agent_model);
-    reasoning::ChainOfThought cot(reasoning_model,
-                                  parser.get_int("max-thinking-tokens", 2048));
+    reasoning::ChainOfThought cot(reasoning_model, parser.get_int("max-thinking-tokens", 2048));
 
     std::cout << "[Serius] Thinking...\n";
     const auto result = cot.generate_with_thinking(prompt);

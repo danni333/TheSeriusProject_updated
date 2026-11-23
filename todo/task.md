@@ -156,3 +156,12 @@
 ---
 
 **Totale: 73 documenti · 72 fasi · oltre 35.000 righe di pianificazione tecnica**
+
+---
+
+## Roadmap "prodotto vendibile" (2026-11-23)
+
+Lavoro attivo per portare il progetto a prodotto reale — baseline e todo
+operativi in **[roadmap_prodotto_2026-11-23.md](roadmap_prodotto_2026-11-23.md)**.
+Priorità: CPU GEMV Q4_K, continuous batching, prefill GPU, packaging,
+stabilità test, parità API.

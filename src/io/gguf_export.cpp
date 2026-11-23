@@ -7,11 +7,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "gguf_loader.h"
 #include "safetensors_writer.h"
@@ -49,8 +48,7 @@ void unpermute_qk_rows(float *data, size_t out_dim, size_t in_dim, size_t head_d
         std::memcpy(block.data(), base, block.size() * sizeof(float));
         for (size_t s = 0; s < head_dim; ++s) {
             const size_t src_local = ((s & 1) == 0) ? (s / 2) : ((s - 1) / 2 + half);
-            std::memcpy(base + s * in_dim, block.data() + src_local * in_dim,
-                        in_dim * sizeof(float));
+            std::memcpy(base + s * in_dim, block.data() + src_local * in_dim, in_dim * sizeof(float));
         }
     }
 }
@@ -78,7 +76,8 @@ std::string map_tensor_name(const std::string &gguf_name, int num_layers)
     int layer;
     try {
         layer = std::stoi(gguf_name.substr(4, dot1 - 4));
-    } catch (...) {
+    }
+    catch (...) {
         return {};
     }
     if (layer < 0 || layer >= num_layers) {
@@ -155,7 +154,8 @@ bool export_gguf_to_hf_dir(const std::string &gguf_path, const std::string &out_
     std::unordered_map<std::string, core::Tensor> tensors;
     try {
         tensors = load_all_tensors(gguf_path, nullptr);
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         std::cerr << "[convert] GGUF load failed: " << e.what() << "\n";
         return false;
     }
@@ -187,8 +187,7 @@ bool export_gguf_to_hf_dir(const std::string &gguf_path, const std::string &out_
 
         // GGUF shape is {in, out}; HF safetensors expects {out, in}.
         const std::vector<size_t> shape = tensor.shape();
-        const std::vector<size_t> hf_shape =
-            (shape.size() == 2) ? std::vector<size_t>{shape[1], shape[0]} : shape;
+        const std::vector<size_t> hf_shape = (shape.size() == 2) ? std::vector<size_t>{shape[1], shape[0]} : shape;
         core::Tensor exported(hf_shape, hal::DType::Float32);
         const size_t numel = tensor.size();
         std::memcpy(exported.data(), tensor.data(), numel * sizeof(float));
@@ -216,8 +215,7 @@ bool export_gguf_to_hf_dir(const std::string &gguf_path, const std::string &out_
         return false;
     }
 
-    std::sort(out_tensors.begin(), out_tensors.end(),
-              [](const auto &a, const auto &b) { return a.first < b.first; });
+    std::sort(out_tensors.begin(), out_tensors.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
 
     const std::string st_path = (fs::path(out_dir) / "model.safetensors").string();
     SafetensorsWriter writer;
@@ -238,8 +236,7 @@ bool export_gguf_to_hf_dir(const std::string &gguf_path, const std::string &out_
     copy_if_exists(gguf_dir / "merges.txt", out_path);
 
     std::cout << "[convert] exported " << out_tensors.size() << " tensors"
-              << (skipped ? " (" + std::to_string(skipped) + " skipped)" : "")
-              << " to " << out_dir << "\n";
+              << (skipped ? " (" + std::to_string(skipped) + " skipped)" : "") << " to " << out_dir << "\n";
     return true;
 }
 

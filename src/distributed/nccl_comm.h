@@ -2,9 +2,9 @@
 
 #ifdef SERIUS_USE_NCCL
 
-#include "comm.h"
-
 #include <nccl.h>
+
+#include "comm.h"
 
 namespace serius {
 namespace distributed {

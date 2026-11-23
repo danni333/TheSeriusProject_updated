@@ -156,6 +156,24 @@ TEST(MultiAgent, ConsensusMajorityVote)
     EXPECT_NE(result.final_answer.find("blue"), std::string::npos);
 }
 
+TEST(MultiAgent, ConsensusEmbedderSimilarity)
+{
+    // Two paraphrases with almost no character-trigram overlap.
+    ScriptedModel a, b;
+    a.add_response("alpha beta gamma delta epsilon");
+    b.add_response("completely unrelated wording entirely");
+
+    std::vector<Model *> agents = {&a, &b};
+    DelphiConsensus consensus(agents, 3);
+    // Embedder declares them the same topic -> should converge on round 1.
+    consensus.set_embed_fn([](const std::string &) {
+        return std::vector<float>{1.0f, 0.0f};
+    });
+    ConsensusResult result = consensus.debate("Question");
+    EXPECT_TRUE(result.converged);
+    EXPECT_EQ(result.rounds, 1);
+}
+
 TEST(MultiAgent, ConsensusEmptyAgents)
 {
     std::vector<Model *> agents;

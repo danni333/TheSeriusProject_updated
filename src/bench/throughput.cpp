@@ -1,20 +1,18 @@
 #include "throughput.h"
-#include "latency.h"
 
-#include <chrono>
-#include <thread>
 #include <algorithm>
-#include <numeric>
+#include <chrono>
 #include <iostream>
+#include <numeric>
+#include <thread>
+
+#include "latency.h"
 
 namespace serius {
 namespace bench {
 
-ThroughputResult bench_throughput(const std::string &model_path,
-                                  const std::vector<std::string> &prompts,
-                                  int concurrent_users,
-                                  int requests_per_user,
-                                  int max_tokens)
+ThroughputResult bench_throughput(const std::string &model_path, const std::vector<std::string> &prompts,
+                                  int concurrent_users, int requests_per_user, int max_tokens)
 {
     ThroughputResult result;
     result.concurrent_users = concurrent_users;

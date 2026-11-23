@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 #include "sandbox.h"
 
 namespace serius {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -45,9 +46,7 @@ inline void panic(const char *file, int line, const char *cond)
 }  // namespace serius
 
 /**
- * @brief Programmer error - abort in all builds if condition fails
- * NOTE: The spec says no-op in Release for SERIUS_ASSERT, but also says "abort in Debug".
- * I'll follow the "abort in Debug, no-op in Release" pattern if NDEBUG is defined.
+ * @brief Programmer error - abort in Debug builds, no-op in Release (NDEBUG).
  */
 #ifdef NDEBUG
 #define SERIUS_ASSERT(cond) ((void)0)

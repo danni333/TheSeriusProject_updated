@@ -5,7 +5,7 @@
 #include <cstddef>
 #include <vector>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 #include "world_model.h"
 
 namespace serius {

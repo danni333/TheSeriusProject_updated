@@ -41,20 +41,20 @@ include(FetchContent)
 
 FetchContent_Declare(json
     GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3)
+    GIT_TAG v3.12.0)
 FetchContent_Declare(spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG v1.14.1)
+    GIT_TAG v1.17.0)
 FetchContent_Declare(googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
-    GIT_TAG v1.14.0)
+    GIT_TAG v1.18.0)
 # cpp-httplib (header only)
 FetchContent_Declare(httplib
     GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
-    GIT_TAG v0.15.3)
+    GIT_TAG v0.67.0)
 # SQLite for hub metadata
 FetchContent_Declare(sqlite3
-    URL https://www.sqlite.org/2024/sqlite-autoconf-3450300.tar.gz)
+    URL https://www.sqlite.org/2026/sqlite-autoconf-3540100.tar.gz)
 # OpenSSL for authentication (optional for now)
 # JWT library (optional for now)
 
@@ -85,6 +85,7 @@ option(SERIUS_USE_NCCL "Enable NCCL distributed backend" OFF)
 option(SERIUS_USE_MPI "Enable MPI distributed backend" OFF)
 
 # --- Experimental / Didactic Modules (default OFF to keep core lean) ---
+# Sources live in experimental/<module>/ (outside src/); see docs/experimental.md.
 option(SERIUS_EXPERIMENTAL_QUANTUM "Enable quantum/ (VQE simulator, didactic)" OFF)
 option(SERIUS_EXPERIMENTAL_LIQUID "Enable liquid/ (Neural ODE/LTC, didactic)" OFF)
 option(SERIUS_EXPERIMENTAL_WORLD "Enable world/ (World model/JEPA, prototype)" OFF)
@@ -99,6 +100,15 @@ option(SERIUS_EXPERIMENTAL_KNOWLEDGE "Enable knowledge/ (Semantic hash/fact extr
 option(SERIUS_EXPERIMENTAL_AUTOML "Enable automl/ (Auto-tune with simulated timing)" OFF)
 option(SERIUS_EXPERIMENTAL_EVAL "Enable eval/ (PerplexityRunner, partially real)" OFF)
 option(SERIUS_EXPERIMENTAL_GROUNDING "Enable grounding/ (Citation/confidence, partially real)" OFF)
+option(SERIUS_EXPERIMENTAL_INFERENCE "Enable inference/ (autograd TransformerModel generate/sampler, didactic)" OFF)
+option(SERIUS_EXPERIMENTAL_RAG "Enable rag/ (Retriever/hash embeddings, no server integration)" OFF)
+option(SERIUS_EXPERIMENTAL_AGENT "Enable agent/ (ReAct/planner/supervisor/multi-agent)" OFF)
+option(SERIUS_EXPERIMENTAL_AUTOOPT "Enable autoopt/ (self-modifying hot-swap/refactorer)" OFF)
+
+# reasoning/ adapters wrap agent::Model — agent sources are required.
+if(SERIUS_EXPERIMENTAL_REASONING AND NOT SERIUS_EXPERIMENTAL_AGENT)
+    set(SERIUS_EXPERIMENTAL_AGENT ON)
+endif()
 
 if(SERIUS_USE_CUDA)
     enable_language(CUDA)

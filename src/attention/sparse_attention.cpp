@@ -7,7 +7,7 @@
 namespace serius {
 namespace attention {
 
-float cosine_similarity(const float* a, const float* b, size_t dim)
+float cosine_similarity(const float *a, const float *b, size_t dim)
 {
     float dot = 0.0f;
     float norm_a = 0.0f;
@@ -29,7 +29,7 @@ float cosine_similarity(const float* a, const float* b, size_t dim)
     return dot / (norm_a * norm_b);
 }
 
-float scaled_dot_product(const float* a, const float* b, size_t dim, float scale)
+float scaled_dot_product(const float *a, const float *b, size_t dim, float scale)
 {
     float dot = 0.0f;
     for (size_t i = 0; i < dim; ++i) {
@@ -38,9 +38,8 @@ float scaled_dot_product(const float* a, const float* b, size_t dim, float scale
     return dot * scale;
 }
 
-SparseAttentionResult dynamic_sparse_attention(
-    const Tensor& Q, const Tensor& K, const Tensor& V,
-    float threshold, size_t top_k)
+SparseAttentionResult dynamic_sparse_attention(const Tensor &Q, const Tensor &K, const Tensor &V, float threshold,
+                                               size_t top_k)
 {
     const size_t seq_len = Q.shape()[0];
     const size_t d_model = Q.shape()[1];
@@ -55,12 +54,12 @@ SparseAttentionResult dynamic_sparse_attention(
     size_t active_pairs = 0;
 
     for (size_t i = 0; i < seq_len; ++i) {
-        const float* q_row = Q.data() + i * d_model;
+        const float *q_row = Q.data() + i * d_model;
 
         // Calculate scores for all causal keys (j <= i)
         std::vector<std::pair<size_t, float>> scores;
         for (size_t j = 0; j <= i; ++j) {
-            const float* k_row = K.data() + j * d_model;
+            const float *k_row = K.data() + j * d_model;
             float score = scaled_dot_product(q_row, k_row, d_model, scale);
             scores.emplace_back(j, score);
             total_pairs++;
@@ -69,21 +68,20 @@ SparseAttentionResult dynamic_sparse_attention(
         // Select active keys based on threshold or top-k
         if (top_k > 0) {
             // Select top-k
-            std::partial_sort(scores.begin(), scores.begin() + std::min(top_k, scores.size()),
-                             scores.end(),
-                             [](const auto& a, const auto& b) { return a.second > b.second; });
+            std::partial_sort(scores.begin(), scores.begin() + std::min(top_k, scores.size()), scores.end(),
+                              [](const auto &a, const auto &b) { return a.second > b.second; });
             scores.resize(std::min(top_k, scores.size()));
         } else {
             // Select by threshold
             auto it = std::remove_if(scores.begin(), scores.end(),
-                                     [threshold](const auto& p) { return p.second < threshold; });
+                                     [threshold](const auto &p) { return p.second < threshold; });
             scores.erase(it, scores.end());
         }
 
         active_pairs += scores.size();
 
         // Store active key indices
-        for (const auto& [key_idx, score] : scores) {
+        for (const auto &[key_idx, score] : scores) {
             result.active_keys[i].push_back(static_cast<int>(key_idx));
         }
 
@@ -98,7 +96,7 @@ SparseAttentionResult dynamic_sparse_attention(
 
         // Apply softmax to scores
         float max_score = -std::numeric_limits<float>::infinity();
-        for (const auto& [_, score] : scores) {
+        for (const auto &[_, score] : scores) {
             max_score = std::max(max_score, score);
         }
 
@@ -110,11 +108,11 @@ SparseAttentionResult dynamic_sparse_attention(
         }
 
         // Weighted sum of values
-        float* output_row = result.output.data() + i * d_model;
+        float *output_row = result.output.data() + i * d_model;
         for (size_t k = 0; k < scores.size(); ++k) {
             size_t key_idx = scores[k].first;
             float weight = exp_scores[k] / sum_exp;
-            const float* v_row = V.data() + key_idx * d_model;
+            const float *v_row = V.data() + key_idx * d_model;
 
             for (size_t d = 0; d < d_model; ++d) {
                 output_row[d] += weight * v_row[d];

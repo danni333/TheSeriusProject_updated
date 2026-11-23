@@ -1,15 +1,16 @@
 #include "leak_detector.h"
-#include <sstream>
-#include <iomanip>
+
 #include <cmath>
+#include <iomanip>
 #include <numeric>
+#include <sstream>
 
 namespace serius {
 namespace stress {
 
-LeakAnalysis LeakDetector::analyze(const std::vector<MemorySample>& samples,
-                                   float duration_hours,
-                                   size_t leak_threshold_bytes) {
+LeakAnalysis LeakDetector::analyze(const std::vector<MemorySample> &samples, float duration_hours,
+                                   size_t leak_threshold_bytes)
+{
     LeakAnalysis analysis;
 
     if (samples.size() < 2) {
@@ -23,7 +24,7 @@ LeakAnalysis LeakDetector::analyze(const std::vector<MemorySample>& samples,
     std::vector<size_t> vram_values;
     std::vector<size_t> ram_values;
 
-    for (const auto& sample : samples) {
+    for (const auto &sample : samples) {
         vram_data.push_back({sample.timestamp, sample.vram_bytes});
         ram_data.push_back({sample.timestamp, sample.ram_bytes});
         vram_values.push_back(sample.vram_bytes);
@@ -40,8 +41,10 @@ LeakAnalysis LeakDetector::analyze(const std::vector<MemorySample>& samples,
 
     // Calculate drift rate per hour
     if (duration_hours > 0) {
-        analysis.vram_drift_mb_per_hour = static_cast<float>(analysis.vram_drift_bytes) / (1024.0f * 1024.0f) / duration_hours;
-        analysis.ram_drift_mb_per_hour = static_cast<float>(analysis.ram_drift_bytes) / (1024.0f * 1024.0f) / duration_hours;
+        analysis.vram_drift_mb_per_hour =
+            static_cast<float>(analysis.vram_drift_bytes) / (1024.0f * 1024.0f) / duration_hours;
+        analysis.ram_drift_mb_per_hour =
+            static_cast<float>(analysis.ram_drift_bytes) / (1024.0f * 1024.0f) / duration_hours;
     }
 
     analysis.summary = format_summary(analysis);
@@ -49,17 +52,16 @@ LeakAnalysis LeakDetector::analyze(const std::vector<MemorySample>& samples,
     return analysis;
 }
 
-std::string LeakDetector::format_summary(const LeakAnalysis& analysis) {
+std::string LeakDetector::format_summary(const LeakAnalysis &analysis)
+{
     std::stringstream ss;
 
     ss << "Memory Leak Analysis:\n";
     ss << "=====================\n\n";
 
     ss << "VRAM:\n";
-    ss << "  Drift: " << std::fixed << std::setprecision(2)
-       << (analysis.vram_drift_bytes / 1024.0 / 1024.0) << " MB\n";
-    ss << "  Rate:  " << std::fixed << std::setprecision(2)
-       << analysis.vram_drift_mb_per_hour << " MB/hour\n";
+    ss << "  Drift: " << std::fixed << std::setprecision(2) << (analysis.vram_drift_bytes / 1024.0 / 1024.0) << " MB\n";
+    ss << "  Rate:  " << std::fixed << std::setprecision(2) << analysis.vram_drift_mb_per_hour << " MB/hour\n";
     if (analysis.vram_leak_detected) {
         ss << "  Status: ⚠️ LEAK DETECTED\n";
     } else {
@@ -68,10 +70,8 @@ std::string LeakDetector::format_summary(const LeakAnalysis& analysis) {
     ss << "\n";
 
     ss << "RAM:\n";
-    ss << "  Drift: " << std::fixed << std::setprecision(2)
-       << (analysis.ram_drift_bytes / 1024.0 / 1024.0) << " MB\n";
-    ss << "  Rate:  " << std::fixed << std::setprecision(2)
-       << analysis.ram_drift_mb_per_hour << " MB/hour\n";
+    ss << "  Drift: " << std::fixed << std::setprecision(2) << (analysis.ram_drift_bytes / 1024.0 / 1024.0) << " MB\n";
+    ss << "  Rate:  " << std::fixed << std::setprecision(2) << analysis.ram_drift_mb_per_hour << " MB/hour\n";
     if (analysis.ram_leak_detected) {
         ss << "  Status: ⚠️ LEAK DETECTED\n";
     } else {
@@ -81,7 +81,8 @@ std::string LeakDetector::format_summary(const LeakAnalysis& analysis) {
     return ss.str();
 }
 
-float LeakDetector::calculate_slope(const std::vector<std::pair<float, size_t>>& data) {
+float LeakDetector::calculate_slope(const std::vector<std::pair<float, size_t>> &data)
+{
     if (data.size() < 2) return 0.0f;
 
     // Simple linear regression: y = mx + b
@@ -89,7 +90,7 @@ float LeakDetector::calculate_slope(const std::vector<std::pair<float, size_t>>&
     float sum_x = 0.0f, sum_y = 0.0f;
     float sum_xy = 0.0f, sum_x2 = 0.0f;
 
-    for (const auto& [x, y] : data) {
+    for (const auto &[x, y] : data) {
         sum_x += x;
         sum_y += static_cast<float>(y);
         sum_xy += x * static_cast<float>(y);
@@ -103,7 +104,8 @@ float LeakDetector::calculate_slope(const std::vector<std::pair<float, size_t>>&
     return slope;
 }
 
-int64_t LeakDetector::calculate_drift(const std::vector<size_t>& values) {
+int64_t LeakDetector::calculate_drift(const std::vector<size_t> &values)
+{
     if (values.size() < 2) return 0;
 
     size_t start = values.front();

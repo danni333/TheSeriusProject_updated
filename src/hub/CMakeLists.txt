@@ -5,7 +5,14 @@
 set(SERIUS_HUB_SQLITE OFF)
 if(EXISTS "${sqlite3_SOURCE_DIR}/sqlite3.c")
     add_library(serius_sqlite3 STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
-    target_include_directories(serius_sqlite3 PUBLIC ${sqlite3_SOURCE_DIR})
+    # sqlite3-src also ships a file named VERSION; on case-insensitive
+    # filesystems it shadows the C++20 <version> header that nlohmann/json
+    # 3.12+ probes with __has_include(<version>). Expose only sqlite3.h.
+    set(SERIUS_SQLITE_INCLUDE_DIR ${CMAKE_CURRENT_BINARY_DIR}/sqlite3_include)
+    file(MAKE_DIRECTORY ${SERIUS_SQLITE_INCLUDE_DIR})
+    configure_file(${sqlite3_SOURCE_DIR}/sqlite3.h
+                   ${SERIUS_SQLITE_INCLUDE_DIR}/sqlite3.h COPYONLY)
+    target_include_directories(serius_sqlite3 PUBLIC ${SERIUS_SQLITE_INCLUDE_DIR})
     target_compile_definitions(serius_sqlite3 PRIVATE
         SQLITE_THREADSAFE=1
         SQLITE_OMIT_LOAD_EXTENSION)
@@ -27,7 +34,6 @@ add_library(hub STATIC
     plugin_manager.cpp
     search_engine.cpp
     nomic_bert.cpp
-    converter.cpp
 )
 
 target_include_directories(hub PUBLIC

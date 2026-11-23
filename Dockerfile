@@ -21,6 +21,13 @@ WORKDIR /app
 COPY --from=builder /build/build/serius /app/serius
 COPY --from=builder /build/build/src/Release/serius_core.lib /app/lib/ 2>/dev/null || true
 
+# Run as an unprivileged user; the server only needs read access to models
+# (mounted volumes) and write access to its working directory for logs/state.
+RUN useradd --create-home --uid 10001 serius \
+    && mkdir -p /app/models /app/data \
+    && chown -R serius:serius /app
+USER serius
+
 EXPOSE 8080
 ENV LD_LIBRARY_PATH=/app/lib
 ENTRYPOINT ["./serius", "--server", "--port", "8080"]

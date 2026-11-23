@@ -4,8 +4,8 @@
 
 #include <cstring>
 
-#include "../infer/llama_inference.h"
-#include "../transformer/llama_model.h"
+#include "infer/llama_inference.h"
+#include "transformer/llama_model.h"
 
 namespace serius {
 namespace interpret {

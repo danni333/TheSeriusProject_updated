@@ -5,9 +5,9 @@
 #include <vector>
 
 #include "../autograd/node.h"
-#include "positional.h"
 #include "../distributed/context.h"
 #include "../quant/quant_weight.h"
+#include "positional.h"
 
 namespace serius {
 namespace model {
@@ -39,7 +39,7 @@ struct LLamaConfig
 class LLaMABlock
 {
    public:
-    LLaMABlock(const LLamaConfig &config, 
+    LLaMABlock(const LLamaConfig &config,
                const distributed::DistributedTopology &topology = distributed::DistributedTopology::single_node());
     ~LLaMABlock();
 
@@ -51,7 +51,7 @@ class LLaMABlock
     size_t n_heads() const { return n_heads_; }
     size_t n_kv_heads() const { return n_kv_heads_; }
     size_t head_dim() const { return head_dim_; }
-    const distributed::DistributedTopology& topology() const { return topology_; }
+    const distributed::DistributedTopology &topology() const { return topology_; }
 
     std::unique_ptr<core::autograd::Node> input_layernorm_weight;
     std::unique_ptr<core::autograd::Node> q_proj;
@@ -96,8 +96,8 @@ class LLaMABlock
 class LLaMAModel
 {
    public:
-    explicit LLaMAModel(const LLamaConfig &config, 
-                        const distributed::DistributedTopology &topology = distributed::DistributedTopology::single_node());
+    explicit LLaMAModel(const LLamaConfig &config, const distributed::DistributedTopology &topology =
+                                                       distributed::DistributedTopology::single_node());
     ~LLaMAModel();
 
     /// Forward: token_ids (shape [seq_len]) -> logits [seq_len, vocab_size].
@@ -106,7 +106,7 @@ class LLaMAModel
     void set_device(hal::DeviceType device) const;
 
     const LLamaConfig &config() const { return config_; }
-    const distributed::DistributedTopology& topology() const { return topology_; }
+    const distributed::DistributedTopology &topology() const { return topology_; }
     core::autograd::Node *embed_tokens() { return embed_tokens_.get(); }
     core::autograd::Node *norm_weight() { return norm_weight_.get(); }
     core::autograd::Node *lm_head() { return lm_head_.get(); }

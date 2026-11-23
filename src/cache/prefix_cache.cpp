@@ -5,18 +5,11 @@
 namespace serius {
 namespace cache {
 
-PrefixCache::PrefixCache(const Config& config)
-    : config_(config)
-{
-}
+PrefixCache::PrefixCache(const Config &config) : config_(config) {}
 
-PrefixCache::PrefixCache()
-    : PrefixCache(Config{})
-{
-}
+PrefixCache::PrefixCache() : PrefixCache(Config{}) {}
 
-std::pair<size_t, KVCacheSnapshot*> PrefixCache::find_longest_prefix(
-    const std::vector<int>& tokens)
+std::pair<size_t, KVCacheSnapshot *> PrefixCache::find_longest_prefix(const std::vector<int> &tokens)
 {
     // Try from longest to shortest prefix
     for (size_t len = tokens.size(); len > 0; --len) {
@@ -31,8 +24,7 @@ std::pair<size_t, KVCacheSnapshot*> PrefixCache::find_longest_prefix(
     return {0, nullptr};
 }
 
-void PrefixCache::store(const std::vector<int>& tokens, size_t prefix_len,
-                       const KVCacheSnapshot& kv)
+void PrefixCache::store(const std::vector<int> &tokens, size_t prefix_len, const KVCacheSnapshot &kv)
 {
     if (prefix_len == 0 || prefix_len > tokens.size()) {
         return;
@@ -54,7 +46,8 @@ void PrefixCache::store(const std::vector<int>& tokens, size_t prefix_len,
 
     // Evict if necessary
     while (cache_.size() >= config_.max_entries ||
-           memory_usage_ + kv.keys.size() * kv.keys.element_size() + kv.values.size() * kv.values.element_size() > config_.max_memory_bytes) {
+           memory_usage_ + kv.keys.size() * kv.keys.element_size() + kv.values.size() * kv.values.element_size() >
+               config_.max_memory_bytes) {
         if (cache_.empty()) {
             break;
         }
@@ -77,7 +70,7 @@ void PrefixCache::clear()
     memory_usage_ = 0;
 }
 
-uint64_t PrefixCache::hash_tokens(const int* tokens, size_t len) const
+uint64_t PrefixCache::hash_tokens(const int *tokens, size_t len) const
 {
     // Simple FNV-1a hash
     uint64_t hash = 14695981039346656037ULL;

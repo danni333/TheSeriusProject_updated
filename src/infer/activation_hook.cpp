@@ -5,7 +5,7 @@ namespace infer {
 
 // Process-global: attention rows are emitted from OpenMP worker threads,
 // so per-thread storage would silently drop captures. Consumers that
-// record data must synchronize (see src/interpret/inference_capture).
+// record data must synchronize (see experimental/interpret/inference_capture).
 namespace {
 ActivationHooks g_hooks{};
 }

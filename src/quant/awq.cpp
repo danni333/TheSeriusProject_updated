@@ -1,11 +1,10 @@
 #include "awq.h"
 
-#include "quant_matmul.h"
-
 #include <algorithm>
 #include <cmath>
-#include <numeric>
 #include <stdexcept>
+
+#include "quant_matmul.h"
 
 namespace serius {
 namespace quant {

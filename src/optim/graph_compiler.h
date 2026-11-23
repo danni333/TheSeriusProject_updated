@@ -30,7 +30,7 @@ struct GraphOp {
 /// Optimized execution plan for a model.
 class ExecutionPlan
 {
-public:
+   public:
     ExecutionPlan();
     ~ExecutionPlan();
 
@@ -63,7 +63,7 @@ public:
     /// op outputs when that pass did not run.
     size_t workspace_size() const { return workspace_size_; }
 
-private:
+   private:
     std::vector<GraphOp> ops_;
     void* workspace_;  // Pre-allocated workspace memory
     size_t workspace_size_;
@@ -77,7 +77,7 @@ private:
 /// Compiles and optimizes a computation graph.
 class GraphCompiler
 {
-public:
+   public:
     struct Config {
         bool fuse_elementwise = true;
         bool fuse_layernorm_linear = true;
@@ -116,7 +116,7 @@ public:
     /// Get the current graph operations (for debugging).
     const std::vector<GraphOp>& get_ops() const { return ops_; }
 
-private:
+   private:
     Config config_;
     std::vector<GraphOp> ops_;
     // Slot mapping produced by trace_graph(): total node slots, leaf slots

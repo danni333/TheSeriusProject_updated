@@ -60,8 +60,6 @@ add_library(serius_core
     stability/grad_clip.cpp
     stability/loss_scaler.cpp
     stability/ema.cpp
-    inference/sampler.cpp
-    inference/generate.cpp
     lora/lora_linear.cpp
     lora/lora_adapter.cpp
     transformer/llama_model.cpp
@@ -83,22 +81,11 @@ add_library(serius_core
     distributed/data_parallel.cpp
     distributed/pipeline.cpp
     distributed/tensor_parallel.cpp
-    rag/vector_client.cpp
-    rag/embeddings.cpp
-    rag/retriever.cpp
     tools/registry.cpp
     tools/parser.cpp
     mcp/client.cpp
     mcp/transport_stdio.cpp
     mcp/transport_http.cpp
-    agent/action_parser.cpp
-    agent/context_manager.cpp
-    agent/react.cpp
-    agent/llama_model_adapter.cpp
-    agent/specialist.cpp
-    agent/supervisor.cpp
-    agent/consensus.cpp
-    agent/planner.cpp
     mcp/guard.cpp
     mcp/scrubber.cpp
     mcp/audit.cpp
@@ -123,136 +110,177 @@ add_library(serius_core
     stress/leak_detector.cpp
     stress/report.cpp
     infer/speculative.cpp
-    autoopt/git_manager.cpp
-    autoopt/hot_swap.cpp
-    autoopt/llm_client.cpp
-    autoopt/refactorer.cpp
-    autoopt/sandbox.cpp
 )
+
+if(SERIUS_EXPERIMENTAL_INFERENCE)
+    target_sources(serius_core PRIVATE
+        ../experimental/inference/sampler.cpp
+        ../experimental/inference/generate.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_RAG)
+    target_sources(serius_core PRIVATE
+        ../experimental/rag/vector_client.cpp
+        ../experimental/rag/embeddings.cpp
+        ../experimental/rag/retriever.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_AGENT)
+    target_sources(serius_core PRIVATE
+        ../experimental/agent/action_parser.cpp
+        ../experimental/agent/context_manager.cpp
+        ../experimental/agent/react.cpp
+        ../experimental/agent/llama_model_adapter.cpp
+        ../experimental/agent/specialist.cpp
+        ../experimental/agent/supervisor.cpp
+        ../experimental/agent/consensus.cpp
+        ../experimental/agent/planner.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_AUTOOPT)
+    target_sources(serius_core PRIVATE
+        ../experimental/autoopt/git_manager.cpp
+        ../experimental/autoopt/hot_swap.cpp
+        ../experimental/autoopt/llm_client.cpp
+        ../experimental/autoopt/refactorer.cpp
+        ../experimental/autoopt/sandbox.cpp
+    )
+endif()
 
 if(SERIUS_EXPERIMENTAL_NEURO)
     target_sources(serius_core PRIVATE
-        neuro/lif_neuron.cpp
-        neuro/spiking_layer.cpp
-        neuro/event_engine.cpp
-        neuro/encoder.cpp
+        ../experimental/neuro/lif_neuron.cpp
+        ../experimental/neuro/spiking_layer.cpp
+        ../experimental/neuro/event_engine.cpp
+        ../experimental/neuro/encoder.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_LIQUID)
     target_sources(serius_core PRIVATE
-        liquid/neural_ode.cpp
-        liquid/ltc.cpp
-        liquid/adaptive.cpp
+        ../experimental/liquid/neural_ode.cpp
+        ../experimental/liquid/ltc.cpp
+        ../experimental/liquid/adaptive.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_WORLD)
     target_sources(serius_core PRIVATE
-        world/world_model.cpp
-        world/imagination.cpp
-        world/jepa.cpp
+        ../experimental/world/world_model.cpp
+        ../experimental/world/imagination.cpp
+        ../experimental/world/jepa.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_QUANTUM)
     target_sources(serius_core PRIVATE
-        quantum/state.cpp
-        quantum/circuit.cpp
-        quantum/vqe.cpp
+        ../experimental/quantum/state.cpp
+        ../experimental/quantum/circuit.cpp
+        ../experimental/quantum/vqe.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_SSM)
     target_sources(serius_core PRIVATE
-        ssm/ssm_block.cpp
+        ../experimental/ssm/ssm_block.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_AUTOML)
     target_sources(serius_core PRIVATE
-        automl/auto_tune.cpp
-        automl/pruner.cpp
-        automl/tune_cache.cpp
+        ../experimental/automl/auto_tune.cpp
+        ../experimental/automl/pruner.cpp
+        ../experimental/automl/tune_cache.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_MULTIMODAL)
     target_sources(serius_core PRIVATE
-        vision/patch_embed.cpp
-        vision/vision_encoder.cpp
-        audio/mel.cpp
-        audio/audio_encoder.cpp
-        multimodal/cross_attention.cpp
-        multimodal/input_builder.cpp
+        ../experimental/vision/patch_embed.cpp
+        ../experimental/vision/vision_encoder.cpp
+        ../experimental/audio/mel.cpp
+        ../experimental/audio/audio_encoder.cpp
+        ../experimental/multimodal/cross_attention.cpp
+        ../experimental/multimodal/input_builder.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_INTERPRET)
     target_sources(serius_core PRIVATE
-        interpret/attention_capture.cpp
-        interpret/activation_probe.cpp
-        interpret/inference_capture.cpp
-        interpret/logit_lens.cpp
-        interpret/export.cpp
+        ../experimental/interpret/attention_capture.cpp
+        ../experimental/interpret/activation_probe.cpp
+        ../experimental/interpret/inference_capture.cpp
+        ../experimental/interpret/logit_lens.cpp
+        ../experimental/interpret/export.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_RLHF)
     target_sources(serius_core PRIVATE
-        rlhf/reward_model.cpp
-        rlhf/ppo.cpp
-        rlhf/ppo_trainer.cpp
+        ../experimental/rlhf/reward_model.cpp
+        ../experimental/rlhf/ppo.cpp
+        ../experimental/rlhf/ppo_trainer.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_GROUNDING)
     target_sources(serius_core PRIVATE
-        grounding/self_consistency.cpp
-        grounding/citation_engine.cpp
-        grounding/confidence.cpp
+        ../experimental/grounding/self_consistency.cpp
+        ../experimental/grounding/citation_engine.cpp
+        ../experimental/grounding/confidence.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_EVAL)
     target_sources(serius_core PRIVATE
-        eval/eval_suite.cpp
-        eval/perplexity.cpp
-        eval/perplexity_runner.cpp
-        eval/metrics.cpp
-        eval/report.cpp
+        ../experimental/eval/eval_suite.cpp
+        ../experimental/eval/perplexity.cpp
+        ../experimental/eval/perplexity_runner.cpp
+        ../experimental/eval/metrics.cpp
+        ../experimental/eval/report.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_REASONING)
     target_sources(serius_core PRIVATE
-        reasoning/cot.cpp
-        reasoning/mcts.cpp
-        reasoning/verifier.cpp
-        reasoning/budget.cpp
+        ../experimental/reasoning/cot.cpp
+        ../experimental/reasoning/mcts.cpp
+        ../experimental/reasoning/verifier.cpp
+        ../experimental/reasoning/budget.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_FEDERATED)
     target_sources(serius_core PRIVATE
-        federated/dp_noise.cpp
-        federated/aggregator.cpp
-        federated/user_adapter.cpp
+        ../experimental/federated/dp_noise.cpp
+        ../experimental/federated/aggregator.cpp
+        ../experimental/federated/user_adapter.cpp
     )
 endif()
 
 if(SERIUS_EXPERIMENTAL_KNOWLEDGE)
     target_sources(serius_core PRIVATE
-        knowledge/semantic_hash.cpp
-        knowledge/knowledge_fn.cpp
-        knowledge/fact_extractor.cpp
-        knowledge/knowledge_base.cpp
+        ../experimental/knowledge/semantic_hash.cpp
+        ../experimental/knowledge/knowledge_fn.cpp
+        ../experimental/knowledge/fact_extractor.cpp
+        ../experimental/knowledge/knowledge_base.cpp
+    )
+endif()
+
+if(SERIUS_EXPERIMENTAL_INFERENCE)
+    target_sources(serius_core PRIVATE
+        ../experimental/inference/sampler.cpp
+        ../experimental/inference/generate.cpp
     )
 endif()
 
 # Expose enabled experimental flags to consumers (cli, tests) via #ifdef.
 foreach(_exp_flag NEURO LIQUID WORLD QUANTUM SSM AUTOML MULTIMODAL INTERPRET
-                   RLHF GROUNDING EVAL REASONING FEDERATED KNOWLEDGE)
+                   RLHF GROUNDING EVAL REASONING FEDERATED KNOWLEDGE
+                   INFERENCE RAG AGENT AUTOOPT)
     if(SERIUS_EXPERIMENTAL_${_exp_flag})
         target_compile_definitions(serius_core PUBLIC SERIUS_EXPERIMENTAL_${_exp_flag}=1)
     endif()
@@ -312,6 +340,9 @@ else()
     set_source_files_properties(blas/matvec_quant.cpp PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512bw -mavx512dq -mavx512vl -mfma")
 endif()
 target_include_directories(serius_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# Sorgenti dei moduli sperimentali/didattici in ../experimental/ (opt-in via
+# SERIUS_EXPERIMENTAL_*). Include dir esposta ai consumatori (cli, tests).
+target_include_directories(serius_core PUBLIC ${CMAKE_SOURCE_DIR}/experimental)
 target_link_libraries(serius_core PUBLIC spdlog::spdlog nlohmann_json::nlohmann_json httplib::httplib ${CMAKE_DL_LIBS})
 
 # --- Server library ---

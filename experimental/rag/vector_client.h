@@ -4,7 +4,7 @@
 #include <vector>
 #include <functional>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 #include "nlohmann/json.hpp"
 
 namespace serius {

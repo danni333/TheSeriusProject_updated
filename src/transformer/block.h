@@ -18,9 +18,8 @@ class PagedKVCache;
 class TransformerBlock
 {
    public:
-    TransformerBlock(size_t d_model, size_t n_heads, size_t d_ff, unsigned seed = 42,
-                     size_t num_experts = 0, size_t top_k = 0, size_t shared_experts = 1,
-                     bool enable_moe = false);
+    TransformerBlock(size_t d_model, size_t n_heads, size_t d_ff, unsigned seed = 42, size_t num_experts = 0,
+                     size_t top_k = 0, size_t shared_experts = 1, bool enable_moe = false);
 
     /// Forward pass (pre-norm architecture)
     /// Input: (seq_len, d_model) or (batch_size, seq_len, d_model)

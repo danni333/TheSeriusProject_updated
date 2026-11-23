@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "../transformer/model.h"
+#include "transformer/model.h"
 #include "sampler.h"
 
 namespace serius {

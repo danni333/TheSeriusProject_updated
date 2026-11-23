@@ -17,12 +17,12 @@ using core::Tensor;
 
 /// Pattern types for block-sparse attention.
 enum class SparsityPattern {
-    CAUSAL,           // Standard causal pattern
-    SLIDING_WINDOW,   // Sliding window pattern
-    RANDOM,           // Random sparse pattern
-    FIXED,            // Fixed pattern from layout
-    LONGFORMER,       // Longformer-style global + local
-    BIGBIRD           // BigBird-style random + global + local
+    CAUSAL,          // Standard causal pattern
+    SLIDING_WINDOW,  // Sliding window pattern
+    RANDOM,          // Random sparse pattern
+    FIXED,           // Fixed pattern from layout
+    LONGFORMER,      // Longformer-style global + local
+    BIGBIRD          // BigBird-style random + global + local
 };
 
 /// Generate a block-sparse mask for attention.
@@ -31,9 +31,8 @@ enum class SparsityPattern {
 /// @param pattern Type of sparsity pattern
 /// @param window_size For sliding window patterns
 /// @return Mask tensor of shape (num_blocks, num_blocks) where 1 = active, 0 = inactive
-Tensor generate_block_mask(size_t seq_len, size_t block_size,
-                          SparsityPattern pattern = SparsityPattern::CAUSAL,
-                          size_t window_size = 0);
+Tensor generate_block_mask(size_t seq_len, size_t block_size, SparsityPattern pattern = SparsityPattern::CAUSAL,
+                           size_t window_size = 0);
 
 /// Generate a causal block mask (lower triangular).
 Tensor causal_block_mask(size_t num_blocks);
@@ -45,8 +44,7 @@ Tensor sliding_window_block_mask(size_t num_blocks, size_t window_blocks);
 Tensor random_block_mask(size_t num_blocks, float sparsity_ratio);
 
 /// Generate Longformer-style mask (global + local blocks).
-Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks,
-                             const std::vector<size_t>& global_blocks);
+Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks, const std::vector<size_t> &global_blocks);
 
 /// Generate a BigBird-style block mask: union of a causal sliding-window
 /// (local) pattern, global blocks (first `num_global_blocks` blocks attend to
@@ -57,18 +55,17 @@ Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks,
 /// @param num_global_blocks Number of leading blocks treated as global (0 = none)
 /// @param random_keep_prob Probability of an extra random edge per block pair
 /// @param seed RNG seed for the random edges
-Tensor bigbird_block_mask(size_t num_blocks, size_t window_blocks,
-                          size_t num_global_blocks, float random_keep_prob,
+Tensor bigbird_block_mask(size_t num_blocks, size_t window_blocks, size_t num_global_blocks, float random_keep_prob,
                           uint32_t seed = 0);
 
 /// Calculate sparsity ratio from a block mask.
-float calculate_sparsity_ratio(const Tensor& block_mask);
+float calculate_sparsity_ratio(const Tensor &block_mask);
 
 /// Convert block mask to full attention mask.
 /// @param block_mask Block-level mask (num_blocks, num_blocks)
 /// @param block_size Size of each block
 /// @return Full mask (seq_len, seq_len)
-Tensor block_mask_to_full_mask(const Tensor& block_mask, size_t block_size);
+Tensor block_mask_to_full_mask(const Tensor &block_mask, size_t block_size);
 
 #ifdef SERIUS_USE_CUDA
 /// Block-sparse attention (CUDA implementation).
@@ -81,9 +78,8 @@ Tensor block_mask_to_full_mask(const Tensor& block_mask, size_t block_size);
 /// @param block_size Size of each block
 /// @param stream CUDA stream
 /// @return Output tensor (seq_len, d_model) on GPU
-Tensor block_sparse_attention_cuda(
-    const Tensor& Q, const Tensor& K, const Tensor& V,
-    const Tensor& block_mask, size_t block_size, cudaStream_t stream = 0);
+Tensor block_sparse_attention_cuda(const Tensor &Q, const Tensor &K, const Tensor &V, const Tensor &block_mask,
+                                   size_t block_size, cudaStream_t stream = 0);
 #endif
 
 }  // namespace attention

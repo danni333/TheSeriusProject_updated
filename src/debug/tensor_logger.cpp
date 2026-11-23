@@ -11,7 +11,6 @@
 
 #include "../autograd/node.h"
 
-
 namespace serius {
 namespace debug {
 

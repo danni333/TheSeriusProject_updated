@@ -7,4 +7,3 @@ int cmd_serve(int argc, char **argv);
 
 }  // namespace cli
 }  // namespace serius
-

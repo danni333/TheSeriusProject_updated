@@ -4,7 +4,7 @@
 
 #include <cstddef>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 
 namespace serius {
 namespace world {

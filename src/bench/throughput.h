@@ -1,9 +1,9 @@
 #pragma once
 
-#include <string>
-#include <vector>
 #include <atomic>
 #include <mutex>
+#include <string>
+#include <vector>
 
 namespace serius {
 namespace bench {
@@ -22,11 +22,8 @@ struct ThroughputResult
 /// Benchmark multi-user throughput metrics.
 /// Launches N concurrent workers, each sending multiple requests.
 /// Measures aggregate throughput and per-request latency statistics.
-ThroughputResult bench_throughput(const std::string &model_path,
-                                  const std::vector<std::string> &prompts,
-                                  int concurrent_users,
-                                  int requests_per_user,
-                                  int max_tokens = 256);
+ThroughputResult bench_throughput(const std::string &model_path, const std::vector<std::string> &prompts,
+                                  int concurrent_users, int requests_per_user, int max_tokens = 256);
 
 }  // namespace bench
 }  // namespace serius

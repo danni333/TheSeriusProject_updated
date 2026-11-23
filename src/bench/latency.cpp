@@ -1,20 +1,20 @@
 #include "latency.h"
 
-#include "../tokenizer/bpe.h"
-#include "../tokenizer/vocab.h"
+#include <chrono>
+#include <filesystem>
+#include <iostream>
+#include <memory>
+#include <stdexcept>
+#include <string>
+
+#include "../infer/llama_inference.h"
+#include "../infer/sampler.h"
 #include "../io/config_loader.h"
 #include "../io/gguf_loader.h"
 #include "../io/hf_llama_loader.h"
-#include "../infer/llama_inference.h"
-#include "../infer/sampler.h"
+#include "../tokenizer/bpe.h"
+#include "../tokenizer/vocab.h"
 #include "../transformer/llama_model.h"
-
-#include <iostream>
-#include <stdexcept>
-#include <filesystem>
-#include <chrono>
-#include <memory>
-#include <string>
 
 namespace fs = std::filesystem;
 
@@ -33,15 +33,18 @@ std::string find_gguf_in_dir(const std::string &dir)
 {
     std::error_code ec;
     for (const auto &entry : fs::directory_iterator(dir, ec)) {
-        if (!entry.is_regular_file()) { continue; }
+        if (!entry.is_regular_file()) {
+            continue;
+        }
         const std::string p = entry.path().string();
-        if (is_gguf_file(p)) { return p; }
+        if (is_gguf_file(p)) {
+            return p;
+        }
     }
     return {};
 }
 
-void load_tokenizer(BPETokenizer &tokenizer, const std::string &model_path,
-                    const std::string &model_dir)
+void load_tokenizer(BPETokenizer &tokenizer, const std::string &model_path, const std::string &model_dir)
 {
     // Prefer an HF tokenizer.json/vocab.json next to the model.
     std::string vocab_path = model_dir + "/tokenizer.json";
@@ -52,9 +55,9 @@ void load_tokenizer(BPETokenizer &tokenizer, const std::string &model_path,
         try {
             tokenizer.load(vocab_path);
             return;
-        } catch (const std::exception &e) {
-            std::cout << "[Benchmark] Warning: tokenizer load failed (" << e.what()
-                      << "), trying GGUF metadata\n";
+        }
+        catch (const std::exception &e) {
+            std::cout << "[Benchmark] Warning: tokenizer load failed (" << e.what() << "), trying GGUF metadata\n";
         }
     }
 
@@ -68,8 +71,7 @@ void load_tokenizer(BPETokenizer &tokenizer, const std::string &model_path,
     }
 }
 
-model::LLamaConfig resolve_config(const std::string &model_path,
-                                  const std::string &model_dir,
+model::LLamaConfig resolve_config(const std::string &model_path, const std::string &model_dir,
                                   const BPETokenizer &tokenizer)
 {
     const std::string config_path = model_dir + "/config.json";
@@ -100,8 +102,7 @@ model::LLamaConfig resolve_config(const std::string &model_path,
     return cfg;
 }
 
-bool load_weights(model::LLaMAModel &model, const std::string &model_path,
-                  const std::string &model_dir)
+bool load_weights(model::LLaMAModel &model, const std::string &model_path, const std::string &model_dir)
 {
     if (is_gguf_file(model_path) && fs::is_regular_file(model_path)) {
         return io::load_llama_weights_from_gguf_file(model_path, &model);
@@ -149,9 +150,9 @@ std::unique_ptr<BenchModel> load_bench_model(const std::string &model_path, bool
                 if (infer::offload_llama_model_to_gpu(*bm->model)) {
                     std::cout << "[Benchmark] Model offloaded to GPU (" << dec.reason << ")\n";
                 }
-            } catch (const std::exception &e) {
-                std::cout << "[Benchmark] GPU offload failed: " << e.what()
-                          << " — staying on CPU\n";
+            }
+            catch (const std::exception &e) {
+                std::cout << "[Benchmark] GPU offload failed: " << e.what() << " — staying on CPU\n";
             }
         }
     }
@@ -196,8 +197,7 @@ LatencyResult bench_decode(const BenchModel &bm, const std::string &prompt, int 
 
     for (int step = 0; step < max_tokens; ++step) {
         const std::string tok_str = tokenizer.decode({static_cast<serius::TokenId>(next_id)});
-        if (next_id == static_cast<int>(tokenizer.eos_id()) ||
-            tok_str == "<|im_end|>") {
+        if (next_id == static_cast<int>(tokenizer.eos_id()) || tok_str == "<|im_end|>") {
             break;
         }
         ++result.generated_tokens;
@@ -213,16 +213,12 @@ LatencyResult bench_decode(const BenchModel &bm, const std::string &prompt, int 
         next_id = sampler.sample(logits);
     }
 
-    result.decode_tps = decode_s > 0.0
-                            ? static_cast<float>(result.generated_tokens / decode_s)
-                            : 0.0f;
+    result.decode_tps = decode_s > 0.0 ? static_cast<float>(result.generated_tokens / decode_s) : 0.0f;
     result.total_ms = result.ttft_ms + static_cast<float>(decode_s * 1000.0);
     return result;
 }
 
-LatencyResult bench_single(const std::string &model_path,
-                          const std::string &prompt,
-                          int max_tokens)
+LatencyResult bench_single(const std::string &model_path, const std::string &prompt, int max_tokens)
 {
     LatencyResult result;
 
@@ -241,8 +237,8 @@ LatencyResult bench_single(const std::string &model_path,
         std::cout << "  Prefill TPS: " << result.prefill_tps << " tok/s\n";
         std::cout << "  Decode TPS: " << result.decode_tps << " tok/s\n";
         std::cout << "  Total time: " << result.total_ms << " ms\n";
-
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         std::cout << "[Benchmark] Error: " << e.what() << "\n";
         result.ttft_ms = 0.0f;
         result.decode_tps = 0.0f;

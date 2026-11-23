@@ -1,5 +1,7 @@
 #pragma once
 
+#include <httplib.h>
+
 #include <atomic>
 #include <cstdint>
 #include <map>
@@ -8,8 +10,6 @@
 #include <string>
 #include <thread>
 #include <vector>
-
-#include <httplib.h>
 
 #include "../common/defaults.h"
 #include "../tokenizer/bpe.h"
@@ -83,7 +83,7 @@ struct LoadedModel
 /// Uses cpp-httplib; run() blocks until shutdown.
 class Server
 {
-public:
+   public:
     explicit Server(uint16_t port = defaults::kHttpPort);
     explicit Server(const ServerConfig &config);
     ~Server();
@@ -101,7 +101,8 @@ public:
 
     /// Direct setters for pre-constructed models (useful for testing or programmatic setup)
     void set_llama_model(std::unique_ptr<model::LLaMAModel> model, std::unique_ptr<BPETokenizer> tokenizer = nullptr);
-    void set_transformer_model(std::unique_ptr<model::TransformerModel> model, std::unique_ptr<BPETokenizer> tokenizer = nullptr);
+    void set_transformer_model(std::unique_ptr<model::TransformerModel> model,
+                               std::unique_ptr<BPETokenizer> tokenizer = nullptr);
 
     /// Check if a model is currently loaded
     bool has_model() const;
@@ -120,7 +121,7 @@ public:
     uint16_t port() const { return port_; }
     InferenceMetrics &metrics();
 
-private:
+   private:
     void setup_routes();
 
     /// Shared handlers for /health and /metrics, used by both the main
@@ -181,4 +182,3 @@ std::string extract_last_user_message(const std::string &json_body);
 
 }  // namespace server
 }  // namespace serius
-

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <string>
-
 namespace serius {
 namespace optim {
 

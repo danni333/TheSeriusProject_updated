@@ -27,8 +27,7 @@ struct ShardedSafetensorsIndex
 bool load_sharded_safetensors(const std::string &index_path, std::map<std::string, core::Tensor> *out);
 
 /// Write a sharded safetensors index for a tensor collection.
-bool write_sharded_safetensors_index(const std::string &directory,
-                                     const std::string &base_name,
+bool write_sharded_safetensors_index(const std::string &directory, const std::string &base_name,
                                      const std::vector<std::pair<std::string, core::Tensor>> &tensors,
                                      size_t max_shard_bytes = 0);
 

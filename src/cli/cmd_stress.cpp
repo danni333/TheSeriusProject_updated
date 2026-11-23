@@ -1,12 +1,13 @@
 #include "cli/cmd_stress.h"
-#include "cli/args_parser.h"
-#include "stress/stress_runner.h"
-#include "stress/report.h"
-#include "stress/leak_detector.h"
-#include "../common/defaults.h"
 
-#include <iostream>
 #include <fstream>
+#include <iostream>
+
+#include "../common/defaults.h"
+#include "cli/args_parser.h"
+#include "stress/leak_detector.h"
+#include "stress/report.h"
+#include "stress/stress_runner.h"
 
 namespace serius {
 namespace cli {
@@ -95,8 +96,7 @@ int cmd_stress(int argc, char **argv)
     } else if (test_type == "chaos") {
         std::cout << "Running chaos test...\n";
         auto chaos = runner.run_chaos(config);
-        std::cout << "Chaos checks: " << chaos.checks_passed << " passed, "
-                  << chaos.checks_failed << " failed"
+        std::cout << "Chaos checks: " << chaos.checks_passed << " passed, " << chaos.checks_failed << " failed"
                   << (chaos.server_alive ? "" : " — SERVER UNREACHABLE") << "\n";
         return chaos.checks_failed == 0 && chaos.server_alive ? 0 : 1;
     } else {
@@ -113,11 +113,8 @@ int cmd_stress(int argc, char **argv)
         std::cout << "Running leak detection...\n";
         std::vector<stress::MemorySample> samples;
         for (size_t i = 0; i < result.vram_timeline.size() && i < result.ram_timeline.size(); ++i) {
-            samples.push_back({
-                result.vram_timeline[i].first,
-                result.vram_timeline[i].second,
-                result.ram_timeline[i].second
-            });
+            samples.push_back(
+                {result.vram_timeline[i].first, result.vram_timeline[i].second, result.ram_timeline[i].second});
         }
 
         float duration_hours = static_cast<float>(duration) / 3600.0f;

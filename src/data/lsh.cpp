@@ -1,7 +1,7 @@
 #include "lsh.h"
 
 #include <cstdint>
-#include <functional>
+#include <utility>
 
 namespace serius {
 namespace data {

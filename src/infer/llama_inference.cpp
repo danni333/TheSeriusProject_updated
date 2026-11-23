@@ -1,18 +1,21 @@
 #include "llama_inference.h"
-#include "activation_hook.h"
+
+#include <immintrin.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
-#include <cstring>
-#include <immintrin.h>
+
+#include "activation_hook.h"
 
 #ifdef SERIUS_USE_CUDA
 #include <cuda_runtime.h>
+
 #include <iostream>
 #include <stdexcept>
 
@@ -52,7 +55,8 @@ constexpr float ATTENTION_MASK_VAL = -1e9F;
 // and last-position logit parity vs the sequential path (max diff ~3e-3 on a
 // real Q4_K_M GGUF, same argmax). Set SERIUS_PREFILL_BATCH=0 to force the
 // slower per-token prefill for debugging.
-inline bool prefill_batch_enabled() {
+inline bool prefill_batch_enabled()
+{
     static const bool enabled = [] {
 #if defined(_MSC_VER)
         char buf[8];
@@ -69,11 +73,36 @@ inline bool prefill_batch_enabled() {
     return enabled;
 }
 
+// The CPU batched-prefill kernels are pathologically slow on quantized GGUF
+// models (dense FP32 weights, naive batched attention): a ~13-token prompt can
+// take minutes vs ~1s per-token. The measured win of batched prefill is on the
+// CUDA path only, so the CPU path stays per-token unless explicitly opted in
+// with SERIUS_PREFILL_BATCH_CPU=1. SERIUS_PREFILL_BATCH=0 still disables both.
+inline bool cpu_prefill_batch_enabled()
+{
+    static const bool enabled = [] {
+#if defined(_MSC_VER)
+        char buf[8];
+        size_t len = 0;
+        if (getenv_s(&len, buf, sizeof(buf), "SERIUS_PREFILL_BATCH_CPU") != 0 ||
+            len == 0) {
+            return false;
+        }
+        return buf[0] == '1';
+#else
+        const char *v = std::getenv("SERIUS_PREFILL_BATCH_CPU");
+        return v != nullptr && v[0] == '1';
+#endif
+    }();
+    return enabled && prefill_batch_enabled();
+}
+
 using core::Tensor;
 
 // --- Temporary decode profiling (SERIUS_PROF=1) ---
 namespace prof {
-inline bool enabled() {
+inline bool enabled()
+{
     static const bool e = [] {
 #if defined(_MSC_VER)
         size_t n = 0;
@@ -84,26 +113,35 @@ inline bool enabled() {
     }();
     return e;
 }
-struct Acc {
+struct Acc
+{
     double attn_pre = 0, attn_hd = 0, attn_post = 0, mlp = 0, mlp_gu = 0, mlp_rest = 0, head = 0;
     double g_qkv = 0, g_o = 0, g_gu = 0, g_down = 0, g_lm = 0;
     long calls = 0;
 };
-inline Acc &acc() { static Acc a; return a; }
-inline double now() {
+inline Acc &acc()
+{
+    static Acc a;
+    return a;
+}
+inline double now()
+{
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-inline void report() {
-    if (!enabled()) { return; }
+inline void report()
+{
+    if (!enabled()) {
+        return;
+    }
     Acc &a = acc();
     ++a.calls;
     if (a.calls % 300 == 0) {
         std::fprintf(stderr,
-            "[prof] attn_pre=%.3f attn_hd=%.3f attn_post=%.3f mlp=%.3f (gu=%.3f rest=%.3f) head=%.3f ms/tok\n"
-            "       gemv: qkv=%.3f o=%.3f gateup=%.3f down=%.3f lm=%.3f ms/tok\n",
-            a.attn_pre * 1e3, a.attn_hd * 1e3, a.attn_post * 1e3, a.mlp * 1e3,
-            a.mlp_gu * 1e3, a.mlp_rest * 1e3, a.head * 1e3,
-            a.g_qkv * 1e3, a.g_o * 1e3, a.g_gu * 1e3, a.g_down * 1e3, a.g_lm * 1e3);
+                     "[prof] attn_pre=%.3f attn_hd=%.3f attn_post=%.3f mlp=%.3f (gu=%.3f rest=%.3f) head=%.3f ms/tok\n"
+                     "       gemv: qkv=%.3f o=%.3f gateup=%.3f down=%.3f lm=%.3f ms/tok\n",
+                     a.attn_pre * 1e3, a.attn_hd * 1e3, a.attn_post * 1e3, a.mlp * 1e3, a.mlp_gu * 1e3,
+                     a.mlp_rest * 1e3, a.head * 1e3, a.g_qkv * 1e3, a.g_o * 1e3, a.g_gu * 1e3, a.g_down * 1e3,
+                     a.g_lm * 1e3);
         a.attn_pre = a.attn_hd = a.attn_post = a.mlp = a.mlp_gu = a.mlp_rest = a.head = 0.0;
         a.g_qkv = a.g_o = a.g_gu = a.g_down = a.g_lm = 0.0;
     }
@@ -113,13 +151,14 @@ inline void report() {
 // Flush-to-zero / denormals-are-zero on the caller thread AND all OpenMP
 // workers. Quantized dequant + exp approximations produce subnormal floats;
 // without DAZ/FTZ every FMA on them traps to microcode (~100x slower).
-static void enable_ftz_daz_once() {
+static void enable_ftz_daz_once()
+{
     static std::once_flag flag;
     std::call_once(flag, [] {
         const unsigned bits = _MM_FLUSH_ZERO_ON | _MM_DENORMALS_ZERO_ON;
         _mm_setcsr(_mm_getcsr() | bits);
 #if defined(_OPENMP)
-        #pragma omp parallel
+#pragma omp parallel
         {
             _mm_setcsr(_mm_getcsr() | bits);
         }
@@ -127,23 +166,10 @@ static void enable_ftz_daz_once() {
     });
 }
 
-[[maybe_unused]] static size_t get_dtype_size(hal::DType dtype) {
-    switch (dtype) {
-        case hal::DType::Float32:
-            return 4;
-        case hal::DType::Float16:
-        case hal::DType::BFloat16:
-            return 2;
-        case hal::DType::Int8:
-            return 1;
-        default:
-            return 4;
-    }
-}
-
 // --- AVX2 Helpers ---
 
-inline float _mm256_reduce_add_ps(__m256 input_vec) {
+inline float _mm256_reduce_add_ps(__m256 input_vec)
+{
     __m128 high_vec = _mm256_extractf128_ps(input_vec, 1);
     __m128 low_vec = _mm256_castps256_ps128(input_vec);
     __m128 sum_vec = _mm_add_ps(high_vec, low_vec);
@@ -152,7 +178,8 @@ inline float _mm256_reduce_add_ps(__m256 input_vec) {
     return _mm_cvtss_f32(sum_vec);
 }
 
-inline float vec_dot_avx2(const float *vec_a, const float *vec_b, size_t n) {
+inline float vec_dot_avx2(const float *vec_a, const float *vec_b, size_t n)
+{
     __m256 vsum = _mm256_setzero_ps();
     size_t vec_idx = 0;
     constexpr size_t AVX_STEP = 8;
@@ -166,7 +193,8 @@ inline float vec_dot_avx2(const float *vec_a, const float *vec_b, size_t n) {
     return sum;
 }
 
-struct ScaleAccumulator {
+struct ScaleAccumulator
+{
     float *data;
     const float *increment;
     float scale;
@@ -189,7 +217,8 @@ static void vec_add_scale_avx2(const ScaleAccumulator &args)
     }
 }
 
-struct RMSNormArgs {
+struct RMSNormArgs
+{
     const float *inputs;
     const float *weights;
     float *outputs;
@@ -198,7 +227,8 @@ struct RMSNormArgs {
     float eps;
 };
 
-static void rms_norm(const RMSNormArgs &args) {
+static void rms_norm(const RMSNormArgs &args)
+{
     for (size_t row_idx = 0; row_idx < args.rows; ++row_idx) {
         const float *in_row = args.inputs + (row_idx * args.dim);
         float *out_row = args.outputs + (row_idx * args.dim);
@@ -226,7 +256,8 @@ static void rms_norm(const RMSNormArgs &args) {
     }
 }
 
-struct RoPEArgs {
+struct RoPEArgs
+{
     float *data;
     size_t seq_len;
     size_t model_dim;
@@ -235,14 +266,16 @@ struct RoPEArgs {
     size_t pos_offset;
 };
 
-static void apply_rope_inplace(const RoPEArgs &args) {
+static void apply_rope_inplace(const RoPEArgs &args)
+{
     const size_t half_dim = args.head_dim / 2;
 
     // Decode fast path (seq_len == 1): inv_freq is position-independent, so
     // cache it; cos/sin for the single position go on the stack. All heads
     // and both Q/K share the same tables.
     if (args.seq_len == 1) {
-        struct InvFreqCache {
+        struct InvFreqCache
+        {
             size_t head_dim = 0;
             float rope_base = 0.0F;
             std::vector<float> inv_freq;
@@ -251,8 +284,8 @@ static void apply_rope_inplace(const RoPEArgs &args) {
         if (cache.head_dim != args.head_dim || cache.rope_base != args.rope_base) {
             cache.inv_freq.resize(half_dim);
             for (size_t i = 0; i < half_dim; ++i) {
-                cache.inv_freq[i] = 1.0F / std::pow(args.rope_base,
-                    static_cast<float>(2 * i) / static_cast<float>(args.head_dim));
+                cache.inv_freq[i] =
+                    1.0F / std::pow(args.rope_base, static_cast<float>(2 * i) / static_cast<float>(args.head_dim));
             }
             cache.head_dim = args.head_dim;
             cache.rope_base = args.rope_base;
@@ -272,7 +305,7 @@ static void apply_rope_inplace(const RoPEArgs &args) {
             for (size_t i = 0; i < half_dim; ++i) {
                 const float val_x0 = head_ptr[i];
                 const float val_x1 = head_ptr[i + half_dim];
-                head_ptr[i]            = (val_x0 * cos_t[i]) - (val_x1 * sin_t[i]);
+                head_ptr[i] = (val_x0 * cos_t[i]) - (val_x1 * sin_t[i]);
                 head_ptr[i + half_dim] = (val_x0 * sin_t[i]) + (val_x1 * cos_t[i]);
             }
         }
@@ -299,8 +332,8 @@ static void apply_rope_inplace(const RoPEArgs &args) {
     for (size_t pos = 0; pos < args.seq_len; ++pos) {
         const float abs_pos = static_cast<float>(pos + args.pos_offset);
         for (size_t i = 0; i < half_dim; ++i) {
-            const float freq = 1.0F / std::pow(args.rope_base,
-                static_cast<float>(2 * i) / static_cast<float>(args.head_dim));
+            const float freq =
+                1.0F / std::pow(args.rope_base, static_cast<float>(2 * i) / static_cast<float>(args.head_dim));
             const float theta = abs_pos * freq;
             cos_table[pos * half_dim + i] = std::cos(theta);
             sin_table[pos * half_dim + i] = std::sin(theta);
@@ -316,7 +349,7 @@ static void apply_rope_inplace(const RoPEArgs &args) {
             for (size_t i = 0; i < half_dim; ++i) {
                 const float val_x0 = head_ptr[i];
                 const float val_x1 = head_ptr[i + half_dim];
-                head_ptr[i]            = (val_x0 * cos_row[i]) - (val_x1 * sin_row[i]);
+                head_ptr[i] = (val_x0 * cos_row[i]) - (val_x1 * sin_row[i]);
                 head_ptr[i + half_dim] = (val_x0 * sin_row[i]) + (val_x1 * cos_row[i]);
             }
         }
@@ -341,58 +374,19 @@ inline __m256 exp256_ps(__m256 x)
     p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0F));
     p = _mm256_fmadd_ps(p, r, _mm256_set1_ps(1.0F));
     const __m256i ni = _mm256_cvtps_epi32(n);
-    const __m256 pow2n = _mm256_castsi256_ps(
-        _mm256_slli_epi32(_mm256_add_epi32(ni, _mm256_set1_epi32(127)), 23));
+    const __m256 pow2n = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_add_epi32(ni, _mm256_set1_epi32(127)), 23));
     return _mm256_mul_ps(p, pow2n);
 }
 
-[[maybe_unused]] static void silu_inplace(float *data_ptr, size_t count) {
-    // AVX2 path: process 8 floats at a time.
-    // SiLU(x) = x * sigmoid(x) = x / (1 + exp(-x))
-    // We approximate exp via a fast polynomial for the AVX lanes and use the
-    // scalar std::exp only for the tail (at most 7 elements).
-    size_t idx = 0;
-#if defined(__AVX2__) || defined(_MSC_VER)
-    const __m256 ones  = _mm256_set1_ps(1.0F);
-    const __m256 zeros = _mm256_setzero_ps();
-    // Fast sigmoid approximation: 1/(1+exp(-x)) ≈ clamp(x/8+0.5, 0, 1)
-    // Good enough for SiLU's smooth region; for high accuracy the scalar path
-    // is used at the tail anyway.
-    // Actually use the exact scalar formula but vectorised via libm:
-    // We do x * (x >= 0 ? 1/(1+exp(-x)) : exp(x)/(1+exp(x))) — same thing.
-    // Faster trick: replace 1/(1+exp(-x)) with the tanh identity:
-    //   sigmoid(x) = (tanh(x/2) + 1) / 2
-    // which is not available as an AVX intrinsic either; keep scalar for
-    // correctness but vectorise the multiply back.
-    // Best available: compute in scalar, store back vectorised.
-    // For now do the full 8-wide loop with scalar exp per element:
-    for (; idx + 8 <= count; idx += 8) {
-        // Load 8 values
-        __m256 v = _mm256_loadu_ps(data_ptr + idx);
-        // Compute SiLU element-wise (scalar exp, fastest portable approach)
-        float buf[8];
-        _mm256_storeu_ps(buf, v);
-        for (int k = 0; k < 8; ++k) {
-            buf[k] = buf[k] / (1.0F + std::exp(-buf[k]));
-        }
-        _mm256_storeu_ps(data_ptr + idx, _mm256_loadu_ps(buf));
-    }
-    (void)ones; (void)zeros;
-#endif
-    // Scalar tail
-    for (; idx < count; ++idx) {
-        const float val = data_ptr[idx];
-        data_ptr[idx] = val / (1.0F + std::exp(-val));
-    }
-}
-
-struct SoftmaxRowsArgs {
+struct SoftmaxRowsArgs
+{
     float *data;
     size_t rows;
     size_t cols;
 };
 
-static void softmax_rows_inplace(const SoftmaxRowsArgs &args) {
+static void softmax_rows_inplace(const SoftmaxRowsArgs &args)
+{
     for (size_t row_idx = 0; row_idx < args.rows; ++row_idx) {
         float *row = args.data + (row_idx * args.cols);
         float max_val = row[0];
@@ -405,7 +399,9 @@ static void softmax_rows_inplace(const SoftmaxRowsArgs &args) {
             }
             alignas(32) float mbuf[AVX_FLOAT_STRIDE];
             _mm256_store_ps(mbuf, vmax);
-            for (int i = 0; i < AVX_FLOAT_STRIDE; ++i) { max_val = std::max(max_val, mbuf[i]); }
+            for (int i = 0; i < AVX_FLOAT_STRIDE; ++i) {
+                max_val = std::max(max_val, mbuf[i]);
+            }
         }
 #endif
         for (; col_idx < args.cols; ++col_idx) {
@@ -448,11 +444,10 @@ static void softmax_rows_inplace(const SoftmaxRowsArgs &args) {
 /**
  * @brief Computes Q, K, and V projections and applies RoPE.
  */
-static void compute_qkv_rope(
-    const model::LLaMABlock *block, const Tensor &normed_tensor,
-    Tensor &query_buf, Tensor &key_buf, Tensor &value_buf,
-    size_t seq_len, size_t pos_offset, const model::LLamaConfig &cfg) {
-    
+static void compute_qkv_rope(const model::LLaMABlock *block, const Tensor &normed_tensor, Tensor &query_buf,
+                             Tensor &key_buf, Tensor &value_buf, size_t seq_len, size_t pos_offset,
+                             const model::LLamaConfig &cfg)
+{
     const size_t hidden_dim = cfg.hidden_size;
     const size_t head_dim = hidden_dim / cfg.num_attention_heads;
     const size_t local_hidden_dim = query_buf.shape()[1];
@@ -460,14 +455,15 @@ static void compute_qkv_rope(
 
     // Fast path: packed-quantized weights with on-the-fly dequant GEMV (M==1 only)
     const size_t qkv_total = local_hidden_dim + 2 * local_kv_dim;
-    if (seq_len == 1 && block->qkv_w.valid() && block->qkv_w.in == hidden_dim &&
-        block->qkv_w.out == qkv_total) {
+    if (seq_len == 1 && block->qkv_w.valid() && block->qkv_w.in == hidden_dim && block->qkv_w.out == qkv_total) {
         thread_local std::vector<float> qkv_tmp;
         qkv_tmp.resize(qkv_total);
         const bool p = prof::enabled();
         const double t0 = p ? prof::now() : 0.0;
         core::blas::matvec_q(block->qkv_w, normed_tensor.data(), qkv_tmp.data());
-        if (p) { prof::acc().g_qkv += prof::now() - t0; }
+        if (p) {
+            prof::acc().g_qkv += prof::now() - t0;
+        }
         std::memcpy(query_buf.data(), qkv_tmp.data(), local_hidden_dim * sizeof(float));
         std::memcpy(key_buf.data(), qkv_tmp.data() + local_hidden_dim, local_kv_dim * sizeof(float));
         std::memcpy(value_buf.data(), qkv_tmp.data() + local_hidden_dim + local_kv_dim, local_kv_dim * sizeof(float));
@@ -479,16 +475,26 @@ static void compute_qkv_rope(
 
     // Q/K/V projection biases (Qwen2/Qwen2.5 have large ones; zero elsewhere).
     auto add_qkv_bias = [](float *buf, size_t rows, size_t cols, const core::Tensor &bias) {
-        if (bias.size() != cols) { return; }
+        if (bias.size() != cols) {
+            return;
+        }
         const float *b = bias.data();
         for (size_t r = 0; r < rows; ++r) {
             float *row = buf + (r * cols);
-            for (size_t c = 0; c < cols; ++c) { row[c] += b[c]; }
+            for (size_t c = 0; c < cols; ++c) {
+                row[c] += b[c];
+            }
         }
     };
-    if (block->q_bias) { add_qkv_bias(query_buf.data(), seq_len, local_hidden_dim, block->q_bias->data); }
-    if (block->k_bias) { add_qkv_bias(key_buf.data(), seq_len, local_kv_dim, block->k_bias->data); }
-    if (block->v_bias) { add_qkv_bias(value_buf.data(), seq_len, local_kv_dim, block->v_bias->data); }
+    if (block->q_bias) {
+        add_qkv_bias(query_buf.data(), seq_len, local_hidden_dim, block->q_bias->data);
+    }
+    if (block->k_bias) {
+        add_qkv_bias(key_buf.data(), seq_len, local_kv_dim, block->k_bias->data);
+    }
+    if (block->v_bias) {
+        add_qkv_bias(value_buf.data(), seq_len, local_kv_dim, block->v_bias->data);
+    }
 
     apply_rope_inplace({query_buf.data(), seq_len, local_hidden_dim, head_dim, cfg.rope_theta, pos_offset});
     apply_rope_inplace({key_buf.data(), seq_len, local_kv_dim, head_dim, cfg.rope_theta, pos_offset});
@@ -514,9 +520,13 @@ static inline __m128i f32x8_to_f16x8(__m256 v)
         int e = static_cast<int>((b >> 23) & 0xFF) - 127 + 15;
         uint32_t m = b & 0x7FFFFFu;
         uint16_t r;
-        if (e <= 0) { r = static_cast<uint16_t>(sign); }
-        else if (e >= 31) { r = static_cast<uint16_t>(sign | 0x7C00u); }
-        else { r = static_cast<uint16_t>(sign | (static_cast<uint32_t>(e) << 10) | (m >> 13)); }
+        if (e <= 0) {
+            r = static_cast<uint16_t>(sign);
+        } else if (e >= 31) {
+            r = static_cast<uint16_t>(sign | 0x7C00u);
+        } else {
+            r = static_cast<uint16_t>(sign | (static_cast<uint32_t>(e) << 10) | (m >> 13));
+        }
         h = _mm_insert_epi16(h, static_cast<int>(r), i);
     }
     return h;
@@ -538,11 +548,15 @@ static inline __m256 f16x8_to_f32x8(__m128i h)
         const uint32_t m = b & 0x3FFu;
         uint32_t r;
         if (e == 0) {
-            if (m == 0) { r = sign; }
-            else {
+            if (m == 0) {
+                r = sign;
+            } else {
                 int exp = -1;
                 uint32_t mm = m;
-                while ((mm & 0x400u) == 0) { mm <<= 1; --exp; }
+                while ((mm & 0x400u) == 0) {
+                    mm <<= 1;
+                    --exp;
+                }
                 mm &= 0x3FFu;
                 r = sign | static_cast<uint32_t>(127 - 15 + 1 + exp << 23) | (mm << 13);
             }
@@ -564,8 +578,12 @@ static inline uint16_t f32_to_f16_scalar(float x)
     const uint32_t sign = (b >> 16) & 0x8000u;
     int e = static_cast<int>((b >> 23) & 0xFF) - 127 + 15;
     const uint32_t m = b & 0x7FFFFFu;
-    if (e <= 0) { return static_cast<uint16_t>(sign); }
-    if (e >= 31) { return static_cast<uint16_t>(sign | 0x7C00u); }
+    if (e <= 0) {
+        return static_cast<uint16_t>(sign);
+    }
+    if (e >= 31) {
+        return static_cast<uint16_t>(sign | 0x7C00u);
+    }
     return static_cast<uint16_t>(sign | (static_cast<uint32_t>(e) << 10) | (m >> 13));
 }
 
@@ -577,11 +595,15 @@ static inline float f16_to_f32_scalar(uint16_t h)
     const uint32_t m = b & 0x3FFu;
     uint32_t r;
     if (e == 0) {
-        if (m == 0) { r = sign; }
-        else {
+        if (m == 0) {
+            r = sign;
+        } else {
             int exp = -1;
             uint32_t mm = m;
-            while ((mm & 0x400u) == 0) { mm <<= 1; --exp; }
+            while ((mm & 0x400u) == 0) {
+                mm <<= 1;
+                --exp;
+            }
             mm &= 0x3FFu;
             r = sign | (static_cast<uint32_t>(127 - 14 + exp) << 23) | (mm << 13);
         }
@@ -596,8 +618,7 @@ static inline float f16_to_f32_scalar(uint16_t h)
 }
 
 // Dot product q(fp32) . kv(fp16 or fp32) at element offset `off`.
-static float kv_dot_f32(const float *q, const uint16_t *p16, const float *p32,
-                        size_t off, size_t dim)
+static float kv_dot_f32(const float *q, const uint16_t *p16, const float *p32, size_t off, size_t dim)
 {
     __m256 acc = _mm256_setzero_ps();
     size_t d = 0;
@@ -656,7 +677,8 @@ static void ensure_kv_capacity(KVCacheLayer *cache_layer, size_t needed, size_t 
     cache_layer->v = std::move(new_v);
 }
 
-static void update_kv_cache(KVCacheLayer *cache_layer, const Tensor &key_buf, const Tensor &value_buf, size_t seq_len) {
+static void update_kv_cache(KVCacheLayer *cache_layer, const Tensor &key_buf, const Tensor &value_buf, size_t seq_len)
+{
     if (cache_layer == nullptr) {
         return;
     }
@@ -687,7 +709,8 @@ static void update_kv_cache(KVCacheLayer *cache_layer, const Tensor &key_buf, co
     cache_layer->current_len += seq_len;
 }
 
-struct HeadAttentionArgs {
+struct HeadAttentionArgs
+{
     int head_idx;
     size_t seq_len;
     size_t pos_offset;
@@ -708,7 +731,8 @@ struct HeadAttentionArgs {
 /**
  * @brief Computes attention scores and output for a single head.
  */
-static void compute_head_attention(const HeadAttentionArgs &args) {
+static void compute_head_attention(const HeadAttentionArgs &args)
+{
     const ActivationHooks &ahooks = activation_hooks();
     const bool want_attn_hook = (ahooks.attention_row != nullptr && args.layer_idx >= 0);
     const size_t kv_head_idx = static_cast<size_t>(args.head_idx) / args.num_rep;
@@ -723,13 +747,12 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
             scores = heap_scores.data();
         }
 
-        const float *q_ptr = args.query_buf.data() + (qi * args.local_hidden_dim) + (static_cast<size_t>(args.head_idx) * args.head_dim);
+        const float *q_ptr =
+            args.query_buf.data() + (qi * args.local_hidden_dim) + (static_cast<size_t>(args.head_idx) * args.head_dim);
         // With a KV cache, positions are absolute (pos_offset + qi). Without
         // one, key_buf/value_buf only hold the seq_len rows being processed —
         // attending to pos_offset + qi + 1 positions would read out of bounds.
-        const size_t npos = (args.cache_layer != nullptr)
-            ? (args.pos_offset + qi + 1)
-            : (qi + 1);
+        const size_t npos = (args.cache_layer != nullptr) ? (args.pos_offset + qi + 1) : (qi + 1);
         const size_t koff = kv_head_idx * args.head_dim;
         // FP16 KV cache when available (halves attention DRAM traffic).
         // SERIUS_KV_FP32=1 forces the fp32 path for max precision.
@@ -746,7 +769,8 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
         const uint16_t *k16base = kv16 ? args.cache_layer->k16.data() : nullptr;
         const uint16_t *v16base = kv16 ? args.cache_layer->v16.data() : nullptr;
         const float *kbase = (!kv16 && args.cache_layer != nullptr) ? args.cache_layer->k.data() : args.key_buf.data();
-        const float *vbase32 = (!kv16 && args.cache_layer != nullptr) ? args.cache_layer->v.data() : args.value_buf.data();
+        const float *vbase32 =
+            (!kv16 && args.cache_layer != nullptr) ? args.cache_layer->v.data() : args.value_buf.data();
         auto load_kv = [](const uint16_t *p16, const float *p32, size_t off) -> __m256 {
             return p16 ? f16x8_to_f32x8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(p16 + off)))
                        : _mm256_loadu_ps(p32 + off);
@@ -773,13 +797,13 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
                 scores[kj + 3] = _mm256_reduce_add_ps(a3) * args.attention_scale;
             }
             for (; kj < npos; ++kj) {
-                scores[kj] = kv_dot_f32(q_ptr, k16base, kbase,
-                    (kj * args.local_kv_dim) + koff, args.head_dim) * args.attention_scale;
+                scores[kj] = kv_dot_f32(q_ptr, k16base, kbase, (kj * args.local_kv_dim) + koff, args.head_dim) *
+                             args.attention_scale;
             }
         } else {
             for (size_t kj = 0; kj < npos; ++kj) {
-                scores[kj] = kv_dot_f32(q_ptr, k16base, kbase,
-                    (kj * args.local_kv_dim) + koff, args.head_dim) * args.attention_scale;
+                scores[kj] = kv_dot_f32(q_ptr, k16base, kbase, (kj * args.local_kv_dim) + koff, args.head_dim) *
+                             args.attention_scale;
             }
         }
         for (size_t kj = npos; kj < args.total_len; ++kj) {
@@ -794,13 +818,16 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
             ahooks.attention_row(args.layer_idx, args.head_idx, qi, scores, npos);
         }
 
-        float *out_ptr = args.attention_out_ptr + (qi * args.local_hidden_dim) + (static_cast<size_t>(args.head_idx) * args.head_dim);
+        float *out_ptr = args.attention_out_ptr + (qi * args.local_hidden_dim) +
+                         (static_cast<size_t>(args.head_idx) * args.head_dim);
         if (simd_ok) {
             // Weighted-V sum with the output kept in registers across all positions.
             constexpr size_t MAX_VVEC = 16;  // head_dim <= 128
             __m256 vacc[MAX_VVEC];
             const size_t nvec = args.head_dim / AVX_FLOAT_STRIDE;
-            for (size_t d = 0; d < nvec; ++d) { vacc[d] = _mm256_setzero_ps(); }
+            for (size_t d = 0; d < nvec; ++d) {
+                vacc[d] = _mm256_setzero_ps();
+            }
             const size_t voff = kv_head_idx * args.head_dim;
             for (size_t kj = 0; kj < npos; ++kj) {
                 const __m256 s = _mm256_set1_ps(scores[kj]);
@@ -815,18 +842,21 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
         } else {
             std::memset(out_ptr, 0, args.head_dim * sizeof(float));
             std::vector<float> vrow;
-            if (kv16) { vrow.resize(args.head_dim); }
+            if (kv16) {
+                vrow.resize(args.head_dim);
+            }
             for (size_t kj = 0; kj < npos; ++kj) {
                 const size_t vo = kj * args.local_kv_dim + (kv_head_idx * args.head_dim);
                 const float *v_ptr;
                 if (kv16) {
                     const uint16_t *s = v16base + vo;
-                    for (size_t d = 0; d < args.head_dim; ++d) { vrow[d] = f16_to_f32_scalar(s[d]); }
+                    for (size_t d = 0; d < args.head_dim; ++d) {
+                        vrow[d] = f16_to_f32_scalar(s[d]);
+                    }
                     v_ptr = vrow.data();
                 } else {
-                    v_ptr = (args.cache_layer != nullptr)
-                        ? (args.cache_layer->v.data() + vo)
-                        : (args.value_buf.data() + vo);
+                    v_ptr = (args.cache_layer != nullptr) ? (args.cache_layer->v.data() + vo)
+                                                          : (args.value_buf.data() + vo);
                 }
                 vec_add_scale_avx2({out_ptr, v_ptr, scores[kj], args.head_dim});
             }
@@ -834,7 +864,8 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
     }
 }
 
-static void initialize_kv_cache(KVCache *cache, const model::LLaMAModel &model, size_t local_kv_dim) {
+static void initialize_kv_cache(KVCache *cache, const model::LLaMAModel &model, size_t local_kv_dim)
+{
     if (cache != nullptr && (cache->empty() || cache->layers.size() != model.layers().size())) {
         const size_t num_layers = model.layers().size();
         cache->layers.resize(num_layers);
@@ -848,7 +879,8 @@ static void initialize_kv_cache(KVCache *cache, const model::LLaMAModel &model, 
     }
 }
 
-static void preprocess_embeddings(const model::LLaMAModel &model, const Tensor &token_ids, Tensor &hidden_states) {
+static void preprocess_embeddings(const model::LLaMAModel &model, const Tensor &token_ids, Tensor &hidden_states)
+{
     if (model.embed_tokens() != nullptr) {
         const size_t seq_len = token_ids.size();
         const size_t hidden_dim = model.config().hidden_size;
@@ -858,22 +890,17 @@ static void preprocess_embeddings(const model::LLaMAModel &model, const Tensor &
             if (tid >= model.config().vocab_size) {
                 tid = 0;
             }
-            std::copy(embed_ptr + (tid * hidden_dim), embed_ptr + ((tid + 1) * hidden_dim), hidden_states.data() + (i * hidden_dim));
+            std::copy(embed_ptr + (tid * hidden_dim), embed_ptr + ((tid + 1) * hidden_dim),
+                      hidden_states.data() + (i * hidden_dim));
         }
     }
 }
 
-static void llama_attention_layer_cpu(
-    const model::LLaMABlock *block,
-    float *hidden_states,
-    float *normed_states,
-    size_t seq_len,
-    size_t pos_offset,
-    const model::LLamaConfig &cfg,
-    const distributed::DistributedTopology &topology,
-    KVCacheLayer *cache_layer,
-    int layer_idx = -1) {
-
+static void llama_attention_layer_cpu(const model::LLaMABlock *block, float *hidden_states, float *normed_states,
+                                      size_t seq_len, size_t pos_offset, const model::LLamaConfig &cfg,
+                                      const distributed::DistributedTopology &topology, KVCacheLayer *cache_layer,
+                                      int layer_idx = -1)
+{
     const size_t hidden_dim = cfg.hidden_size;
     const size_t head_dim = hidden_dim / cfg.num_attention_heads;
     const size_t tp_size = static_cast<size_t>(topology.tp_size);
@@ -884,7 +911,8 @@ static void llama_attention_layer_cpu(
 
     const bool prof = prof::enabled();
     double t_pre0 = prof ? prof::now() : 0.0;
-    rms_norm({hidden_states, block->input_layernorm_weight->data.data(), normed_states, seq_len, hidden_dim, cfg.rms_norm_eps});
+    rms_norm({hidden_states, block->input_layernorm_weight->data.data(), normed_states, seq_len, hidden_dim,
+              cfg.rms_norm_eps});
 
     // Decode/prefill scratch buffers: reused across calls (avoids ~8 malloc+memset per layer).
     thread_local std::vector<float> qb, kb, vb, ab, pb;
@@ -904,30 +932,33 @@ static void llama_attention_layer_cpu(
 
     compute_qkv_rope(block, normed_tensor, query_buf, key_buf, value_buf, seq_len, pos_offset, cfg);
     update_kv_cache(cache_layer, key_buf, value_buf, seq_len);
-    if (prof) { prof::acc().attn_pre += prof::now() - t_pre0; }
+    if (prof) {
+        prof::acc().attn_pre += prof::now() - t_pre0;
+    }
 
     const float attention_scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
     const size_t num_rep = num_local_heads / num_local_kv_heads;
     const size_t total_len = (cache_layer != nullptr) ? cache_layer->current_len : seq_len;
 
     double t_hd0 = prof ? prof::now() : 0.0;
-    #pragma omp parallel for schedule(static) if (num_local_heads >= 2)
+#pragma omp parallel for schedule(static) if (num_local_heads >= 2)
     for (int h_idx = 0; h_idx < static_cast<int>(num_local_heads); ++h_idx) {
-        compute_head_attention({
-            h_idx, seq_len, pos_offset, total_len,
-            local_hidden_dim, local_kv_dim, head_dim, num_rep,
-            query_buf, key_buf, value_buf, cache_layer, attention_scale, attention_out.data(),
-            layer_idx
-        });
+        compute_head_attention({h_idx, seq_len, pos_offset, total_len, local_hidden_dim, local_kv_dim, head_dim,
+                                num_rep, query_buf, key_buf, value_buf, cache_layer, attention_scale,
+                                attention_out.data(), layer_idx});
     }
-    if (prof) { prof::acc().attn_hd += prof::now() - t_hd0; }
+    if (prof) {
+        prof::acc().attn_hd += prof::now() - t_hd0;
+    }
 
     double t_post0 = prof ? prof::now() : 0.0;
     if (seq_len == 1 && block->o_w.valid() && block->o_w.in == local_hidden_dim && block->o_w.out == hidden_dim) {
         const bool p = prof::enabled();
         const double t0 = p ? prof::now() : 0.0;
         core::blas::matvec_q(block->o_w, attention_out.data(), attention_proj.data());
-        if (p) { prof::acc().g_o += prof::now() - t0; }
+        if (p) {
+            prof::acc().g_o += prof::now() - t0;
+        }
     } else {
         core::blas::matmul(attention_out, block->o_proj->data, attention_proj);
     }
@@ -938,17 +969,15 @@ static void llama_attention_layer_cpu(
     for (size_t i = 0; i < seq_len * hidden_dim; ++i) {
         hidden_states[i] += attention_proj[i];
     }
-    if (prof) { prof::acc().attn_post += prof::now() - t_post0; }
+    if (prof) {
+        prof::acc().attn_post += prof::now() - t_post0;
+    }
 }
 
-static void llama_mlp_layer_cpu(
-    const model::LLaMABlock *block,
-    float *hidden_states,
-    float *normed_states,
-    size_t seq_len,
-    const model::LLamaConfig &cfg,
-    const distributed::DistributedTopology &topology) {
-
+static void llama_mlp_layer_cpu(const model::LLaMABlock *block, float *hidden_states, float *normed_states,
+                                size_t seq_len, const model::LLamaConfig &cfg,
+                                const distributed::DistributedTopology &topology)
+{
     const size_t hidden_dim = cfg.hidden_size;
     const size_t tp_size = static_cast<size_t>(topology.tp_size);
     const size_t intermediate_dim = cfg.intermediate_size / tp_size;
@@ -956,7 +985,8 @@ static void llama_mlp_layer_cpu(
     const bool prof = prof::enabled();
     const double t_mlp0 = prof ? prof::now() : 0.0;
 
-    rms_norm({hidden_states, block->post_attention_layernorm_weight->data.data(), normed_states, seq_len, hidden_dim, rms_norm_eps});
+    rms_norm({hidden_states, block->post_attention_layernorm_weight->data.data(), normed_states, seq_len, hidden_dim,
+              rms_norm_eps});
     const double t_rms1 = prof ? prof::now() : 0.0;
 
     // Zero-copy non-owning view on already computed normed_states
@@ -977,14 +1007,18 @@ static void llama_mlp_layer_cpu(
         const bool p = prof::enabled();
         const double t0 = p ? prof::now() : 0.0;
         core::blas::matvec_q(block->gate_up_w, normed_tensor.data(), gu_tmp.data());
-        if (p) { prof::acc().g_gu += prof::now() - t0; }
+        if (p) {
+            prof::acc().g_gu += prof::now() - t0;
+        }
         std::memcpy(gate_buf.data(), gu_tmp.data(), intermediate_dim * sizeof(float));
         std::memcpy(up_buf.data(), gu_tmp.data() + intermediate_dim, intermediate_dim * sizeof(float));
     } else {
         core::blas::matmul(normed_tensor, block->gate_proj->data, gate_buf);
         core::blas::matmul(normed_tensor, block->up_proj->data, up_buf);
     }
-    if (prof) { prof::acc().mlp_gu += prof::now() - t_rms1; }
+    if (prof) {
+        prof::acc().mlp_gu += prof::now() - t_rms1;
+    }
 
     // Fused SiLU activation & gate multiply in a single memory pass
     float *g_ptr = gate_buf.data();
@@ -1010,14 +1044,16 @@ static void llama_mlp_layer_cpu(
         g_ptr[si] = silu_val * u_ptr[si];
     }
 
-    const bool use_quant_down = (seq_len == 1) && block->down_w.valid() &&
-                                block->down_w.in == intermediate_dim && block->down_w.out == hidden_dim;
+    const bool use_quant_down = (seq_len == 1) && block->down_w.valid() && block->down_w.in == intermediate_dim &&
+                                block->down_w.out == hidden_dim;
     const double t_sd0 = prof ? prof::now() : 0.0;
     if (use_quant_down) {
         const bool p = prof::enabled();
         const double t0 = p ? prof::now() : 0.0;
         core::blas::matvec_q(block->down_w, gate_buf.data(), down_proj_out.data());
-        if (p) { prof::acc().g_down += prof::now() - t0; }
+        if (p) {
+            prof::acc().g_down += prof::now() - t0;
+        }
     } else {
         core::blas::matmul(gate_buf, block->down_proj->data, down_proj_out);
     }
@@ -1028,8 +1064,12 @@ static void llama_mlp_layer_cpu(
     for (size_t i = 0; i < seq_len * hidden_dim; ++i) {
         hidden_states[i] += down_proj_out[i];
     }
-    if (prof) { prof::acc().mlp_rest += prof::now() - t_sd0; }
-    if (prof) { prof::acc().mlp += prof::now() - t_mlp0; }
+    if (prof) {
+        prof::acc().mlp_rest += prof::now() - t_sd0;
+    }
+    if (prof) {
+        prof::acc().mlp += prof::now() - t_mlp0;
+    }
 }
 
 // --- Forward Declarations of CUDA Path ---
@@ -1037,11 +1077,9 @@ static void llama_mlp_layer_cpu(
 Tensor llama_forward_cuda(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache);
 Tensor llama_forward_cuda_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache);
 Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache);
-Tensor llama_forward_single_token_cuda_prefix(const model::LLaMAModel &model, int token_id, size_t pos,
-                                              KVCache *cache, size_t n_gpu_layers,
-                                              float *hidden_out, size_t hidden_size);
-Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos,
-                                             KVCache *cache);
+Tensor llama_forward_single_token_cuda_prefix(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache,
+                                              size_t n_gpu_layers, float *hidden_out, size_t hidden_size);
+Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache);
 #endif
 
 // --- Public Interface ---
@@ -1052,35 +1090,38 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
  * available (sequential memory access, much faster for large vocab); falls
  * back to the generic matmul otherwise.
  */
-static void compute_logits(const model::LLaMAModel &model, const Tensor &final_normed, Tensor &logits,
-                           size_t seq_len, const model::LLamaConfig &cfg)
+static void compute_logits(const model::LLaMAModel &model, const Tensor &final_normed, Tensor &logits, size_t seq_len,
+                           const model::LLamaConfig &cfg)
 {
     if (seq_len == 1) {
         if (const quant::QuantWeight *lq = model.lm_head_q()) {
             const bool p = prof::enabled();
             const double t0 = p ? prof::now() : 0.0;
             core::blas::matvec_q(*lq, final_normed.data(), logits.data());
-            if (p) { prof::acc().g_lm += prof::now() - t0; }
+            if (p) {
+                prof::acc().g_lm += prof::now() - t0;
+            }
             return;
         }
     }
     if (const core::Tensor *lmt = model.lm_head_t()) {
-        const size_t vocab  = cfg.vocab_size;
+        const size_t vocab = cfg.vocab_size;
         const size_t hidden = cfg.hidden_size;
         for (size_t s = 0; s < seq_len; ++s) {
-            core::blas::matvec_t(lmt->data(), final_normed.data() + (s * hidden),
-                                 logits.data() + (s * vocab), vocab, hidden);
+            core::blas::matvec_t(lmt->data(), final_normed.data() + (s * hidden), logits.data() + (s * vocab), vocab,
+                                 hidden);
         }
     } else {
         core::blas::matmul(final_normed, model.lm_head()->data, logits);
     }
 }
 
-Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache) {
+Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache)
+{
     enable_ftz_daz_once();
 #ifdef SERIUS_USE_CUDA
-    if (prefill_batch_enabled() && partial_gpu_layers(model) == 0 &&
-        model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
+    if (prefill_batch_enabled() && partial_gpu_layers(model) == 0 && model.embed_tokens() &&
+        model.embed_tokens()->data.is_gpu()) {
         return llama_forward_cuda(model, token_ids, cache);
     }
 #endif
@@ -1096,8 +1137,7 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
     const bool has_quant = !model.layers().empty() && model.layers()[0]->qkv_w.valid();
     // Partial offload always takes the per-token path: batched prefill would
     // write every layer's KV on CPU while decode reads the GPU prefix KV.
-    if (!prefill_batch_enabled() || partial_gpu_layers(model) > 0 ||
-        (has_quant && seq_len <= 8)) {
+    if (!cpu_prefill_batch_enabled() || partial_gpu_layers(model) > 0 || (has_quant && seq_len <= 8)) {
         core::Tensor last_logits({0});
         for (size_t i = 0; i < seq_len; ++i) {
             const int tid = static_cast<int>(token_ids[i]);
@@ -1130,8 +1170,10 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
         const ActivationHooks &hooks = activation_hooks();
         for (size_t layer_idx = 0; layer_idx < layer_blocks.size(); ++layer_idx) {
             KVCacheLayer *cache_layer = (cache != nullptr) ? &cache->layers[layer_idx] : nullptr;
-            llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), seq_len, 0, cfg, model.topology(), cache_layer, static_cast<int>(layer_idx));
-            llama_mlp_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), seq_len, cfg, model.topology());
+            llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(),
+                                      seq_len, 0, cfg, model.topology(), cache_layer, static_cast<int>(layer_idx));
+            llama_mlp_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(),
+                                seq_len, cfg, model.topology());
             if (hooks.layer_hidden != nullptr) {
                 hooks.layer_hidden(static_cast<int>(layer_idx), hidden_states.data(), seq_len, hidden_dim);
             }
@@ -1145,7 +1187,7 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
         p_cfg.num_stages = model.topology().pp_size;
         p_cfg.num_micro_batches = 1;
         p_cfg.hidden_size = seq_len * hidden_dim;
-        
+
         serius::distributed::PipelineExecutor executor(model.topology().pp_comm, p_cfg);
 
         if (model.topology().pp_rank == 0) {
@@ -1172,13 +1214,15 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
 
     // 4. Final Head (Last rank or single rank)
     Tensor final_normed({seq_len, hidden_dim});
-    rms_norm({hidden_states.data(), model.norm_weight()->data.data(), final_normed.data(), seq_len, hidden_dim, rms_norm_eps});
+    rms_norm({hidden_states.data(), model.norm_weight()->data.data(), final_normed.data(), seq_len, hidden_dim,
+              rms_norm_eps});
     Tensor logits({seq_len, cfg.vocab_size});
     compute_logits(model, final_normed, logits, seq_len, cfg);
     return logits;
 }
 
-Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache) {
+Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache)
+{
     enable_ftz_daz_once();
     if (!prefill_batch_enabled()) {
         // Batched prefill disabled (SERIUS_PREFILL_BATCH=0) — decode one
@@ -1192,8 +1236,7 @@ Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor
         return last_logits;
     }
 #ifdef SERIUS_USE_CUDA
-    if (partial_gpu_layers(model) == 0 && model.embed_tokens() &&
-        model.embed_tokens()->data.is_gpu()) {
+    if (partial_gpu_layers(model) == 0 && model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
         return llama_forward_cuda_last(model, token_ids, cache);
     }
 #endif
@@ -1214,8 +1257,11 @@ Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor
 /// `layer_begin` through the final norm + lm_head. `hidden` is a {1,hidden}
 /// FP32 buffer updated in place; KV for these layers lives in `cache` as CPU
 /// tensors grown on demand by update_kv_cache.
-static Tensor llama_forward_suffix_cpu(const model::LLaMAModel &model, float *hidden,
-                                       size_t pos, KVCache *cache, size_t layer_begin) {
+/// Only used by the CUDA partial-offload path below.
+#ifdef SERIUS_USE_CUDA
+static Tensor llama_forward_suffix_cpu(const model::LLaMAModel &model, float *hidden, size_t pos, KVCache *cache,
+                                       size_t layer_begin)
+{
     const auto &cfg = model.config();
     const size_t hidden_dim = cfg.hidden_size;
 
@@ -1223,8 +1269,8 @@ static Tensor llama_forward_suffix_cpu(const model::LLaMAModel &model, float *hi
     const auto &layer_blocks = model.layers();
     for (size_t i = layer_begin; i < layer_blocks.size(); ++i) {
         KVCacheLayer *cl = (cache != nullptr && i < cache->layers.size()) ? &cache->layers[i] : nullptr;
-        llama_attention_layer_cpu(layer_blocks[i].get(), hidden, normed.data(), 1, pos,
-                                  cfg, model.topology(), cl, static_cast<int>(i));
+        llama_attention_layer_cpu(layer_blocks[i].get(), hidden, normed.data(), 1, pos, cfg, model.topology(), cl,
+                                  static_cast<int>(i));
         llama_mlp_layer_cpu(layer_blocks[i].get(), hidden, normed.data(), 1, cfg, model.topology());
     }
     Tensor final_normed({1, hidden_dim});
@@ -1233,31 +1279,28 @@ static Tensor llama_forward_suffix_cpu(const model::LLaMAModel &model, float *hi
     compute_logits(model, final_normed, logits, 1, cfg);
     return logits;
 }
+#endif  // SERIUS_USE_CUDA
 
 /// One decode/prefill-token step under partial offload: GPU prefix (layers
 /// [0, n_gpu)) produces the residual stream, D2H once, CPU suffix finishes.
 /// Every token goes through this path so each layer's KV cache is written by
 /// the device that owns it — batched prefill is deliberately bypassed.
-static Tensor llama_forward_single_token_partial(const model::LLaMAModel &model, int token_id,
-                                                 size_t pos, KVCache *cache, size_t n_gpu) {
+/// CUDA-only: partial offload requires the GPU prefix path.
 #ifdef SERIUS_USE_CUDA
+static Tensor llama_forward_single_token_partial(const model::LLaMAModel &model, int token_id, size_t pos,
+                                                 KVCache *cache, size_t n_gpu)
+{
     const size_t hidden_dim = model.config().hidden_size;
     std::vector<float> hbuf(hidden_dim, 0.0f);
     // Returns an empty tensor by design: it emits the hidden state via hbuf.
     // CUDA errors throw — there is no silent wrong-result path.
-    llama_forward_single_token_cuda_prefix(model, token_id, pos, cache, n_gpu,
-                                           hbuf.data(), hidden_dim);
+    llama_forward_single_token_cuda_prefix(model, token_id, pos, cache, n_gpu, hbuf.data(), hidden_dim);
     return llama_forward_suffix_cpu(model, hbuf.data(), pos, cache, n_gpu);
-#else
-    Tensor t_ids({1});
-    t_ids[0] = static_cast<float>(token_id);
-    Tensor h({1, model.config().hidden_size});
-    preprocess_embeddings(model, t_ids, h);
-    return llama_forward_suffix_cpu(model, h.data(), pos, cache, 0);
-#endif
 }
+#endif  // SERIUS_USE_CUDA
 
-Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache) {
+Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache)
+{
     enable_ftz_daz_once();
 #ifdef SERIUS_USE_CUDA
     const size_t ngpu = partial_gpu_layers(model);
@@ -1298,8 +1341,10 @@ Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, 
         const ActivationHooks &hooks = activation_hooks();
         for (size_t layer_idx = 0; layer_idx < layer_blocks.size(); ++layer_idx) {
             KVCacheLayer *cache_layer = (cache != nullptr) ? &cache->layers[layer_idx] : nullptr;
-            llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), 1, pos, cfg, model.topology(), cache_layer, static_cast<int>(layer_idx));
-            llama_mlp_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), 1, cfg, model.topology());
+            llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(),
+                                      1, pos, cfg, model.topology(), cache_layer, static_cast<int>(layer_idx));
+            llama_mlp_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), 1,
+                                cfg, model.topology());
             if (hooks.layer_hidden != nullptr) {
                 hooks.layer_hidden(static_cast<int>(layer_idx), hidden_states.data(), 1, hidden_dim);
             }
@@ -1313,7 +1358,7 @@ Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, 
         p_cfg.num_stages = model.topology().pp_size;
         p_cfg.num_micro_batches = 1;
         p_cfg.hidden_size = hidden_dim;
-        
+
         serius::distributed::PipelineExecutor executor(model.topology().pp_comm, p_cfg);
 
         if (model.topology().pp_rank == 0) {
@@ -1342,23 +1387,28 @@ Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, 
         const bool prof_h = prof::enabled();
         const double t_head0 = prof_h ? prof::now() : 0.0;
         Tensor final_normed({1, hidden_dim});
-        rms_norm({hidden_states.data(), model.norm_weight()->data.data(), final_normed.data(), 1, hidden_dim, rms_norm_eps});
+        rms_norm(
+            {hidden_states.data(), model.norm_weight()->data.data(), final_normed.data(), 1, hidden_dim, rms_norm_eps});
         Tensor logits({1, cfg.vocab_size});
         compute_logits(model, final_normed, logits, 1, cfg);
-        if (prof_h) { prof::acc().head += prof::now() - t_head0; prof::report(); }
+        if (prof_h) {
+            prof::acc().head += prof::now() - t_head0;
+            prof::report();
+        }
         return logits;
     }
 
     // 4. Final Head
     Tensor final_normed({1, hidden_dim});
-    rms_norm({hidden_states.data(), model.norm_weight()->data.data(), final_normed.data(), 1, hidden_dim, rms_norm_eps});
+    rms_norm(
+        {hidden_states.data(), model.norm_weight()->data.data(), final_normed.data(), 1, hidden_dim, rms_norm_eps});
     Tensor logits({1, cfg.vocab_size});
     compute_logits(model, final_normed, logits, 1, cfg);
-    if (prof::enabled()) { prof::report(); }
+    if (prof::enabled()) {
+        prof::report();
+    }
     return logits;
 }
 
-
-} // namespace infer
-} // namespace serius
-
+}  // namespace infer
+}  // namespace serius

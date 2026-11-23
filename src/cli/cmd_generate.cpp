@@ -1,10 +1,11 @@
 #include "cli/cmd_generate.h"
-#include "cli/args_parser.h"
-#include "cli/cmd_chat.h"
 
 #include <iostream>
 #include <string>
 #include <vector>
+
+#include "cli/args_parser.h"
+#include "cli/cmd_chat.h"
 
 namespace serius {
 namespace cli {
@@ -27,8 +28,10 @@ int cmd_generate(int argc, char **argv)
     parser.add_flag({"gpu", "", "GPU backend (auto/cpu/cuda)", true, "auto"});
     parser.add_flag({"gpu-layers", "", "Partial GPU offload: layers on GPU, rest CPU (-1 = auto)", true, "-1"});
     parser.add_flag({"raw", "", "Do not format prompt with ChatML template", false, ""});
-    parser.add_flag({"embed-model", "", "Embedding model (GGUF/safetensors dir) enabling semantic scorers (--toxicity)", true, ""});
-    parser.add_flag({"toxicity", "", "Score the response for toxicity (0-1); warns above --toxicity-threshold", false, ""});
+    parser.add_flag(
+        {"embed-model", "", "Embedding model (GGUF/safetensors dir) enabling semantic scorers (--toxicity)", true, ""});
+    parser.add_flag(
+        {"toxicity", "", "Score the response for toxicity (0-1); warns above --toxicity-threshold", false, ""});
     parser.add_flag({"toxicity-threshold", "", "Toxicity warning threshold", true, "0.7"});
 
     if (!parser.parse(argc, argv)) {
@@ -52,17 +55,28 @@ int cmd_generate(int argc, char **argv)
     // Rebuild argv for cmd_chat.
     std::vector<std::string> args = {
         "chat",
-        "--model", parser.get("model"),
-        "--prompt", prompt,
-        "--system", parser.get("system"),
-        "--max-tokens", parser.get("max-tokens"),
-        "--temperature", parser.get("temperature"),
-        "--top-k", parser.get("top-k"),
-        "--top-p", parser.get("top-p"),
-        "--seed", parser.get("seed"),
-        "--type", parser.get("type"),
-        "--gpu", parser.get("gpu"),
-        "--gpu-layers", parser.get("gpu-layers"),
+        "--model",
+        parser.get("model"),
+        "--prompt",
+        prompt,
+        "--system",
+        parser.get("system"),
+        "--max-tokens",
+        parser.get("max-tokens"),
+        "--temperature",
+        parser.get("temperature"),
+        "--top-k",
+        parser.get("top-k"),
+        "--top-p",
+        parser.get("top-p"),
+        "--seed",
+        parser.get("seed"),
+        "--type",
+        parser.get("type"),
+        "--gpu",
+        parser.get("gpu"),
+        "--gpu-layers",
+        parser.get("gpu-layers"),
     };
     const std::string embed_model = parser.get("embed-model");
     if (!embed_model.empty()) {

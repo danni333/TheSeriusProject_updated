@@ -14,8 +14,9 @@ using core::Tensor;
 /// Uses a simple linear model: embedding -> linear -> relu -> linear -> sigmoid.
 class TokenToxicityClassifier
 {
-public:
-    struct Config {
+   public:
+    struct Config
+    {
         size_t vocab_size = 50000;
         size_t embedding_dim = 256;
         size_t hidden_dim = 128;
@@ -23,13 +24,13 @@ public:
     };
 
     TokenToxicityClassifier();
-    explicit TokenToxicityClassifier(const Config& config);
+    explicit TokenToxicityClassifier(const Config &config);
     ~TokenToxicityClassifier();
 
     /// Score the toxicity of a token sequence.
     /// @param tokens Token IDs to classify
     /// @return Toxicity score in [0, 1], where higher is more toxic
-    float score(const std::vector<int>& tokens) const;
+    float score(const std::vector<int> &tokens) const;
 
     /// Set the toxicity threshold.
     void set_threshold(float threshold) { threshold_ = threshold; }
@@ -38,9 +39,9 @@ public:
     float threshold() const { return threshold_; }
 
     /// Check if the sequence exceeds the toxicity threshold.
-    bool is_toxic(const std::vector<int>& tokens) const;
+    bool is_toxic(const std::vector<int> &tokens) const;
 
-private:
+   private:
     Config config_;
     float threshold_;
 
@@ -52,7 +53,7 @@ private:
     Tensor output_bias_;    // (1,)
 
     // Helper: compute embedding mean
-    float compute_embedding_mean(const std::vector<int>& tokens) const;
+    float compute_embedding_mean(const std::vector<int> &tokens) const;
 };
 
 }  // namespace safety

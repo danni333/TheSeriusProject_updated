@@ -17,8 +17,7 @@ namespace serius {
 namespace distributed {
 
 /// Reduction operations for collective communication
-enum class ReduceOp : uint8_t
-{
+enum class ReduceOp : uint8_t {
     Sum,
     Avg,
     Min,
@@ -26,8 +25,7 @@ enum class ReduceOp : uint8_t
 };
 
 /// Backend type for the communicator
-enum class CommBackend : uint8_t
-{
+enum class CommBackend : uint8_t {
     Local,  // Single-process (for testing and single-GPU)
     NCCL,   // NVIDIA Collective Communications Library (intra-node GPU)
     MPI,    // Message Passing Interface (inter-node CPU/GPU)
@@ -77,13 +75,11 @@ class Communicator
     virtual void broadcast(core::Tensor &tensor, int root = 0) = 0;
 
     /// AllGather: every rank contributes `send_count` elements,
-    virtual void all_gather(const float *send_buf, size_t send_count,
-                            float *recv_buf) = 0;
+    virtual void all_gather(const float *send_buf, size_t send_count, float *recv_buf) = 0;
 
     /// Tensor-based AllGather
     /// recv_tensor must have world_size times the size of send_tensor
-    virtual void all_gather(const core::Tensor &send_tensor,
-                             core::Tensor &recv_tensor) = 0;
+    virtual void all_gather(const core::Tensor &send_tensor, core::Tensor &recv_tensor) = 0;
 
     /// ReduceScatter: reduce across ranks, then scatter the result.
     /// Each rank receives a different chunk of the reduced data.
@@ -92,8 +88,7 @@ class Communicator
     /// @param recv_buf     Output buffer [count]
     /// @param recv_count   Number of elements this rank receives
     /// @param op           Reduction operation
-    virtual void reduce_scatter(const float *send_buf, float *recv_buf,
-                                size_t recv_count, ReduceOp op) = 0;
+    virtual void reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp op) = 0;
 
     /// Send data to a specific rank (point-to-point)
     /// @param buffer  Data to send
@@ -115,15 +110,11 @@ class Communicator
     /// Create a communicator with the specified backend.
     /// For Local backend: world_size and rank are user-specified (for simulation).
     /// For MPI, rank and world size are determined by MPI_COMM_WORLD.
-    static std::unique_ptr<Communicator> create(CommBackend backend,
-                                                int world_size = 1,
-                                                int rank = 0);
+    static std::unique_ptr<Communicator> create(CommBackend backend, int world_size = 1, int rank = 0);
 
 #ifdef SERIUS_USE_NCCL
     /// Create an NCCL communicator using a unique ID shared by all ranks.
-    static std::unique_ptr<Communicator> create_nccl(int world_size, int rank,
-                                                     ncclUniqueId id,
-                                                     int local_rank = -1);
+    static std::unique_ptr<Communicator> create_nccl(int world_size, int rank, ncclUniqueId id, int local_rank = -1);
 
     /// Create an NCCL communicator by generating and distributing its unique ID.
     /// Requires SERIUS_USE_MPI, initialized MPI, and all ranks to participate.

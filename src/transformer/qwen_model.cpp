@@ -11,6 +11,8 @@ namespace model {
 using core::Tensor;
 using core::autograd::Node;
 using core::autograd::ops::add;
+using core::autograd::ops::contiguous;
+using core::autograd::ops::fused_masked_softmax;
 using core::autograd::ops::matmul;
 using core::autograd::ops::mul_scalar;
 using core::autograd::ops::reshape;
@@ -18,8 +20,6 @@ using core::autograd::ops::rmsnorm;
 using core::autograd::ops::rope;
 using core::autograd::ops::silu;
 using core::autograd::ops::transpose;
-using core::autograd::ops::contiguous;
-using core::autograd::ops::fused_masked_softmax;
 
 namespace {
 
@@ -46,22 +46,22 @@ QwenBlock::QwenBlock(const QwenConfig &config)
 {
     size_t n_q = n_heads_ * head_dim_;
     size_t n_kv = n_kv_heads_ * head_dim_;
-    
+
     input_layernorm_weight = make_param({hidden_size_}, "input_layernorm");
-    
+
     q_proj = make_param({hidden_size_, n_q}, "q_proj");
     q_proj_bias = make_param({n_q}, "q_proj_bias");
-    
+
     k_proj = make_param({hidden_size_, n_kv}, "k_proj");
     k_proj_bias = make_param({n_kv}, "k_proj_bias");
-    
+
     v_proj = make_param({hidden_size_, n_kv}, "v_proj");
     v_proj_bias = make_param({n_kv}, "v_proj_bias");
-    
+
     o_proj = make_param({n_q, hidden_size_}, "o_proj");
-    
+
     post_attention_layernorm_weight = make_param({hidden_size_}, "post_attention_layernorm");
-    
+
     gate_proj = make_param({hidden_size_, config.intermediate_size}, "gate_proj");
     up_proj = make_param({hidden_size_, config.intermediate_size}, "up_proj");
     down_proj = make_param({config.intermediate_size, hidden_size_}, "down_proj");
@@ -87,14 +87,14 @@ Node *QwenBlock::forward(Node *input, size_t pos_offset) const
 {
     using namespace core::autograd::ops;
     Node *normed = rmsnorm(input, input_layernorm_weight, rms_norm_eps_);
-    
+
     // Biased Projections
     Node *q = matmul(normed, q_proj);
     q = add(q, q_proj_bias);
-    
+
     Node *k = matmul(normed, k_proj);
     k = add(k, k_proj_bias);
-    
+
     Node *v = matmul(normed, v_proj);
     v = add(v, v_proj_bias);
 
@@ -142,17 +142,17 @@ Node *QwenBlock::forward(Node *input, size_t pos_offset) const
     Node *context = matmul(probs, v_rs);
     context = contiguous(transpose(context, 0, 1));
     context = reshape(context, {seq_len, n_heads_ * head_dim_});
-    
+
     Node *attn_out = matmul(context, o_proj);
     // Note: Qwen o_proj does not normally have bias.
-    
+
     Node *res1 = add(input, attn_out);
 
     Node *normed2 = rmsnorm(res1, post_attention_layernorm_weight, rms_norm_eps_);
     Node *gate = matmul(normed2, gate_proj);
     Node *up = matmul(normed2, up_proj);
     gate = silu(gate);
-    
+
     Tensor gate_up_t(gate->data.shape());
     for (size_t i = 0; i < gate->data.size(); ++i) {
         gate_up_t[i] = gate->data[i] * up->data[i];
@@ -172,7 +172,7 @@ QwenModel::QwenModel(const QwenConfig &config) : config_(config)
         layers_.push_back(new QwenBlock(config));
     }
     norm_weight_ = make_param({config.hidden_size}, "norm");
-    lm_head_ = make_param({config.hidden_size, config.vocab_size}, "lm_head"); 
+    lm_head_ = make_param({config.hidden_size, config.vocab_size}, "lm_head");
 }
 
 QwenModel::~QwenModel()
@@ -189,7 +189,7 @@ Node *QwenModel::forward(Node *token_ids) const
     const Tensor &ids = token_ids->data;
     size_t seq_len = ids.size();
     Tensor hidden({seq_len, config_.hidden_size});
-    
+
     for (size_t i = 0; i < seq_len; ++i) {
         size_t tid = static_cast<size_t>(ids[i]);
         if (tid >= config_.vocab_size) tid = 0;
@@ -197,14 +197,14 @@ Node *QwenModel::forward(Node *token_ids) const
             hidden.at(i, j) = embed_tokens_->data.at(tid, j);
         }
     }
-    
+
     Node *h = new Node(std::move(hidden));
     h->requires_grad = false;
-    
+
     for (size_t layer = 0; layer < layers_.size(); ++layer) {
         h = layers_[layer]->forward(h, 0);
     }
-        
+
     h = rmsnorm(h, norm_weight_, config_.rms_norm_eps);
     return matmul(h, lm_head_);
 }

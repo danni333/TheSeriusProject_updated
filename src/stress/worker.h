@@ -1,8 +1,8 @@
 #pragma once
 
-#include <string>
 #include <atomic>
 #include <mutex>
+#include <string>
 #include <vector>
 
 #include "../common/defaults.h"
@@ -13,20 +13,18 @@ namespace stress {
 struct StressResult;
 
 /// Worker thread that simulates a single user making requests to the server.
-class StressWorker {
-public:
-    StressWorker(const std::string& server_url,
-                 const std::string& prompt,
-                 int max_tokens,
-                 const std::string& model_name = defaults::kModelName,
-                 const std::string& endpoint = "/v1/chat/completions",
-                 int timeout_seconds = defaults::kStressTimeoutSec,
-                 int interval_ms = 100);
+class StressWorker
+{
+   public:
+    StressWorker(const std::string &server_url, const std::string &prompt, int max_tokens,
+                 const std::string &model_name = defaults::kModelName,
+                 const std::string &endpoint = "/v1/chat/completions",
+                 int timeout_seconds = defaults::kStressTimeoutSec, int interval_ms = 100);
 
     /// Run the worker until stopped
-    void run(std::atomic<bool>& running, StressResult& result, std::mutex& mtx);
+    void run(std::atomic<bool> &running, StressResult &result, std::mutex &mtx);
 
-private:
+   private:
     std::string server_url_;
     std::string prompt_;
     int max_tokens_;
@@ -36,7 +34,7 @@ private:
     int interval_ms_;
 
     /// Send a single HTTP request to the server; outputs latency and generated tokens
-    bool send_request(float& latency_ms, int& completion_tokens);
+    bool send_request(float &latency_ms, int &completion_tokens);
 };
 
 }  // namespace stress

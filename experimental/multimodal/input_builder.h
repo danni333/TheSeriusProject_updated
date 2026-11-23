@@ -4,7 +4,7 @@
 
 #include <vector>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 
 namespace serius {
 namespace multimodal {

@@ -1,12 +1,8 @@
 #include "engine.h"
 
-#include <algorithm>
-
 namespace serius {
 namespace core {
 namespace autograd {
-
-using core::Tensor;
 
 void topo_sort(Node *node, std::set<Node *> &visited, std::vector<Node *> &order)
 {

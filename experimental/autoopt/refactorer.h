@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 #include "git_manager.h"
 #include "hot_swap.h"
 #include "llm_client.h"

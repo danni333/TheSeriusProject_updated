@@ -1,6 +1,5 @@
 #include "sliding_window.h"
 
-#include <cmath>
 #include <vector>
 
 namespace serius {
@@ -26,8 +25,7 @@ Tensor sliding_window_mask(size_t seq_len, size_t window_size)
     return mask;
 }
 
-Tensor global_local_mask(size_t seq_len, size_t window_size,
-                         const std::vector<size_t>& global_indices)
+Tensor global_local_mask(size_t seq_len, size_t window_size, const std::vector<size_t> &global_indices)
 {
     if (!is_valid_window(seq_len, window_size)) {
         window_size = seq_len;
@@ -55,8 +53,8 @@ Tensor global_local_mask(size_t seq_len, size_t window_size,
             // - Row i is global (attends to everything)
             // - Column j is global (global tokens are visible to all)
             // - Column j is within the sliding window of row i
-            bool allowed = is_row_global || is_col_global ||
-                           (j >= (i >= window_size - 1 ? i - window_size + 1 : 0) && j <= i);
+            bool allowed =
+                is_row_global || is_col_global || (j >= (i >= window_size - 1 ? i - window_size + 1 : 0) && j <= i);
 
             if (allowed) {
                 mask.at(i, j) = 0.0f;

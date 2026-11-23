@@ -125,6 +125,9 @@ serius bench [OPTIONS]
 
 ### `serius eval`
 
+> **Sperimentale**: richiede la build con `-DSERIUS_EXPERIMENTAL_EVAL=ON`.
+> Vedi [experimental.md](experimental.md).
+
 Evaluate a model. Currently supports `--task ppl` (perplexity): teacher-forced
 scoring through the real inference path (KV cache + `llama_forward_single_token`).
 
@@ -141,6 +144,8 @@ default 512), `--max-tokens/-n` (cap scored tokens, 0 = all), `--gpu/-g`
 
 ### `serius inspect`
 
+> **Sperimentale**: richiede `-DSERIUS_EXPERIMENTAL_INTERPRET=ON`.
+
 Per-layer interpretability on a real prompt: runs one instrumented forward
 pass (`infer::ActivationHooks`, CPU path only) and reports, for every
 transformer layer, the top-k next-token predictions via logit lens
@@ -156,6 +161,8 @@ default 3), `--attn-top/-a` (top attended positions, default 3), `--gpu/-g`
 (default `cpu` — CUDA kernels do not emit activation hooks), `--quant`.
 
 ### `serius think`
+
+> **Sperimentale**: richiede `-DSERIUS_EXPERIMENTAL_REASONING=ON`.
 
 Chain-of-thought reasoning: the model first produces a hidden "thinking"
 buffer, then the final answer conditioned on it. Uses the real inference path
@@ -195,11 +202,17 @@ serius mcp-serve --audit /var/log/mcp.log
 
 ### `serius doctor`
 
-System diagnostics.
+System diagnostics and deployment readiness check.
 
 ```bash
-serius doctor
+serius doctor [--model <path>] [--port <n>] [--json]
 ```
+
+| Flag | Description |
+|---|---|
+| `-m, --model` | Inspect a model file (`.gguf`) or directory (`config.json` + weights): file size, GGUF metadata, architecture, exact parameter count and bits/weight, and whether it fits in VRAM or RAM |
+| `--port` | Check whether a TCP port (e.g. `8080`) is free on localhost for `serius serve` |
+| `--json` | Emit the report as JSON |
 
 **Output:**
 
@@ -209,13 +222,29 @@ Serius System Diagnostics
 
 Version: 0.1.0
 
+System:
 ✅ CPU: 16 logical cores
 ✅ RAM: 23.8 GiB total, 13.8 GiB available
-✅ GPU: CUDA backend available — NVIDIA GeForce RTX 3060 Laptop GPU (1 device, 6.0 GiB VRAM)
+✅ Disk: 88.3 GiB free in current directory
+✅ GPU: CUDA backend available — NVIDIA GeForce RTX 3060 Laptop GPU (1 device, 6.0 GiB VRAM, 5.0 GiB free)
 
 Build:
-  C++ standard : C++20
-  CUDA         : enabled
+ℹ️  Flags: C++20, CUDA enabled, NCCL disabled, MPI disabled
+
+Readiness:
+ℹ️  GPU budget: GPU can comfortably run up to ~8.6B params (Q4-class). ...
+ℹ️  CPU budget: with 12.9 GiB free RAM, CPU inference suits up to ~9.2B params ...
+
+Model:
+✅ File: qwen2.5-0.5b-instruct-q4_k_m.gguf (469 MiB)
+✅ GGUF: version 3, 291 tensors, 26 metadata entries
+ℹ️  Architecture: qwen2
+ℹ️  Dimensions: vocab=32000, hidden=896, layers=24, heads=14/2 (q/kv), ffn=4864, ctx=32768
+ℹ️  Weights: ~630M params (exact, from tensor shapes), payload 463 MiB, ~6.1 bits/weight → Q4-class quantization
+✅ Fit: file fits in GPU VRAM (6.0 GiB)
+
+Network:
+✅ Port: 8080 is free on 127.0.0.1 — ready for `serius serve`
 ```
 
 ### `serius --help`

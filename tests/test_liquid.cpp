@@ -3,9 +3,9 @@
 #include <cmath>
 #include <vector>
 
-#include "../src/liquid/adaptive.h"
-#include "../src/liquid/ltc.h"
-#include "../src/liquid/neural_ode.h"
+#include "liquid/adaptive.h"
+#include "liquid/ltc.h"
+#include "liquid/neural_ode.h"
 
 using namespace serius::liquid;
 using serius::core::Tensor;

@@ -52,7 +52,18 @@ Esempio di configurazione (bozza):
 
 ---
 
-## 4. Stato attuale
+## 4. Variabili d'ambiente di sicurezza (inference server)
+
+Variabili lette da `serius serve` all'avvio delle route HTTP:
+
+| Variabile | Effetto |
+|-----------|---------|
+| `SERIUS_ADMIN_TOKEN` | Se impostata, `POST /v1/models/load` e `DELETE /v1/models/{id}` richiedono `Authorization: Bearer <token>`. Se vuota le route restano aperte (uso locale). |
+| `SERIUS_MODEL_ROOTS` | Lista separata da `;` di directory radice. Se impostata, un `path` di `/v1/models/load` deve risolversi (canonicalizzato) dentro una di esse, altrimenti `403`. |
+
+Nota: `hf://owner/repo` usa la stessa allowlist dopo la risoluzione in `models/`.
+
+## 5. Stato attuale
 
 - Il sistema di configurazione è in fase di progettazione e integrazione con il runtime.
 - Questa pagina verrà popolata con la lista completa delle chiavi supportate man mano che l'implementazione si stabilizza.

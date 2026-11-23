@@ -1,4 +1,3 @@
-#define _USE_MATH_DEFINES
 #include "positional.h"
 
 #include <cmath>
@@ -32,7 +31,8 @@ Tensor positional_encoding(int max_seq_len, int d_model)
 
     for (int pos = 0; pos < max_seq_len; ++pos) {
         for (int idx = 0; idx < d_model; idx += 2) {
-            float freq = compute_rotation_frequency(DEFAULT_ROPE_BASE, static_cast<size_t>(idx), static_cast<size_t>(d_model));
+            float freq =
+                compute_rotation_frequency(DEFAULT_ROPE_BASE, static_cast<size_t>(idx), static_cast<size_t>(d_model));
             pe.at(static_cast<size_t>(pos), static_cast<size_t>(idx)) = std::sin(static_cast<float>(pos) * freq);
             if (idx + 1 < d_model) {
                 pe.at(static_cast<size_t>(pos), static_cast<size_t>(idx + 1)) =
@@ -44,10 +44,7 @@ Tensor positional_encoding(int max_seq_len, int d_model)
     return pe;
 }
 
-void apply_rope(Tensor &q, Tensor &k, size_t d_head,
-                float rope_base,
-                size_t pos_offset,
-                size_t training_ctx,
+void apply_rope(Tensor &q, Tensor &k, size_t d_head, float rope_base, size_t pos_offset, size_t training_ctx,
                 size_t target_ctx)
 {
     if (d_head % 2 != 0) {

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <string>
 #include <vector>
 
 #include "../autograd/node.h"
@@ -33,21 +32,21 @@ class QwenBlock
     core::autograd::Node *forward(core::autograd::Node *input, size_t pos_offset = 0) const;
 
     core::autograd::Node *input_layernorm_weight;
-    
+
     // Projections
     core::autograd::Node *q_proj;
     core::autograd::Node *q_proj_bias;
-    
+
     core::autograd::Node *k_proj;
     core::autograd::Node *k_proj_bias;
-    
+
     core::autograd::Node *v_proj;
     core::autograd::Node *v_proj_bias;
-    
+
     core::autograd::Node *o_proj;
-    
+
     core::autograd::Node *post_attention_layernorm_weight;
-    
+
     // MLP
     core::autograd::Node *gate_proj;
     core::autograd::Node *up_proj;

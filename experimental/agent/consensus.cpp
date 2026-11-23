@@ -69,7 +69,23 @@ std::string DelphiConsensus::majority_vote(const std::vector<std::string> &respo
 
 float DelphiConsensus::cosine_sim(const std::string &a, const std::string &b) const
 {
-    // Simple character trigram overlap as a cheap embedding proxy.
+    if (embed_fn_) {
+        auto embed = [&](const std::string &s) -> const std::vector<float> & {
+            auto it = embed_cache_.find(s);
+            if (it == embed_cache_.end()) {
+                it = embed_cache_.emplace(s, embed_fn_(s)).first;
+            }
+            return it->second;
+        };
+        const auto &ea = embed(a);
+        const auto &eb = embed(b);
+        if (ea.empty() || eb.empty()) {
+            return (ea.empty() && eb.empty()) ? 1.0f : 0.0f;
+        }
+        return common::cosine_unit(common::cosine_sim(ea, eb), embed_lo_, embed_hi_);
+    }
+
+    // Fallback: character trigram Jaccard as a cheap similarity proxy.
     std::set<std::string> trigrams_a, trigrams_b;
 
     auto build_trigrams = [](const std::string &s, std::set<std::string> &out) {

@@ -5,9 +5,8 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
-#include <sstream>
-
 #include <nlohmann/json.hpp>
+#include <sstream>
 
 namespace serius {
 namespace io {
@@ -29,18 +28,19 @@ bool parse_header(const std::string &json_str, std::unordered_map<std::string, S
         for (auto it = j.begin(); it != j.end(); ++it) {
             if (it.key() == "__metadata__") continue;
             const auto &v = it.value();
-            if (!v.is_object() || !v.contains("dtype") || !v.contains("shape") || !v.contains("data_offsets"))
-                continue;
+            if (!v.is_object() || !v.contains("dtype") || !v.contains("shape") || !v.contains("data_offsets")) continue;
             const auto &shape_j = v["shape"];
             const auto &off = v["data_offsets"];
-            if (!shape_j.is_array() || !off.is_array() || off.size() < 2)
-                continue;
+            if (!shape_j.is_array() || !off.is_array() || off.size() < 2) continue;
             SafetensorTensorMeta m;
             m.dtype = v["dtype"].get<std::string>();
             bool bad_shape = false;
             for (const auto &s : shape_j) {
                 const int64_t d = s.get<int64_t>();
-                if (d < 0) { bad_shape = true; break; }
+                if (d < 0) {
+                    bad_shape = true;
+                    break;
+                }
                 m.shape.push_back(d);
             }
             if (bad_shape) continue;
@@ -49,7 +49,8 @@ bool parse_header(const std::string &json_str, std::unordered_map<std::string, S
             (*out)[it.key()] = std::move(m);
         }
         return true;
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         std::cerr << "[Safetensors] Failed to parse header JSON: " << e.what() << "\n";
         return false;
     }
@@ -149,10 +150,12 @@ bool SafetensorsFile::copy_tensor_to_float(const std::string &name, float *out, 
     auto it = tensors_.find(name);
     if (it == tensors_.end()) return false;
     const auto &m = it->second;
+    // Same bounds check as tensor_data(): a crafted header must not let the
+    // declared offsets point outside the loaded data buffer.
+    if (m.data_start < 0 || m.data_end > static_cast<int64_t>(data_.size()) || m.data_start >= m.data_end) return false;
     size_t num_elems = 1;
     for (int64_t d : m.shape) {
-        if (d < 0 || num_elems > std::numeric_limits<size_t>::max() / static_cast<size_t>(d))
-            return false;
+        if (d < 0 || num_elems > std::numeric_limits<size_t>::max() / static_cast<size_t>(d)) return false;
         num_elems *= static_cast<size_t>(d);
     }
     if (num_elems != out_size) return false;

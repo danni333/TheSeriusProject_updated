@@ -43,7 +43,6 @@ class CudaBackend : public IBackend
     /// one-time reallocations so VRAM is actually returned to the driver).
     void flush_cache() override;
 
-
     bool is_available() const override;
 
    private:

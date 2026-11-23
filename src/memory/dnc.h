@@ -1,8 +1,8 @@
 #pragma once
 
-#include "../tensor/tensor.h"
-
 #include <vector>
+
+#include "../tensor/tensor.h"
 
 namespace serius {
 namespace memory {
@@ -12,8 +12,7 @@ class DNCMemory
    public:
     DNCMemory(size_t n_slots, size_t d_mem);
 
-    void write(const core::Tensor &write_key, const core::Tensor &write_vector,
-               float write_strength, float free_gate);
+    void write(const core::Tensor &write_key, const core::Tensor &write_vector, float write_strength, float free_gate);
     core::Tensor read(const core::Tensor &read_key, float read_strength) const;
 
     const core::Tensor &matrix() const { return M_; }

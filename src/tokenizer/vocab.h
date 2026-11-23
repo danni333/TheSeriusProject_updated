@@ -6,7 +6,6 @@
 #include <unordered_map>
 #include <vector>
 
-
 namespace serius {
 
 using TokenId = int32_t;

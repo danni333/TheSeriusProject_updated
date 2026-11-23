@@ -1,12 +1,9 @@
 #include "dedup.h"
 
-#include <algorithm>
-
 namespace serius {
 namespace data {
 
-DedupPipeline::DedupPipeline(int num_hashes, int bands, int rows_per_band,
-                             float jaccard_threshold, int ngram)
+DedupPipeline::DedupPipeline(int num_hashes, int bands, int rows_per_band, float jaccard_threshold, int ngram)
     : num_hashes_(num_hashes),
       bands_(bands),
       rows_per_band_(rows_per_band),

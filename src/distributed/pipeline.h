@@ -23,9 +23,9 @@ namespace distributed {
 /// Configuration for pipeline parallelism
 struct PipelineConfig
 {
-    int num_stages = 2;          // Number of pipeline stages (= number of ranks)
-    int num_micro_batches = 4;   // Number of micro-batches per global batch
-    size_t hidden_size = 0;      // Size of intermediate activations per micro-batch
+    int num_stages = 2;         // Number of pipeline stages (= number of ranks)
+    int num_micro_batches = 4;  // Number of micro-batches per global batch
+    size_t hidden_size = 0;     // Size of intermediate activations per micro-batch
 };
 
 /// Callback types for forward and backward passes on a pipeline stage.
@@ -59,8 +59,7 @@ class PipelineExecutor
     ///                     [num_micro_batches * hidden_size]. Required on the
     ///                     last stage — throws std::invalid_argument if null.
     ///                     Ignored on other stages.
-    void execute(ForwardFn forward_fn, BackwardFn backward_fn,
-                 const float *input_data, float *output_data,
+    void execute(ForwardFn forward_fn, BackwardFn backward_fn, const float *input_data, float *output_data,
                  const float *loss_gradients = nullptr);
 
     /// Execute only the forward pass (for inference).
@@ -77,8 +76,7 @@ class PipelineExecutor
     /// Compared to execute(), 1F1B starts backwards earlier, which reduces the
     /// effective bubble when stages are compute-bound and keeps peak pending
     /// work lower; total communication volume is identical.
-    void execute_1f1b(ForwardFn forward_fn, BackwardFn backward_fn,
-                      const float *input_data, float *output_data,
+    void execute_1f1b(ForwardFn forward_fn, BackwardFn backward_fn, const float *input_data, float *output_data,
                       const float *loss_gradients = nullptr);
 
     /// Get the pipeline stage index for this rank

@@ -1,13 +1,14 @@
 #include "cli/cmd_bench.h"
-#include "cli/args_parser.h"
-#include "../common/defaults.h"
-#include "bench/latency.h"
-#include "bench/throughput.h"
-#include "bench/memory.h"
-#include "bench/report.h"
 
 #include <iostream>
 #include <vector>
+
+#include "../common/defaults.h"
+#include "bench/latency.h"
+#include "bench/memory.h"
+#include "bench/report.h"
+#include "bench/throughput.h"
+#include "cli/args_parser.h"
 
 namespace serius {
 namespace cli {
@@ -17,7 +18,8 @@ int cmd_bench(int argc, char **argv)
     ArgsParser parser("serius bench", "Run performance benchmarks on the model");
 
     parser.add_flag({"model", "m", "Path to model file or directory", true, "./models/model.gguf"});
-    parser.add_flag({"prompt", "p", "Prompt text for latency benchmark", true, "The quick brown fox jumps over the lazy dog."});
+    parser.add_flag(
+        {"prompt", "p", "Prompt text for latency benchmark", true, "The quick brown fox jumps over the lazy dog."});
     parser.add_flag({"max-tokens", "n", "Maximum tokens to generate", true, "256"});
     parser.add_flag({"concurrent", "c", "Number of concurrent users for throughput", true, "4"});
     parser.add_flag({"requests", "r", "Requests per user for throughput", true, "10"});

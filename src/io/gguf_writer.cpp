@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -15,8 +16,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-#include <nlohmann/json.hpp>
 
 #include "../tensor/tensor.h"
 #include "gguf_loader.h"
@@ -38,11 +37,26 @@ constexpr uint32_t kValStr = 8, kValArr = 9, kValU64 = 10, kValI64 = 11, kValF64
 
 constexpr uint64_t kAlignment = 32;
 
-void put_u16(std::string &o, uint16_t v) { o.append(reinterpret_cast<const char *>(&v), 2); }
-void put_u32(std::string &o, uint32_t v) { o.append(reinterpret_cast<const char *>(&v), 4); }
-void put_u64(std::string &o, uint64_t v) { o.append(reinterpret_cast<const char *>(&v), 8); }
-void put_i32(std::string &o, int32_t v)  { o.append(reinterpret_cast<const char *>(&v), 4); }
-void put_f32(std::string &o, float v)    { o.append(reinterpret_cast<const char *>(&v), 4); }
+void put_u16(std::string &o, uint16_t v)
+{
+    o.append(reinterpret_cast<const char *>(&v), 2);
+}
+void put_u32(std::string &o, uint32_t v)
+{
+    o.append(reinterpret_cast<const char *>(&v), 4);
+}
+void put_u64(std::string &o, uint64_t v)
+{
+    o.append(reinterpret_cast<const char *>(&v), 8);
+}
+void put_i32(std::string &o, int32_t v)
+{
+    o.append(reinterpret_cast<const char *>(&v), 4);
+}
+void put_f32(std::string &o, float v)
+{
+    o.append(reinterpret_cast<const char *>(&v), 4);
+}
 
 void put_str(std::string &o, const std::string &s)
 {
@@ -115,7 +129,9 @@ uint16_t f32_to_f16_rn(float f)
     const uint32_t mant = x & 0x7FFFFFu;
 
     if (exp <= 0) {
-        if (exp < -10) { return static_cast<uint16_t>(sign); }
+        if (exp < -10) {
+            return static_cast<uint16_t>(sign);
+        }
         // subnormal or zero: mant/2^23 * 2^(exp-15) -> shift into 10-bit field
         const uint32_t m = mant | 0x800000u;
         const int shift = 14 - exp;  // bits to drop from the 24-bit mantissa
@@ -160,9 +176,7 @@ void permute_qk_rows_gguf(float *data, size_t out_dim, size_t in_dim, size_t hea
         std::memcpy(src_rows.data(), base, src_rows.size() * sizeof(float));
         for (size_t s = 0; s < head_dim; ++s) {
             const size_t dst_local = ((s & 1) == 0) ? (s / 2) : ((s - 1) / 2 + half);
-            std::memcpy(base + dst_local * in_dim,
-                        src_rows.data() + s * in_dim,
-                        in_dim * sizeof(float));
+            std::memcpy(base + dst_local * in_dim, src_rows.data() + s * in_dim, in_dim * sizeof(float));
         }
     }
 }
@@ -192,7 +206,8 @@ std::string hf_to_gguf_name(const std::string &hf_name, int num_layers)
     int layer;
     try {
         layer = std::stoi(hf_name.substr(prefix.size(), dot - prefix.size()));
-    } catch (...) {
+    }
+    catch (...) {
         return {};
     }
     if (layer < 0 || layer >= num_layers) {
@@ -242,8 +257,7 @@ std::string derive_arch(const nlohmann::json &cfg)
     if (!mt.empty()) {
         return mt;
     }
-    if (cfg.contains("architectures") && cfg["architectures"].is_array() &&
-        !cfg["architectures"].empty()) {
+    if (cfg.contains("architectures") && cfg["architectures"].is_array() && !cfg["architectures"].empty()) {
         std::string a = cfg["architectures"][0].get<std::string>();
         std::transform(a.begin(), a.end(), a.begin(), ::tolower);
         const std::string suf = "forcausallm";
@@ -266,7 +280,8 @@ bool load_config(const fs::path &dir, ModelDims *dims)
     nlohmann::json j;
     try {
         in >> j;
-    } catch (const std::exception &e) {
+    }
+    catch (const std::exception &e) {
         std::cerr << "[GGUFWriter] cannot parse " << cfg_path << ": " << e.what() << "\n";
         return false;
     }
@@ -285,8 +300,7 @@ bool load_config(const fs::path &dir, ModelDims *dims)
 
 /// Load all safetensors weights of a HF model dir as FP32 tensors keyed by
 /// HF name. Supports a single .safetensors file or a shard index manifest.
-bool load_hf_tensors(const fs::path &dir, const fs::path &explicit_file,
-                     std::map<std::string, core::Tensor> *out)
+bool load_hf_tensors(const fs::path &dir, const fs::path &explicit_file, std::map<std::string, core::Tensor> *out)
 {
     out->clear();
 
@@ -330,11 +344,16 @@ bool load_hf_tensors(const fs::path &dir, const fs::path &explicit_file,
         size_t numel = 1;
         std::vector<size_t> shape;
         for (int64_t d : meta.shape) {
-            if (d <= 0) { numel = 0; break; }
+            if (d <= 0) {
+                numel = 0;
+                break;
+            }
             shape.push_back(static_cast<size_t>(d));
             numel *= shape.back();
         }
-        if (numel == 0) { continue; }
+        if (numel == 0) {
+            continue;
+        }
         core::Tensor t(shape, hal::DType::Float32);
         if (!file.copy_tensor_to_float(name, t.data(), numel)) {
             continue;
@@ -346,7 +365,7 @@ bool load_hf_tensors(const fs::path &dir, const fs::path &explicit_file,
 
 struct TokenizerInfo
 {
-    std::vector<std::string> tokens;       // index = token id
+    std::vector<std::string> tokens;  // index = token id
     std::vector<int32_t> token_types;
     std::vector<std::string> merges;
     int32_t bos_id = -1;
@@ -356,18 +375,25 @@ struct TokenizerInfo
 
 std::string json_token_string(const nlohmann::json &v)
 {
-    if (v.is_string()) { return v.get<std::string>(); }
-    if (v.is_number_integer()) { return std::to_string(v.get<int64_t>()); }
-    if (v.is_object() && v.contains("content")) { return v["content"].get<std::string>(); }
-    if (v.is_array() && !v.empty()) { return json_token_string(v[0]); }
+    if (v.is_string()) {
+        return v.get<std::string>();
+    }
+    if (v.is_number_integer()) {
+        return std::to_string(v.get<int64_t>());
+    }
+    if (v.is_object() && v.contains("content")) {
+        return v["content"].get<std::string>();
+    }
+    if (v.is_array() && !v.empty()) {
+        return json_token_string(v[0]);
+    }
     return {};
 }
 
 bool looks_special(const std::string &tok)
 {
     return tok == "<s>" || tok == "</s>" || tok == "<unk>" || tok == "<pad>" ||
-           (tok.size() > 2 && tok.front() == '<' && tok.back() == '>' &&
-            tok.find("|") != std::string::npos);
+           (tok.size() > 2 && tok.front() == '<' && tok.back() == '>' && tok.find("|") != std::string::npos);
 }
 
 TokenizerInfo load_tokenizer_info(const fs::path &dir)
@@ -383,7 +409,12 @@ TokenizerInfo load_tokenizer_info(const fs::path &dir)
     if (fs::exists(tok_path)) {
         std::ifstream in(tok_path);
         nlohmann::json j;
-        try { in >> j; } catch (...) { j = nlohmann::json(); }
+        try {
+            in >> j;
+        }
+        catch (...) {
+            j = nlohmann::json();
+        }
 
         if (j.contains("model") && j["model"].is_object() && j["model"].contains("vocab")) {
             for (auto it = j["model"]["vocab"].begin(); it != j["model"]["vocab"].end(); ++it) {
@@ -391,7 +422,9 @@ TokenizerInfo load_tokenizer_info(const fs::path &dir)
             }
             if (j["model"].contains("merges")) {
                 for (const auto &m : j["model"]["merges"]) {
-                    if (m.is_string()) { info.merges.push_back(m.get<std::string>()); }
+                    if (m.is_string()) {
+                        info.merges.push_back(m.get<std::string>());
+                    }
                 }
             }
         } else if (j.contains("vocab") && j["vocab"].is_object()) {
@@ -401,17 +434,20 @@ TokenizerInfo load_tokenizer_info(const fs::path &dir)
         } else if (j.contains("vocab") && j["vocab"].is_array()) {
             // internal save() format: [{"t": bytes, "i": id}]
             for (const auto &item : j["vocab"]) {
-                if (!item.contains("t") || !item.contains("i")) { continue; }
+                if (!item.contains("t") || !item.contains("i")) {
+                    continue;
+                }
                 std::vector<uint8_t> bytes = item["t"].get<std::vector<uint8_t>>();
                 vocab[std::string(bytes.begin(), bytes.end())] = item["i"].get<int32_t>();
             }
             if (j.contains("merges") && j["merges"].is_array()) {
                 // merges stored as [id_a, id_b, id_c] triples
                 std::unordered_map<int32_t, std::string> id_tok;
-                for (const auto &[tok, id] : vocab) { id_tok[id] = tok; }
+                for (const auto &[tok, id] : vocab) {
+                    id_tok[id] = tok;
+                }
                 for (const auto &m : j["merges"]) {
-                    if (m.is_array() && m.size() == 3 &&
-                        m[0].is_number() && m[1].is_number() && m[2].is_number()) {
+                    if (m.is_array() && m.size() == 3 && m[0].is_number() && m[1].is_number() && m[2].is_number()) {
                         const int32_t a = m[0].get<int32_t>();
                         const int32_t b = m[1].get<int32_t>();
                         if (id_tok.count(a) && id_tok.count(b)) {
@@ -423,7 +459,9 @@ TokenizerInfo load_tokenizer_info(const fs::path &dir)
         }
         if (j.contains("added_tokens") && j["added_tokens"].is_array()) {
             for (const auto &item : j["added_tokens"]) {
-                if (!item.contains("content")) { continue; }
+                if (!item.contains("content")) {
+                    continue;
+                }
                 const std::string content = item["content"].get<std::string>();
                 int32_t id = -1;
                 if (item.contains("id") && item["id"].is_number()) {
@@ -443,18 +481,26 @@ TokenizerInfo load_tokenizer_info(const fs::path &dir)
             std::ifstream in(merges_path);
             std::string line;
             while (std::getline(in, line)) {
-                if (line.empty() || line[0] == '#') { continue; }
-                if (!line.empty() && line.back() == '\r') { line.pop_back(); }
+                if (line.empty() || line[0] == '#') {
+                    continue;
+                }
+                if (!line.empty() && line.back() == '\r') {
+                    line.pop_back();
+                }
                 info.merges.push_back(line);
             }
         }
     }
 
-    if (vocab.empty()) { return info; }
+    if (vocab.empty()) {
+        return info;
+    }
 
     size_t max_id = 0;
     for (const auto &[tok, id] : vocab) {
-        if (id >= 0 && static_cast<size_t>(id) > max_id) { max_id = static_cast<size_t>(id); }
+        if (id >= 0 && static_cast<size_t>(id) > max_id) {
+            max_id = static_cast<size_t>(id);
+        }
     }
     // contiguous ids only
     std::vector<std::string> toks(max_id + 1);
@@ -466,7 +512,9 @@ TokenizerInfo load_tokenizer_info(const fs::path &dir)
         }
     }
     for (size_t i = 0; i < toks.size(); ++i) {
-        if (!seen[i]) { toks[i] = ""; }
+        if (!seen[i]) {
+            toks[i] = "";
+        }
     }
     info.tokens = std::move(toks);
     info.token_types.assign(info.tokens.size(), 1);
@@ -486,11 +534,20 @@ TokenizerInfo load_tokenizer_info(const fs::path &dir)
     if (fs::exists(tcfg_path)) {
         std::ifstream in(tcfg_path);
         nlohmann::json j;
-        try { in >> j; } catch (...) { j = nlohmann::json(); }
+        try {
+            in >> j;
+        }
+        catch (...) {
+            j = nlohmann::json();
+        }
         auto resolve = [&](const char *key) -> int32_t {
-            if (!j.contains(key)) { return -1; }
+            if (!j.contains(key)) {
+                return -1;
+            }
             const std::string s = json_token_string(j[key]);
-            if (s.empty()) { return -1; }
+            if (s.empty()) {
+                return -1;
+            }
             auto it = vocab.find(s);
             return it == vocab.end() ? -1 : it->second;
         };
@@ -513,9 +570,7 @@ void append_f16(std::string &o, const float *src, size_t n)
 
 }  // namespace
 
-bool write_hf_dir_to_gguf(const std::string &hf_dir,
-                          const std::string &out_path,
-                          const GGUFWritOptions &opt)
+bool write_hf_dir_to_gguf(const std::string &hf_dir, const std::string &out_path, const GGUFWritOptions &opt)
 {
     fs::path in_path(hf_dir);
     fs::path dir = in_path;
@@ -561,7 +616,7 @@ bool write_hf_dir_to_gguf(const std::string &hf_dir,
     struct OutTensor
     {
         std::string name;
-        const core::Tensor *src;  // HF layout [out][in] row-major, FP32
+        const core::Tensor *src;        // HF layout [out][in] row-major, FP32
         std::vector<size_t> gguf_dims;  // reversed HF shape
         bool permute_rope = false;
     };
@@ -583,8 +638,7 @@ bool write_hf_dir_to_gguf(const std::string &hf_dir,
         const auto &shape = tensor.shape();
         ot.gguf_dims.assign(shape.rbegin(), shape.rend());
         if (rope_perm && shape.size() == 2 &&
-            (gname.find("attn_q.weight") != std::string::npos ||
-             gname.find("attn_k.weight") != std::string::npos)) {
+            (gname.find("attn_q.weight") != std::string::npos || gname.find("attn_k.weight") != std::string::npos)) {
             ot.permute_rope = true;
         }
         outs.push_back(std::move(ot));
@@ -593,8 +647,7 @@ bool write_hf_dir_to_gguf(const std::string &hf_dir,
         std::cerr << "[GGUFWriter] no mappable tensors found\n";
         return false;
     }
-    std::sort(outs.begin(), outs.end(),
-              [](const OutTensor &a, const OutTensor &b) { return a.name < b.name; });
+    std::sort(outs.begin(), outs.end(), [](const OutTensor &a, const OutTensor &b) { return a.name < b.name; });
 
     // ---- KV section ----
     std::string kv;
@@ -607,8 +660,12 @@ bool write_hf_dir_to_gguf(const std::string &hf_dir,
     kv_u32(kv, p + "embedding_length", static_cast<uint32_t>(dims.hidden));
     kv_u32(kv, p + "block_count", static_cast<uint32_t>(dims.layers));
     kv_u32(kv, p + "feed_forward_length", static_cast<uint32_t>(dims.inter));
-    if (dims.heads) { kv_u32(kv, p + "attention.head_count", static_cast<uint32_t>(dims.heads)); }
-    if (dims.kv_heads) { kv_u32(kv, p + "attention.head_count_kv", static_cast<uint32_t>(dims.kv_heads)); }
+    if (dims.heads) {
+        kv_u32(kv, p + "attention.head_count", static_cast<uint32_t>(dims.heads));
+    }
+    if (dims.kv_heads) {
+        kv_u32(kv, p + "attention.head_count_kv", static_cast<uint32_t>(dims.kv_heads));
+    }
     kv_f32(kv, p + "attention.layer_norm_rms_epsilon", dims.rms_eps);
     kv_f32(kv, p + "rope.freq_base", dims.rope_theta);
 
@@ -617,8 +674,12 @@ bool write_hf_dir_to_gguf(const std::string &hf_dir,
         kv_str_array(kv, "tokenizer.ggml.tokens", tok.tokens);
         kv_i32_array(kv, "tokenizer.ggml.token_type", tok.token_types);
         kv_str_array(kv, "tokenizer.ggml.merges", tok.merges);
-        if (tok.bos_id >= 0) { kv_i32(kv, "tokenizer.ggml.bos_token_id", tok.bos_id); }
-        if (tok.eos_id >= 0) { kv_i32(kv, "tokenizer.ggml.eos_token_id", tok.eos_id); }
+        if (tok.bos_id >= 0) {
+            kv_i32(kv, "tokenizer.ggml.bos_token_id", tok.bos_id);
+        }
+        if (tok.eos_id >= 0) {
+            kv_i32(kv, "tokenizer.ggml.eos_token_id", tok.eos_id);
+        }
     }
 
     // general.architecture + general.file_type + 6 unconditional arch keys
@@ -640,11 +701,12 @@ bool write_hf_dir_to_gguf(const std::string &hf_dir,
     for (size_t i = 0; i < outs.size(); ++i) {
         const OutTensor &ot = outs[i];
         uint64_t numel = 1;
-        for (size_t d : ot.gguf_dims) { numel *= d; }
+        for (size_t d : ot.gguf_dims) {
+            numel *= d;
+        }
         infos[i].ot = &ot;
         infos[i].payload = opt.use_f32 ? numel * 4 : numel * 2;
-        infos[i].ggml_type = opt.use_f32 ? static_cast<uint32_t>(GGMLType::F32)
-                                         : static_cast<uint32_t>(GGMLType::F16);
+        infos[i].ggml_type = opt.use_f32 ? static_cast<uint32_t>(GGMLType::F32) : static_cast<uint32_t>(GGMLType::F16);
     }
 
     const uint64_t header_size = 24;  // magic + version + n_tensors + n_kv
@@ -662,7 +724,9 @@ bool write_hf_dir_to_gguf(const std::string &hf_dir,
 
             put_str(infos_buf, rec.ot->name);
             put_u32(infos_buf, static_cast<uint32_t>(rec.ot->gguf_dims.size()));
-            for (size_t d : rec.ot->gguf_dims) { put_u64(infos_buf, d); }
+            for (size_t d : rec.ot->gguf_dims) {
+                put_u64(infos_buf, d);
+            }
             put_u32(infos_buf, rec.ggml_type);
             put_u64(infos_buf, rec.offset);
         }
@@ -731,8 +795,7 @@ bool write_hf_dir_to_gguf(const std::string &hf_dir,
         return false;
     }
     std::cout << "[GGUFWriter] wrote " << outs.size() << " tensors"
-              << (skipped ? " (" + std::to_string(skipped) + " unmapped skipped)" : "")
-              << " -> " << out_path << "\n";
+              << (skipped ? " (" + std::to_string(skipped) + " unmapped skipped)" : "") << " -> " << out_path << "\n";
     return true;
 }
 

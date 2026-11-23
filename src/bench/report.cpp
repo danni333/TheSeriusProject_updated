@@ -1,51 +1,41 @@
 #include "report.h"
 
-#include <nlohmann/json.hpp>
 #include <fstream>
-#include <sstream>
 #include <iomanip>
 #include <iostream>
+#include <nlohmann/json.hpp>
+#include <sstream>
 
 namespace serius {
 namespace bench {
 
-std::string generate_report(const LatencyResult &latency,
-                           const ThroughputResult &throughput,
-                           const MemoryProfile &memory,
-                           ReportFormat format)
+std::string generate_report(const LatencyResult &latency, const ThroughputResult &throughput,
+                            const MemoryProfile &memory, ReportFormat format)
 {
     switch (format) {
-        case ReportFormat::JSON:
-        {
+        case ReportFormat::JSON: {
             nlohmann::json j;
-            j["latency"] = {
-                {"ttft_ms", latency.ttft_ms},
-                {"decode_tps", latency.decode_tps},
-                {"prefill_tps", latency.prefill_tps},
-                {"prompt_tokens", latency.prompt_tokens},
-                {"generated_tokens", latency.generated_tokens},
-                {"total_ms", latency.total_ms}
-            };
-            j["throughput"] = {
-                {"requests_per_sec", throughput.requests_per_sec},
-                {"total_tokens_per_sec", throughput.total_tokens_per_sec},
-                {"avg_latency_ms", throughput.avg_latency_ms},
-                {"p99_latency_ms", throughput.p99_latency_ms},
-                {"concurrent_users", throughput.concurrent_users},
-                {"total_requests", throughput.total_requests},
-                {"total_tokens", throughput.total_tokens}
-            };
-            j["memory"] = {
-                {"vram_model_bytes", memory.vram_model_bytes},
-                {"vram_kv_cache_bytes", memory.vram_kv_cache_bytes},
-                {"vram_activations_bytes", memory.vram_activations_bytes},
-                {"vram_peak_bytes", memory.vram_peak_bytes},
-                {"ram_peak_bytes", memory.ram_peak_bytes}
-            };
+            j["latency"] = {{"ttft_ms", latency.ttft_ms},
+                            {"decode_tps", latency.decode_tps},
+                            {"prefill_tps", latency.prefill_tps},
+                            {"prompt_tokens", latency.prompt_tokens},
+                            {"generated_tokens", latency.generated_tokens},
+                            {"total_ms", latency.total_ms}};
+            j["throughput"] = {{"requests_per_sec", throughput.requests_per_sec},
+                               {"total_tokens_per_sec", throughput.total_tokens_per_sec},
+                               {"avg_latency_ms", throughput.avg_latency_ms},
+                               {"p99_latency_ms", throughput.p99_latency_ms},
+                               {"concurrent_users", throughput.concurrent_users},
+                               {"total_requests", throughput.total_requests},
+                               {"total_tokens", throughput.total_tokens}};
+            j["memory"] = {{"vram_model_bytes", memory.vram_model_bytes},
+                           {"vram_kv_cache_bytes", memory.vram_kv_cache_bytes},
+                           {"vram_activations_bytes", memory.vram_activations_bytes},
+                           {"vram_peak_bytes", memory.vram_peak_bytes},
+                           {"ram_peak_bytes", memory.ram_peak_bytes}};
             return j.dump(2);
         }
-        case ReportFormat::MARKDOWN:
-        {
+        case ReportFormat::MARKDOWN: {
             std::ostringstream oss;
             oss << "# Benchmark Report\n\n";
             oss << "## Latency Metrics\n\n";
@@ -85,8 +75,7 @@ std::string generate_report(const LatencyResult &latency,
 
             return oss.str();
         }
-        case ReportFormat::CSV:
-        {
+        case ReportFormat::CSV: {
             std::ostringstream oss;
             oss << "metric,value\n";
             oss << "ttft_ms," << latency.ttft_ms << "\n";
@@ -114,11 +103,8 @@ std::string generate_report(const LatencyResult &latency,
     }
 }
 
-void save_report(const std::string &output_path,
-                 const LatencyResult &latency,
-                 const ThroughputResult &throughput,
-                 const MemoryProfile &memory,
-                 ReportFormat format)
+void save_report(const std::string &output_path, const LatencyResult &latency, const ThroughputResult &throughput,
+                 const MemoryProfile &memory, ReportFormat format)
 {
     std::string content = generate_report(latency, throughput, memory, format);
     std::ofstream file(output_path);

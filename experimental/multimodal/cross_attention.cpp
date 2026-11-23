@@ -3,9 +3,9 @@
 #include <cmath>
 #include <stdexcept>
 
-#include "../autograd/ops.h"
-#include "../common/serius_check.h"
-#include "../init/weight_init.h"
+#include "autograd/ops.h"
+#include "common/serius_check.h"
+#include "init/weight_init.h"
 
 namespace serius {
 namespace multimodal {

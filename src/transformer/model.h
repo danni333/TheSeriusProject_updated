@@ -50,10 +50,7 @@ struct ModelConfig
     bool load_balance = true;
     MoEConfig moe;
 
-    bool has_moe() const
-    {
-        return moe_enabled && num_experts > 0 && top_k > 0 && top_k <= num_experts;
-    }
+    bool has_moe() const { return moe_enabled && num_experts > 0 && top_k > 0 && top_k <= num_experts; }
 
     void normalize_moe()
     {

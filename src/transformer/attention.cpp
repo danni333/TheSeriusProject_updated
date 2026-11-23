@@ -12,8 +12,7 @@ namespace model {
 
 using core::autograd::Node;
 
-MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat,
-                                       unsigned seed)
+MultiHeadAttention::MultiHeadAttention(size_t d_model, size_t n_heads, size_t d_lat, unsigned seed)
     : d_model_(d_model), n_heads_(n_heads), d_head_(d_model / n_heads), cached_mask_({0})
 {
     // If d_lat is 0, default to d_model / 4 as a sensible heuristic
@@ -105,8 +104,8 @@ Node *MultiHeadAttention::forward(Node *input, PagedKVCache *cache) const
         // Training or prefill: apply causal mask
         if (mask_seq_len_ != total_seq_len) {
             cached_mask_ = core::Tensor({total_seq_len, total_seq_len});
-            const float MASK_INIT_VAL = 0.0F; 
-            cached_mask_.fill(MASK_INIT_VAL); 
+            const float MASK_INIT_VAL = 0.0F;
+            cached_mask_.fill(MASK_INIT_VAL);
             for (size_t i = 0; i < total_seq_len; ++i) {
                 for (size_t j = 0; j < total_seq_len; ++j) {
                     cached_mask_.at(i, j) = (j > i) ? 1.0F : 0.0F;

@@ -6,6 +6,8 @@
 // #include <jwt-cpp/jwt.h>
 // #include <sqlite3.h>
 
+struct sqlite3_stmt;
+
 namespace serius::hub {
 
 struct User

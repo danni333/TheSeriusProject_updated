@@ -32,8 +32,7 @@ std::string to_lower_copy(const std::string &s)
     return r;
 }
 
-std::string replace_ci(std::string text, const std::string &kw,
-                       const std::string &replacement)
+std::string replace_ci(std::string text, const std::string &kw, const std::string &replacement)
 {
     std::string low = to_lower_copy(text);
     std::string low_kw = to_lower_copy(kw);

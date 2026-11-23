@@ -43,26 +43,21 @@ class PersistentMemory
     /// @param info_ratio  Original compression ratio (for bookkeeping).
     /// @return The SessionMeta that was written, or a meta with empty
     ///         session_id on failure.
-    SessionMeta save_session(const std::string &user_id,
-                             const core::Tensor &state,
-                             float info_ratio = 0.0f);
+    SessionMeta save_session(const std::string &user_id, const core::Tensor &state, float info_ratio = 0.0f);
 
     /// Load a specific session tensor by id.
-    core::Tensor load_session(const std::string &user_id,
-                              const std::string &session_id) const;
+    core::Tensor load_session(const std::string &user_id, const std::string &session_id) const;
 
     /// List all sessions for a user.
     std::vector<SessionMeta> list_sessions(const std::string &user_id) const;
 
     /// Delete a specific session.
-    bool delete_session(const std::string &user_id,
-                        const std::string &session_id);
+    bool delete_session(const std::string &user_id, const std::string &session_id);
 
     /// Build a combined context tensor from all (or the N most recent)
     /// sessions for a user.
     /// @param max_sessions  0 = all sessions; otherwise limit to the N newest.
-    core::Tensor build_user_context(const std::string &user_id,
-                                    size_t max_sessions = 0) const;
+    core::Tensor build_user_context(const std::string &user_id, size_t max_sessions = 0) const;
 
     /// Total number of stored sessions for a given user.
     size_t session_count(const std::string &user_id) const;
@@ -84,8 +79,7 @@ class PersistentMemory
     std::vector<SessionMeta> read_index(const std::string &user_id) const;
 
     /// Write the JSON index for a user.
-    bool write_index(const std::string &user_id,
-                     const std::vector<SessionMeta> &sessions) const;
+    bool write_index(const std::string &user_id, const std::vector<SessionMeta> &sessions) const;
 
     /// Generate a timestamp string.
     static std::string make_timestamp();

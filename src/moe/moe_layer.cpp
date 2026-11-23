@@ -22,8 +22,7 @@ MoELayer::MoELayer(size_t d_model, size_t num_experts, size_t top_k, size_t shar
 
     experts_.reserve(num_experts);
     for (size_t i = 0; i < num_experts; ++i) {
-        experts_.emplace_back(std::make_unique<Expert>(
-            d_model, d_ff, seed + 1000U + static_cast<unsigned>(i * 17)));
+        experts_.emplace_back(std::make_unique<Expert>(d_model, d_ff, seed + 1000U + static_cast<unsigned>(i * 17)));
     }
 }
 
@@ -107,8 +106,7 @@ core::autograd::Node *MoELayer::forward(core::autograd::Node *input) const
             token_result.routed.push_back(expert_out);
             children.push_back(expert_out);
             for (size_t col = 0; col < d_model; ++col) {
-                out_data[token_idx * d_model + col] +=
-                    decision.expert_weights[k] * expert_out->data[col];
+                out_data[token_idx * d_model + col] += decision.expert_weights[k] * expert_out->data[col];
             }
         }
         for (const auto *expert_out : token_result.shared) {

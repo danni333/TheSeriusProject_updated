@@ -36,8 +36,8 @@ class MCPServer
 
     /// Register a tool. `input_schema` is a JSON Schema object describing
     /// the arguments (may be empty).
-    void register_tool(const std::string &name, const std::string &description,
-                       const json &input_schema, ToolHandler handler);
+    void register_tool(const std::string &name, const std::string &description, const json &input_schema,
+                       ToolHandler handler);
 
     /// Attach an audit log; every `tools/call` is recorded.
     void set_audit(Audit *audit) { audit_ = audit; }
@@ -47,8 +47,7 @@ class MCPServer
     json handle_message(const json &request);
 
     /// Register a POST route on an existing httplib::Server.
-    void register_http_route(httplib::Server &server,
-                             const std::string &path = "/mcp");
+    void register_http_route(httplib::Server &server, const std::string &path = "/mcp");
 
     /// Blocking newline-delimited JSON-RPC loop on stdin/stdout.
     /// Returns when stdin closes.

@@ -1,10 +1,10 @@
 #include "tensor.h"
 
 #include <algorithm>
-#include <cassert>
 #include <cstring>
 #include <numeric>  // For std::accumulate
 #include <random>
+#include <sstream>
 
 #include "../hal/device.h"
 #include "../hal/fused_kernels.h"
@@ -17,9 +17,6 @@
 
 namespace serius {
 namespace core {
-
-// Define a named constant for memory alignment
-constexpr size_t MEMORY_ALIGNMENT = 64;
 
 // --- Static helpers ---
 
@@ -235,8 +232,8 @@ Tensor &Tensor::operator=(Tensor &&other) noexcept
         // Source is a non-owning view. We must perform a DEEP COPY to become an owner.
         // This prevents dangling pointers if the original owner of 'other' is destroyed.
         // We use a temporary to safely handle cases where 'other' is a view of '*this'.
-        Tensor tmp(other); 
-        *this = std::move(tmp); // Recurse: now 'other' (as 'tmp') owns_data_ is true
+        Tensor tmp(other);
+        *this = std::move(tmp);  // Recurse: now 'other' (as 'tmp') owns_data_ is true
         return *this;
     }
 
@@ -252,7 +249,7 @@ Tensor &Tensor::operator=(Tensor &&other) noexcept
     strides_ = std::move(other.strides_);
     size_ = other.size_;
     dtype_ = other.dtype_;
-    owns_data_ = true; // 'other' was an owner, so we are now
+    owns_data_ = true;  // 'other' was an owner, so we are now
     owns_gpu_ = other.owns_gpu_;
     pool_ = other.pool_;
     is_gpu_pool_ = other.is_gpu_pool_;
@@ -290,7 +287,6 @@ void Tensor::free_data()
             pool_->deallocate(data_, size_ * element_size());
             data_ = nullptr;
         }
-
     }
     // Free GPU memory only when this tensor allocated it. Views
     // (gpu_view, host_gpu_view, reshape/slice/permute/contiguous aliases)
@@ -320,7 +316,9 @@ float &Tensor::operator[](size_t idx)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("operator[] requires Float32");
     syncToHost();
-    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;
+    }
     return static_cast<float *>(data_)[idx];
 }
 
@@ -335,7 +333,9 @@ float &Tensor::at(const std::vector<size_t> &indices)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
     syncToHost();
-    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;
+    }
     if (indices.size() != shape_.size()) {
         throw std::invalid_argument("Number of indices doesn't match tensor dimensions");
     }
@@ -356,7 +356,9 @@ float &Tensor::at(size_t row, size_t col)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
     syncToHost();
-    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;
+    }
     return static_cast<float *>(data_)[(row * strides_[0]) + (col * strides_[1])];
 }
 
@@ -371,7 +373,9 @@ float &Tensor::at(size_t dim0, size_t dim1, size_t dim2)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
     syncToHost();
-    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;
+    }
     if (shape_.size() != 3) throw std::runtime_error("Tensor is not 3D");
     return static_cast<float *>(data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2])];
 }
@@ -388,7 +392,9 @@ float &Tensor::at(size_t dim0, size_t dim1, size_t dim2, size_t dim3)
 {
     if (dtype_ != hal::DType::Float32) throw std::runtime_error("at() requires Float32");
     syncToHost();
-    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;
+    }
     if (shape_.size() != 4) throw std::runtime_error("Tensor is not 4D");
     return static_cast<float *>(
         data_)[(dim0 * strides_[0]) + (dim1 * strides_[1]) + (dim2 * strides_[2]) + (dim3 * strides_[3])];
@@ -421,7 +427,9 @@ float Tensor::item(size_t idx) const
 void Tensor::set_item(size_t idx, float val)
 {
     syncToHost();
-    if (data_gpu_ != nullptr) { location_ = DataLocation::CPU; }
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;
+    }
     switch (dtype_) {
         case hal::DType::Float32:
             static_cast<float *>(data_)[idx] = val;
@@ -476,10 +484,10 @@ Tensor Tensor::contiguous() const
                 throw std::runtime_error("CUDA malloc failed in contiguous()");
             }
             result.owns_gpu_ = true;
-            
+
             // Call our new GPU-native copy layout kernel
             hal::copy_layout(result.data_gpu_, this->data_gpu_, shape_.data(), strides_.data(), shape_.size(), dtype_);
-            
+
             result.location_ = DataLocation::GPU;
             return result;
         }
@@ -553,8 +561,7 @@ Tensor Tensor::gpu_only(const std::vector<size_t> &shape, hal::DType dtype)
     Tensor t;
     t.shape_ = shape;
     t.strides_ = compute_strides(shape);
-    t.size_ = shape.empty() ? 0
-                            : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    t.size_ = shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
     t.dtype_ = dtype;
     t.data_ = nullptr;
     if (t.size_ > 0) {
@@ -574,8 +581,7 @@ Tensor Tensor::gpu_view(void *gpu_data, const std::vector<size_t> &shape, hal::D
     Tensor t;
     t.shape_ = shape;
     t.strides_ = compute_strides(shape);
-    t.size_ = shape.empty() ? 0
-                            : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    t.size_ = shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
     t.dtype_ = dtype;
     t.data_ = nullptr;
     t.data_gpu_ = gpu_data;
@@ -584,14 +590,12 @@ Tensor Tensor::gpu_view(void *gpu_data, const std::vector<size_t> &shape, hal::D
     return t;
 }
 
-Tensor Tensor::host_gpu_view(void *host_data, void *gpu_data,
-                             const std::vector<size_t> &shape, hal::DType dtype)
+Tensor Tensor::host_gpu_view(void *host_data, void *gpu_data, const std::vector<size_t> &shape, hal::DType dtype)
 {
     Tensor t;
     t.shape_ = shape;
     t.strides_ = compute_strides(shape);
-    t.size_ = shape.empty() ? 0
-                            : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
+    t.size_ = shape.empty() ? 0 : std::accumulate(shape.begin(), shape.end(), size_t(1), std::multiplies<size_t>());
     t.dtype_ = dtype;
     t.data_ = host_data;
     t.data_gpu_ = gpu_data;
@@ -615,7 +619,8 @@ Tensor Tensor::reshape(const std::vector<size_t> &new_shape) const
         std::string strides_str = "[";
         for (auto s : strides_) strides_str += std::to_string(s) + ",";
         strides_str += "]";
-        throw std::invalid_argument("Cannot reshape non-contiguous tensor (make a copy first). Shape: " + shape_str + " Strides: " + strides_str);
+        throw std::invalid_argument("Cannot reshape non-contiguous tensor (make a copy first). Shape: " + shape_str +
+                                    " Strides: " + strides_str);
     }
     // Return a view with new shape
     Tensor res = Tensor(data_, new_shape);
@@ -1160,8 +1165,6 @@ Tensor Tensor::operator/(float scalar) const
     float inv_scalar = 1.0f / (scalar == 0.0f ? 1e-7f : scalar);
     return *this * inv_scalar;
 }
-
-// --- Device Synchronization ---
 
 // --- Device Synchronization ---
 

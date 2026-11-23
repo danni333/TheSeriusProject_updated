@@ -5,7 +5,7 @@
 #include <cmath>
 #include <vector>
 
-#include "../common/serius_check.h"
+#include "common/serius_check.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846

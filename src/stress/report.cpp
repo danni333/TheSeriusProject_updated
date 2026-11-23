@@ -1,50 +1,46 @@
 #include "report.h"
-#include <sstream>
-#include <iomanip>
-#include <fstream>
+
 #include <ctime>
+#include <fstream>
+#include <iomanip>
 #include <nlohmann/json.hpp>
+#include <sstream>
 
 namespace serius {
 namespace stress {
 
-std::string generate_report(const StressResult& result,
-                           const StressConfig& config,
-                           ReportFormat format) {
+std::string generate_report(const StressResult &result, const StressConfig &config, ReportFormat format)
+{
     if (format == ReportFormat::JSON) {
         nlohmann::json j;
-        j["config"] = {
-            {"concurrent_users", config.concurrent_users},
-            {"duration_seconds", config.duration_seconds},
-            {"prompt", config.prompt},
-            {"max_tokens", config.max_tokens},
-            {"model_name", config.model_name},
-            {"server_url", config.server_url}
-        };
-        j["result"] = {
-            {"avg_tps", result.avg_tps},
-            {"p50_latency_ms", result.p50_latency_ms},
-            {"p99_latency_ms", result.p99_latency_ms},
-            {"error_rate", result.error_rate},
-            {"total_requests", result.total_requests},
-            {"total_errors", result.total_errors},
-            {"total_tokens", result.total_tokens}
-        };
+        j["config"] = {{"concurrent_users", config.concurrent_users},
+                       {"duration_seconds", config.duration_seconds},
+                       {"prompt", config.prompt},
+                       {"max_tokens", config.max_tokens},
+                       {"model_name", config.model_name},
+                       {"server_url", config.server_url}};
+        j["result"] = {{"avg_tps", result.avg_tps},
+                       {"p50_latency_ms", result.p50_latency_ms},
+                       {"p99_latency_ms", result.p99_latency_ms},
+                       {"error_rate", result.error_rate},
+                       {"total_requests", result.total_requests},
+                       {"total_errors", result.total_errors},
+                       {"total_tokens", result.total_tokens}};
 
         nlohmann::json tps_data;
-        for (const auto& [time, tps] : result.tps_timeline) {
+        for (const auto &[time, tps] : result.tps_timeline) {
             tps_data.push_back({time, tps});
         }
         j["result"]["tps_timeline"] = tps_data;
 
         nlohmann::json vram_data;
-        for (const auto& [time, vram] : result.vram_timeline) {
+        for (const auto &[time, vram] : result.vram_timeline) {
             vram_data.push_back({time, vram});
         }
         j["result"]["vram_timeline"] = vram_data;
 
         nlohmann::json ram_data;
-        for (const auto& [time, ram] : result.ram_timeline) {
+        for (const auto &[time, ram] : result.ram_timeline) {
             ram_data.push_back({time, ram});
         }
         j["result"]["ram_timeline"] = ram_data;
@@ -75,8 +71,8 @@ std::string generate_report(const StressResult& result,
         ss << "  Max Tokens:       " << config.max_tokens << "\n\n";
 
         auto row = [&](const char *metric, const std::string &value) {
-            ss << "  │ " << std::left << std::setw(12) << metric << " │ "
-               << std::right << std::setw(10) << value << " │\n";
+            ss << "  │ " << std::left << std::setw(12) << metric << " │ " << std::right << std::setw(10) << value
+               << " │\n";
         };
         ss << "  ┌──────────────┬────────────┐\n";
         ss << "  │ Metric       │ Value      │\n";
@@ -131,10 +127,9 @@ std::string generate_report(const StressResult& result,
     }
 }
 
-void save_report(const std::string& output_path,
-                 const StressResult& result,
-                 const StressConfig& config,
-                 ReportFormat format) {
+void save_report(const std::string &output_path, const StressResult &result, const StressConfig &config,
+                 ReportFormat format)
+{
     std::string report = generate_report(result, config, format);
 
     std::ofstream out(output_path);

@@ -1,9 +1,10 @@
 #include "cli/cmd_convert.h"
+
+#include <iostream>
+
 #include "cli/args_parser.h"
 #include "io/gguf_export.h"
 #include "io/gguf_writer.h"
-
-#include <iostream>
 
 namespace serius {
 namespace cli {
@@ -12,16 +13,14 @@ namespace {
 
 bool has_suffix(const std::string &s, const std::string &suffix)
 {
-    return s.size() >= suffix.size() &&
-           s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
+    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
 }  // namespace
 
 int cmd_convert(int argc, char **argv)
 {
-    ArgsParser parser("serius convert",
-                      "Convert between GGUF and HuggingFace safetensors formats");
+    ArgsParser parser("serius convert", "Convert between GGUF and HuggingFace safetensors formats");
 
     parser.add_flag({"input", "i", "Input .gguf file, .safetensors file or model dir", true, ""});
     parser.add_flag({"output", "o", "Output .gguf file or directory", true, ""});

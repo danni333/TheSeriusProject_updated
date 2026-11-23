@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-#include "../tensor/tensor.h"
+#include "tensor/tensor.h"
 
 namespace serius {
 namespace knowledge {

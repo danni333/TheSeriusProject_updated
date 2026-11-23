@@ -16,10 +16,10 @@ namespace io {
 struct TensorInfo
 {
     std::string name;
-    std::string dtype;                      // "F32", "F16", "BF16", "I32", etc.
+    std::string dtype;  // "F32", "F16", "BF16", "I32", etc.
     std::vector<size_t> shape;
-    size_t data_offset_start = 0;           // byte offset into data blob
-    size_t data_offset_end = 0;             // byte offset end
+    size_t data_offset_start = 0;  // byte offset into data blob
+    size_t data_offset_end = 0;    // byte offset end
 };
 
 /// Reader for the Safetensors format (mmap-based, zero-copy).

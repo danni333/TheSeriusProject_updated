@@ -2,7 +2,7 @@
 #include "action_parser.h"
 #include "context_manager.h"
 
-#include "../tools/registry.h"
+#include "tools/registry.h"
 
 #include <nlohmann/json.hpp>
 

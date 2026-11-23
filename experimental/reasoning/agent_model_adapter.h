@@ -5,7 +5,7 @@
 #include "cot.h"
 #include "mcts.h"
 
-#include "../agent/model_interface.h"
+#include "agent/model_interface.h"
 
 namespace serius {
 namespace reasoning {

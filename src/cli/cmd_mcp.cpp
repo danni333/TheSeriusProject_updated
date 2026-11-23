@@ -1,8 +1,5 @@
 #include "cli/cmd_mcp.h"
 
-#include "../mcp/audit.h"
-#include "../mcp/server.h"
-
 #include <httplib.h>
 #include <spdlog/spdlog.h>
 
@@ -12,6 +9,9 @@
 #include <iostream>
 #include <string>
 
+#include "../mcp/audit.h"
+#include "../mcp/server.h"
+
 namespace serius {
 namespace cli {
 
@@ -20,40 +20,28 @@ namespace {
 void register_builtin_tools(mcp::MCPServer &server)
 {
     server.register_tool(
-        "echo",
-        "Echo back the provided message",
+        "echo", "Echo back the provided message",
         mcp::json{{"type", "object"},
                   {"properties", mcp::json{{"message", mcp::json{{"type", "string"}}}}},
                   {"required", mcp::json::array({"message"})}},
-        [](const mcp::json &args) {
-            return mcp::json{{"message", args.value("message", std::string{})}};
-        });
+        [](const mcp::json &args) { return mcp::json{{"message", args.value("message", std::string{})}}; });
 
-    server.register_tool(
-        "current_time",
-        "Return the current UTC time",
-        mcp::json::object(),
-        [](const mcp::json &) {
-            const std::time_t now = std::time(nullptr);
-            std::tm tm{};
+    server.register_tool("current_time", "Return the current UTC time", mcp::json::object(), [](const mcp::json &) {
+        const std::time_t now = std::time(nullptr);
+        std::tm tm{};
 #if defined(_MSC_VER)
-            gmtime_s(&tm, &now);
+        gmtime_s(&tm, &now);
 #else
             gmtime_r(&now, &tm);
 #endif
-            char buf[32];
-            std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
-            return mcp::json{{"utc", buf}, {"unix", static_cast<long long>(now)}};
-        });
+        char buf[32];
+        std::strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", &tm);
+        return mcp::json{{"utc", buf}, {"unix", static_cast<long long>(now)}};
+    });
 
     server.register_tool(
-        "serius_info",
-        "Return Serius engine version and MCP server info",
-        mcp::json::object(),
-        [](const mcp::json &) {
-            return mcp::json{{"engine", "TheSeriusProject"},
-                             {"version", "0.1.0"},
-                             {"protocol", "2024-11-05"}};
+        "serius_info", "Return Serius engine version and MCP server info", mcp::json::object(), [](const mcp::json &) {
+            return mcp::json{{"engine", "TheSeriusProject"}, {"version", "0.1.0"}, {"protocol", "2024-11-05"}};
         });
 }
 

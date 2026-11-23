@@ -1,10 +1,10 @@
 #include "flash_attn.h"
 
-#include "../autograd/ops.h"
-
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+
+#include "../autograd/ops.h"
 
 #ifdef SERIUS_USE_CUDA
 namespace serius {
@@ -42,9 +42,8 @@ FlashAttentionBlocks resolve_flash_attention_blocks(int head_dim, const FlashAtt
     if (!is_supported_block(block_m) || !is_supported_block(block_n)) {
         throw std::invalid_argument("Flash attention: block sizes must be 16, 32, 64, or 128");
     }
-    const size_t shared_memory_bytes =
-        (static_cast<size_t>(block_m) + 2 * static_cast<size_t>(block_n)) * static_cast<size_t>(head_dim) *
-        sizeof(float);
+    const size_t shared_memory_bytes = (static_cast<size_t>(block_m) + 2 * static_cast<size_t>(block_n)) *
+                                       static_cast<size_t>(head_dim) * sizeof(float);
     if (shared_memory_bytes > 48 * 1024) {
         throw std::invalid_argument("Flash attention: requested blocks exceed the 48 KiB shared-memory limit");
     }
@@ -61,8 +60,7 @@ void validate_flash_attention_inputs(const core::Tensor &query, const core::Tens
     const auto &q_shape = query.shape();
     const auto &k_shape = key.shape();
     const auto &v_shape = value.shape();
-    if (q_shape[0] != k_shape[0] || q_shape[1] != k_shape[1] || k_shape != v_shape ||
-        q_shape[3] != k_shape[3]) {
+    if (q_shape[0] != k_shape[0] || q_shape[1] != k_shape[1] || k_shape != v_shape || q_shape[3] != k_shape[3]) {
         throw std::invalid_argument("Flash attention: incompatible Q, K, and V shapes");
     }
     if (q_shape[0] == 0 || q_shape[1] == 0 || q_shape[2] == 0 || k_shape[2] == 0 || q_shape[3] == 0) {
@@ -105,9 +103,8 @@ inline bool key_allowed(bool is_causal, int q_pos, int k_pos)
     return !is_causal || k_pos <= q_pos;
 }
 
-void forward(const float *q, const float *k, const float *v, float *out, float *lse,
-             int batch, int heads, int seq_q, int seq_k, int head_dim, float scale,
-             bool is_causal)
+void forward(const float *q, const float *k, const float *v, float *out, float *lse, int batch, int heads, int seq_q,
+             int seq_k, int head_dim, float scale, bool is_causal)
 {
     const size_t q_stride = static_cast<size_t>(seq_q) * head_dim;
     const size_t kv_stride = static_cast<size_t>(seq_k) * head_dim;
@@ -158,9 +155,9 @@ void forward(const float *q, const float *k, const float *v, float *out, float *
     }
 }
 
-void backward(const float *q, const float *k, const float *v, const float *out, const float *dout,
-              const float *lse, float *dq, float *dk, float *dv, int batch, int heads, int seq_q,
-              int seq_k, int head_dim, float scale, bool is_causal)
+void backward(const float *q, const float *k, const float *v, const float *out, const float *dout, const float *lse,
+              float *dq, float *dk, float *dv, int batch, int heads, int seq_q, int seq_k, int head_dim, float scale,
+              bool is_causal)
 {
     const size_t q_stride = static_cast<size_t>(seq_q) * head_dim;
     const size_t kv_stride = static_cast<size_t>(seq_k) * head_dim;
@@ -179,15 +176,18 @@ void backward(const float *q, const float *k, const float *v, const float *out, 
             float *dqb = dq ? dq + base * q_stride : nullptr;
             float *dkb = dk ? dk + base * kv_stride : nullptr;
             float *dvb = dv ? dv + base * kv_stride : nullptr;
-            if (dkb) for (size_t i = 0; i < kv_stride; ++i) dkb[i] = 0.0F;
-            if (dvb) for (size_t i = 0; i < kv_stride; ++i) dvb[i] = 0.0F;
+            if (dkb)
+                for (size_t i = 0; i < kv_stride; ++i) dkb[i] = 0.0F;
+            if (dvb)
+                for (size_t i = 0; i < kv_stride; ++i) dvb[i] = 0.0F;
 
             for (int i = 0; i < seq_q; ++i) {
                 const float *qi = qb + static_cast<size_t>(i) * head_dim;
                 const float *oi = ob + static_cast<size_t>(i) * head_dim;
                 const float *doi = dob + static_cast<size_t>(i) * head_dim;
                 float *dqi = dqb ? dqb + static_cast<size_t>(i) * head_dim : nullptr;
-                if (dqi) for (int d = 0; d < head_dim; ++d) dqi[d] = 0.0F;
+                if (dqi)
+                    for (int d = 0; d < head_dim; ++d) dqi[d] = 0.0F;
 
                 // Recompute row probabilities: P_ij = exp(S_ij - LSE_i) for
                 // unmasked j, 0 otherwise (masked entries contribute nothing).
@@ -206,7 +206,10 @@ void backward(const float *q, const float *k, const float *v, const float *out, 
                 for (int d = 0; d < head_dim; ++d) delta += static_cast<double>(doi[d]) * oi[d];
                 // dp_j = <dO_i, V_j>
                 for (int j = 0; j < seq_k; ++j) {
-                    if (probs[j] == 0.0F) { dp[j] = 0.0F; continue; }
+                    if (probs[j] == 0.0F) {
+                        dp[j] = 0.0F;
+                        continue;
+                    }
                     const float *vj = vb + static_cast<size_t>(j) * head_dim;
                     double acc = 0.0;
                     for (int d = 0; d < head_dim; ++d) acc += static_cast<double>(doi[d]) * vj[d];
@@ -234,13 +237,15 @@ void backward(const float *q, const float *k, const float *v, const float *out, 
 }  // namespace cpu
 }  // namespace
 
-std::pair<core::Tensor, core::Tensor> flash_attention_forward_internal(
-    const core::Tensor &query, const core::Tensor &key, const core::Tensor &value, const FlashAttentionConfig &config)
+std::pair<core::Tensor, core::Tensor> flash_attention_forward_internal(const core::Tensor &query,
+                                                                       const core::Tensor &key,
+                                                                       const core::Tensor &value,
+                                                                       const FlashAttentionConfig &config)
 {
     validate_flash_attention_inputs(query, key, value, config);
 
     const auto &q_shape = query.shape();
-    [[maybe_unused]] const auto &k_shape = key.shape();
+    const auto &k_shape = key.shape();
 
     int batch_size = static_cast<int>(q_shape[0]);
     int num_heads = static_cast<int>(q_shape[1]);
@@ -259,10 +264,9 @@ std::pair<core::Tensor, core::Tensor> flash_attention_forward_internal(
         const FlashAttentionBlocks blocks = resolve_flash_attention_blocks(static_cast<int>(q_shape[3]), config);
         int seq_len_k = static_cast<int>(k_shape[2]);
         int head_dim = static_cast<int>(q_shape[3]);
-        serius::hal::flash_attention_v2_fwd_cuda(out.data_gpu(), lse.data_gpu(), query.data_gpu(), key.data_gpu(),
-                                                 value.data_gpu(), batch_size, num_heads, seq_len_q, seq_len_k,
-                                                 head_dim, config.softmax_scale, config.is_causal, blocks.query,
-                                                 blocks.key_value);
+        serius::hal::flash_attention_v2_fwd_cuda(
+            out.data_gpu(), lse.data_gpu(), query.data_gpu(), key.data_gpu(), value.data_gpu(), batch_size, num_heads,
+            seq_len_q, seq_len_k, head_dim, config.softmax_scale, config.is_causal, blocks.query, blocks.key_value);
 
         out.mark_dirty(core::Tensor::DataLocation::GPU);
         lse.mark_dirty(core::Tensor::DataLocation::GPU);
@@ -271,9 +275,8 @@ std::pair<core::Tensor, core::Tensor> flash_attention_forward_internal(
 #endif
 
     // CPU path: online-softmax forward, O(seq_k) scratch per query row.
-    cpu::forward(query.data(), key.data(), value.data(), out.data(), lse.data(), batch_size,
-                 num_heads, seq_len_q, static_cast<int>(k_shape[2]), static_cast<int>(q_shape[3]),
-                 config.softmax_scale, config.is_causal);
+    cpu::forward(query.data(), key.data(), value.data(), out.data(), lse.data(), batch_size, num_heads, seq_len_q,
+                 static_cast<int>(k_shape[2]), static_cast<int>(q_shape[3]), config.softmax_scale, config.is_causal);
     return {std::move(out), std::move(lse)};
 }
 
@@ -340,12 +343,11 @@ core::autograd::Node *flash_attention(core::autograd::Node *query, core::autogra
         }
 #endif
         // CPU path: recompute P row-by-row from Q,K,V,LSE (no S^2 storage).
-        cpu::backward(query->data.data(), key->data.data(), value->data.data(),
-                      out_node->data.data(), out_node->grad.data(), lse.data(),
-                      query->requires_grad ? query->grad.data() : nullptr,
+        cpu::backward(query->data.data(), key->data.data(), value->data.data(), out_node->data.data(),
+                      out_node->grad.data(), lse.data(), query->requires_grad ? query->grad.data() : nullptr,
                       key->requires_grad ? key->grad.data() : nullptr,
-                      value->requires_grad ? value->grad.data() : nullptr, batch_size, num_heads,
-                      seq_len_q, seq_len_k, head_dim, config.softmax_scale, config.is_causal);
+                      value->requires_grad ? value->grad.data() : nullptr, batch_size, num_heads, seq_len_q, seq_len_k,
+                      head_dim, config.softmax_scale, config.is_causal);
         return;
     };
 

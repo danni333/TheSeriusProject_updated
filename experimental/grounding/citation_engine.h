@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../common/text_embed.h"
+#include "common/text_embed.h"
 
 namespace serius {
 namespace grounding {

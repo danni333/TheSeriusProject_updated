@@ -1,4 +1,3 @@
-#include <cassert>
 #include <stdexcept>
 
 #if defined(__AVX2__) || defined(__AVX__)

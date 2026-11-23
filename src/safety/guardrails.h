@@ -10,7 +10,7 @@ namespace safety {
 /// Minimal guardrails: blocklist/allowlist for response content.
 class Guardrails
 {
-public:
+   public:
     Guardrails() = default;
 
     /// Block a token ID (e.g. from tokenizer).
@@ -25,7 +25,7 @@ public:
     /// Clear all blocklists.
     void clear();
 
-private:
+   private:
     std::unordered_set<int> blocklist_tokens_;
     std::vector<std::string> blocklist_phrases_;
 };

@@ -3,6 +3,7 @@
 #ifdef SERIUS_USE_CUDA
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
+
 #include <cmath>
 #include <stdexcept>
 #include <vector>
@@ -28,21 +29,20 @@ constexpr float kNegInf = -1e30f;
 //   [0, block_size)          scores/weights for the current k-block
 //   [block_size, +d_model)   per-dimension output accumulator
 //   [+40]                    reduction scratch + {bmax, m, l}
-__global__ void block_sparse_attention_kernel(
-    const float* Q, const float* K, const float* V, float* O,
-    const int* block_mask, int seq_len, int d_model, int block_size,
-    int num_blocks, float scale)
+__global__ void block_sparse_attention_kernel(const float *Q, const float *K, const float *V, float *O,
+                                              const int *block_mask, int seq_len, int d_model, int block_size,
+                                              int num_blocks, float scale)
 {
     extern __shared__ float smem[];
-    float* s_scores = smem;
-    float* s_acc = smem + block_size;
-    float* s_red = s_acc + d_model;  // 40 floats: [0..31] warp partials,
+    float *s_scores = smem;
+    float *s_acc = smem + block_size;
+    float *s_red = s_acc + d_model;  // 40 floats: [0..31] warp partials,
                                      // [32]=bmax, [33]=m, [34]=l
 
     const int tid = threadIdx.x;
     const int q = blockIdx.x;
     const int q_block = q / block_size;
-    const float* q_row = Q + static_cast<size_t>(q) * d_model;
+    const float *q_row = Q + static_cast<size_t>(q) * d_model;
 
     if (tid == 0) {
         s_red[32] = kNegInf;  // block max
@@ -68,7 +68,7 @@ __global__ void block_sparse_attention_kernel(
             const int k_idx = k_start + j;
             float s = kNegInf;
             if (k_idx <= q) {
-                const float* k_row = K + static_cast<size_t>(k_idx) * d_model;
+                const float *k_row = K + static_cast<size_t>(k_idx) * d_model;
                 float dot = 0.0f;
                 for (int d = 0; d < d_model; ++d) {
                     dot += q_row[d] * k_row[d];
@@ -160,12 +160,10 @@ __global__ void block_sparse_attention_kernel(
 
 }  // namespace
 
-Tensor block_sparse_attention_cuda(
-    const Tensor& Q, const Tensor& K, const Tensor& V,
-    const Tensor& block_mask, size_t block_size, cudaStream_t stream)
+Tensor block_sparse_attention_cuda(const Tensor &Q, const Tensor &K, const Tensor &V, const Tensor &block_mask,
+                                   size_t block_size, cudaStream_t stream)
 {
-    if (Q.shape().size() != 2 || K.shape() != Q.shape() ||
-        V.shape() != Q.shape()) {
+    if (Q.shape().size() != 2 || K.shape() != Q.shape() || V.shape() != Q.shape()) {
         throw std::runtime_error(
             "block_sparse_attention_cuda: Q, K, V must be 2-D tensors with "
             "identical shapes");
@@ -191,10 +189,9 @@ Tensor block_sparse_attention_cuda(
         mask_int[i] = (block_mask.item(i) > 0.5f) ? 1 : 0;
     }
 
-    int* d_block_mask = nullptr;
+    int *d_block_mask = nullptr;
     cudaMalloc(&d_block_mask, mask_int.size() * sizeof(int));
-    cudaMemcpy(d_block_mask, mask_int.data(), mask_int.size() * sizeof(int),
-               cudaMemcpyHostToDevice);
+    cudaMemcpy(d_block_mask, mask_int.data(), mask_int.size() * sizeof(int), cudaMemcpyHostToDevice);
 
     Tensor output({seq_len, d_model});
     Q.syncToDevice();
@@ -215,19 +212,15 @@ Tensor block_sparse_attention_cuda(
     }
     if (static_cast<int>(smem_bytes) > max_smem) {
         cudaFree(d_block_mask);
-        throw std::runtime_error(
-            "block_sparse_attention_cuda: shared memory requirement (" +
-            std::to_string(smem_bytes) + " bytes) exceeds device limit (" +
-            std::to_string(max_smem) + " bytes)");
+        throw std::runtime_error("block_sparse_attention_cuda: shared memory requirement (" +
+                                 std::to_string(smem_bytes) + " bytes) exceeds device limit (" +
+                                 std::to_string(max_smem) + " bytes)");
     }
     const cudaError_t attr_err = cudaFuncSetAttribute(
-        block_sparse_attention_kernel,
-        cudaFuncAttributeMaxDynamicSharedMemorySize,
-        static_cast<int>(smem_bytes));
+        block_sparse_attention_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(smem_bytes));
     if (attr_err != cudaSuccess) {
         cudaFree(d_block_mask);
-        throw std::runtime_error(std::string("block_sparse_attention_cuda: ") +
-                                 cudaGetErrorString(attr_err));
+        throw std::runtime_error(std::string("block_sparse_attention_cuda: ") + cudaGetErrorString(attr_err));
     }
 
     const float scale = 1.0f / std::sqrt(static_cast<float>(d_model));
@@ -235,18 +228,15 @@ Tensor block_sparse_attention_cuda(
     dim3 threads(kThreads);
 
     block_sparse_attention_kernel<<<grid, threads, smem_bytes, stream>>>(
-        static_cast<const float*>(Q.raw_data_gpu()),
-        static_cast<const float*>(K.raw_data_gpu()),
-        static_cast<const float*>(V.raw_data_gpu()),
-        static_cast<float*>(output.raw_data_gpu()),
-        d_block_mask, static_cast<int>(seq_len), static_cast<int>(d_model),
-        static_cast<int>(block_size), static_cast<int>(num_blocks), scale);
+        static_cast<const float *>(Q.raw_data_gpu()), static_cast<const float *>(K.raw_data_gpu()),
+        static_cast<const float *>(V.raw_data_gpu()), static_cast<float *>(output.raw_data_gpu()), d_block_mask,
+        static_cast<int>(seq_len), static_cast<int>(d_model), static_cast<int>(block_size),
+        static_cast<int>(num_blocks), scale);
 
     const cudaError_t err = cudaGetLastError();
     cudaFree(d_block_mask);
     if (err != cudaSuccess) {
-        throw std::runtime_error(std::string("block_sparse_attention_cuda: ") +
-                                 cudaGetErrorString(err));
+        throw std::runtime_error(std::string("block_sparse_attention_cuda: ") + cudaGetErrorString(err));
     }
 
     output.mark_dirty(Tensor::DataLocation::GPU);

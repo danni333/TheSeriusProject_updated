@@ -1,14 +1,13 @@
 #include "sparsity_mask.h"
 
 #include <algorithm>
-#include <cmath>
+#include <limits>
 #include <random>
 
 namespace serius {
 namespace attention {
 
-Tensor generate_block_mask(size_t seq_len, size_t block_size,
-                          SparsityPattern pattern, size_t window_size)
+Tensor generate_block_mask(size_t seq_len, size_t block_size, SparsityPattern pattern, size_t window_size)
 {
     if (seq_len % block_size != 0) {
         // Adjust block_size to divide seq_len
@@ -34,10 +33,8 @@ Tensor generate_block_mask(size_t seq_len, size_t block_size,
         case SparsityPattern::BIGBIRD: {
             // Union of local window + global + random edges. Defaults scale
             // with sequence length; window_size overrides the local window.
-            const size_t win = window_size != 0 ? window_size / block_size
-                                                : std::max<size_t>(1, num_blocks / 8);
-            block_mask = bigbird_block_mask(num_blocks, win,
-                                            std::max<size_t>(1, num_blocks / 16), 0.1f,
+            const size_t win = window_size != 0 ? window_size / block_size : std::max<size_t>(1, num_blocks / 8);
+            block_mask = bigbird_block_mask(num_blocks, win, std::max<size_t>(1, num_blocks / 16), 0.1f,
                                             static_cast<uint32_t>(num_blocks * 2654435761u));
             break;
         }
@@ -102,8 +99,7 @@ Tensor random_block_mask(size_t num_blocks, float sparsity_ratio)
     return mask;
 }
 
-Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks,
-                             const std::vector<size_t>& global_blocks)
+Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks, const std::vector<size_t> &global_blocks)
 {
     Tensor mask({num_blocks, num_blocks});
     mask.fill(0.0f);
@@ -125,8 +121,8 @@ Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks,
             // - Row i is global (attends to everything)
             // - Column j is global (global tokens are visible to all)
             // - Column j is within the sliding window
-            bool allowed = row_global || col_global ||
-                           (j >= (i >= window_blocks - 1 ? i - window_blocks + 1 : 0) && j <= i);
+            bool allowed =
+                row_global || col_global || (j >= (i >= window_blocks - 1 ? i - window_blocks + 1 : 0) && j <= i);
 
             if (allowed) {
                 mask.at({i, j}) = 1.0f;
@@ -137,20 +133,23 @@ Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks,
     return mask;
 }
 
-Tensor bigbird_block_mask(size_t num_blocks, size_t window_blocks,
-                          size_t num_global_blocks, float random_keep_prob,
+Tensor bigbird_block_mask(size_t num_blocks, size_t window_blocks, size_t num_global_blocks, float random_keep_prob,
                           uint32_t seed)
 {
     Tensor mask({num_blocks, num_blocks});
     mask.fill(0.0f);
-    if (num_blocks == 0) { return mask; }
+    if (num_blocks == 0) {
+        return mask;
+    }
 
     window_blocks = std::min(window_blocks == 0 ? num_blocks : window_blocks, num_blocks);
     num_global_blocks = std::min(num_global_blocks, num_blocks);
     random_keep_prob = std::clamp(random_keep_prob, 0.0f, 1.0f);
 
     std::vector<bool> is_global(num_blocks, false);
-    for (size_t g = 0; g < num_global_blocks; ++g) { is_global[g] = true; }
+    for (size_t g = 0; g < num_global_blocks; ++g) {
+        is_global[g] = true;
+    }
 
     std::mt19937 gen(seed);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
@@ -174,7 +173,7 @@ Tensor bigbird_block_mask(size_t num_blocks, size_t window_blocks,
     return mask;
 }
 
-float calculate_sparsity_ratio(const Tensor& block_mask)
+float calculate_sparsity_ratio(const Tensor &block_mask)
 {
     size_t total = block_mask.size();
     size_t active = 0;
@@ -188,7 +187,7 @@ float calculate_sparsity_ratio(const Tensor& block_mask)
     return 1.0f - static_cast<float>(active) / static_cast<float>(total);
 }
 
-Tensor block_mask_to_full_mask(const Tensor& block_mask, size_t block_size)
+Tensor block_mask_to_full_mask(const Tensor &block_mask, size_t block_size)
 {
     size_t num_blocks = block_mask.shape()[0];
     size_t seq_len = num_blocks * block_size;

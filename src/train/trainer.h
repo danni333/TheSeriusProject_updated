@@ -1,5 +1,8 @@
 #pragma once
 
+#include <unordered_set>
+
+#include "../autograd/node.h"
 #include "../data/dataloader.h"
 #include "../optim/adamw.h"
 #include "../optim/amp.h"
@@ -35,7 +38,13 @@ class Trainer
     void set_parameters_requires_grad(bool value);
 
    private:
+    /// Delete every node reachable from \p loss_node except model parameters
+    /// (which are shared across steps). Prevents leaking the whole forward
+    /// graph on every training step.
+    void cleanup_graph(core::autograd::Node *loss_node) const;
+
     model::TransformerModel &model_;
+    std::unordered_set<core::autograd::Node *> model_params_set_;
     optim::AdamW &optimizer_;
     optim::WSDScheduler &scheduler_;
     optim::AutomaticMixedPrecision amp_;

@@ -284,9 +284,8 @@ void flash_attention_v2_fwd_cuda(float *output, float *lse, const float *query, 
     if (!is_supported_block(block_m) || !is_supported_block(block_n)) {
         throw std::invalid_argument("Flash attention forward: block sizes must be 16, 32, 64, or 128");
     }
-    const size_t shared_memory_bytes =
-        (static_cast<size_t>(block_m) + 2 * static_cast<size_t>(block_n)) * static_cast<size_t>(head_dim) *
-        sizeof(float);
+    const size_t shared_memory_bytes = (static_cast<size_t>(block_m) + 2 * static_cast<size_t>(block_n)) *
+                                       static_cast<size_t>(head_dim) * sizeof(float);
     if (shared_memory_bytes > 48 * 1024) {
         throw std::invalid_argument("Flash attention forward: blocks exceed the 48 KiB shared-memory limit");
     }

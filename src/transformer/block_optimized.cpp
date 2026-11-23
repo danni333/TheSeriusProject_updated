@@ -1,6 +1,5 @@
 #include "../autograd/ops.h"
 #include "../debug/tensor_logger.h"
-#include "../hal/fused_kernels.h"
 #include "block.h"
 
 namespace serius {

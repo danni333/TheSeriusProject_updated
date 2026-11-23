@@ -1,7 +1,6 @@
 #include "kv_cache.h"
 
 #include <algorithm>
-#include <cstring>
 #include <stdexcept>
 
 namespace serius {
@@ -12,8 +11,8 @@ using core::Tensor;
 KVCache::KVCache(size_t max_seq_len, size_t num_heads, size_t head_dim, bool rolling)
     : max_len_(max_seq_len), current_len_(0), num_heads_(num_heads), head_dim_(head_dim), rolling_(rolling)
 {
-    // Pre-allocate buffers for keys and values
-    // Assuming a default batch size of 1 for now, or we'll reshape on first update
+    // Buffers are allocated lazily in update() once the real batch size,
+    // head count and head dim are known from the first key/value pair.
 }
 
 void KVCache::update(const Tensor &key, const Tensor &value)

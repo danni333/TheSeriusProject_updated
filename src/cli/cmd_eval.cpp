@@ -1,12 +1,13 @@
 #include "cli/cmd_eval.h"
-#include "cli/args_parser.h"
-#include "cli/llama_loader.h"
-#include "eval/perplexity_runner.h"
 
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
+
+#include "cli/args_parser.h"
+#include "cli/llama_loader.h"
+#include "eval/perplexity_runner.h"
 
 namespace serius {
 namespace cli {
@@ -49,8 +50,7 @@ int cmd_eval(int argc, char **argv)
         return 1;
     }
 
-    auto loaded = load_llama_cli_model(parser.get("model"), parser.get("gpu", "auto"),
-                                       parser.get("quant"));
+    auto loaded = load_llama_cli_model(parser.get("model"), parser.get("gpu", "auto"), parser.get("quant"));
     if (!loaded) {
         return 1;
     }
@@ -71,17 +71,14 @@ int cmd_eval(int argc, char **argv)
         return 1;
     }
 
-    const double tok_per_s = r.elapsed_seconds > 0.0
-                                 ? static_cast<double>(r.scored_tokens) / r.elapsed_seconds
-                                 : 0.0;
+    const double tok_per_s = r.elapsed_seconds > 0.0 ? static_cast<double>(r.scored_tokens) / r.elapsed_seconds : 0.0;
     std::cout << "\n=== Serius Eval: perplexity ===\n";
     std::cout << "perplexity      : " << r.perplexity << "\n";
     std::cout << "mean_nll        : " << r.mean_nll << "\n";
     std::cout << "scored_tokens   : " << r.scored_tokens << "\n";
     std::cout << "total_tokens    : " << r.total_tokens << "\n";
     std::cout << "chunks          : " << r.chunks << "\n";
-    std::cout << "elapsed         : " << r.elapsed_seconds << " s ("
-              << tok_per_s << " tok/s)\n";
+    std::cout << "elapsed         : " << r.elapsed_seconds << " s (" << tok_per_s << " tok/s)\n";
     return 0;
 }
 

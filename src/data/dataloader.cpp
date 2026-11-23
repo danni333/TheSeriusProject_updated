@@ -1,5 +1,6 @@
 #include "dataloader.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 

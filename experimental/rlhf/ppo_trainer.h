@@ -3,8 +3,8 @@
 #include <memory>
 #include <vector>
 
-#include "../tensor/tensor.h"
-#include "../transformer/llama_model.h"
+#include "tensor/tensor.h"
+#include "transformer/llama_model.h"
 #include "ppo.h"
 #include "reward_model.h"
 

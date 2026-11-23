@@ -2,11 +2,9 @@
 #include "ops.h"
 
 // Autograd ops — split from ops.cpp. Declarations live in ops.h.
-#include <algorithm>
 #include <cmath>
-#include <limits>
 #include <stdexcept>
-#include "../blas/blas.h"
+
 #include "../attention/flash_attn.h"
 #ifdef SERIUS_USE_CUDA
 #include "../hal/fused_kernels.h"
@@ -65,7 +63,7 @@ Node *layernorm(Node *input, Node *gamma, Node *beta, float eps)
 #endif
 
     if (!handled) {
-        // CPU Implementation (simplified for brevity, assuming float32)
+        // CPU implementation over the last dimension.
         size_t d_model = in_data.shape().back();
         size_t batch_seq = in_data.size() / d_model;
         for (size_t batch_idx = 0; batch_idx < batch_seq; ++batch_idx) {
@@ -91,13 +89,13 @@ Node *layernorm(Node *input, Node *gamma, Node *beta, float eps)
     out->children = {input, gamma, beta};
     out->name = "layernorm";
     out->forward_fn = [eps](const std::vector<const Tensor *> &in) -> Tensor {
-        return detail::replay_forward(
-            [eps](const std::vector<Node *> &a) { return layernorm(a[0], a[1], a[2], eps); }, in);
+        return detail::replay_forward([eps](const std::vector<Node *> &a) { return layernorm(a[0], a[1], a[2], eps); },
+                                      in);
     };
 
     out->backward_fn = [input, gamma, beta, out, eps]() {
         if (!input->requires_grad && !gamma->requires_grad && !beta->requires_grad) return;
-        // Simplified LayerNorm backward (assuming CPU float32 for grad calculation)
+        // LayerNorm backward on CPU float32.
         const Tensor &x_data = input->data;
         const Tensor &grad_out = out->grad;
         size_t d_model = x_data.shape().back();
@@ -167,8 +165,7 @@ Node *rmsnorm(Node *input, Node *gamma, float eps)
     out->children = {input, gamma};
     out->name = "rmsnorm";
     out->forward_fn = [eps](const std::vector<const Tensor *> &in) -> Tensor {
-        return detail::replay_forward(
-            [eps](const std::vector<Node *> &a) { return rmsnorm(a[0], a[1], eps); }, in);
+        return detail::replay_forward([eps](const std::vector<Node *> &a) { return rmsnorm(a[0], a[1], eps); }, in);
     };
     out->backward_fn = [input, gamma, out, eps]() {
         if (!input->requires_grad && !gamma->requires_grad) return;
@@ -181,12 +178,14 @@ Node *rmsnorm(Node *input, Node *gamma, float eps)
             for (size_t i = 0; i < d_model; ++i) sum_sq += x.data()[b * d_model + i] * x.data()[b * d_model + i];
             float rms = std::sqrt(sum_sq / static_cast<float>(d_model) + eps);
             float sum_gy = 0.0F;
-            for (size_t j = 0; j < d_model; ++j) sum_gy += go.data()[b * d_model + j] * gamma->data[j] * x.data()[b * d_model + j];
+            for (size_t j = 0; j < d_model; ++j)
+                sum_gy += go.data()[b * d_model + j] * gamma->data[j] * x.data()[b * d_model + j];
             for (size_t i = 0; i < d_model; ++i) {
                 float x_hat = x.data()[b * d_model + i] / rms;
                 if (gamma->requires_grad) gamma->grad[i] += go.data()[b * d_model + i] * x_hat;
                 if (input->requires_grad)
-                    input->grad.data()[b * d_model + i] += (gamma->data[i] * go.data()[b * d_model + i] / rms) -
+                    input->grad.data()[b * d_model + i] +=
+                        (gamma->data[i] * go.data()[b * d_model + i] / rms) -
                         (x.data()[b * d_model + i] * sum_gy / (static_cast<float>(d_model) * rms * rms * rms));
             }
         }
@@ -222,10 +221,7 @@ Node *fused_add_layernorm(Node *input, Node *residual, Node *gamma, Node *beta, 
         out->name = "fused_add_layernorm";
         out->forward_fn = [eps](const std::vector<const Tensor *> &in) -> Tensor {
             return detail::replay_forward(
-                [eps](const std::vector<Node *> &a) {
-                    return fused_add_layernorm(a[0], a[1], a[2], a[3], eps);
-                },
-                in);
+                [eps](const std::vector<Node *> &a) { return fused_add_layernorm(a[0], a[1], a[2], a[3], eps); }, in);
         };
 
         // Backward: dL/d(x+res) is same as dL/dx for LayerNorm.
@@ -330,10 +326,7 @@ Node *fused_masked_softmax(Node *input, const Tensor &mask, float scale)
     if (!detail::in_replay()) {
         out->forward_fn = [mask, scale](const std::vector<const Tensor *> &in) -> Tensor {
             return detail::replay_forward(
-                [&mask, scale](const std::vector<Node *> &a) {
-                    return fused_masked_softmax(a[0], mask, scale);
-                },
-                in);
+                [&mask, scale](const std::vector<Node *> &a) { return fused_masked_softmax(a[0], mask, scale); }, in);
         };
     }
     out->backward_fn = [input, out, scale]() {
@@ -398,8 +391,7 @@ Node *fused_bias_gelu(Node *input, Node *bias)
         out->children = {input, bias};
         out->name = "fused_bias_gelu";
         out->forward_fn = [](const std::vector<const Tensor *> &in) -> Tensor {
-            return detail::replay_forward([](const std::vector<Node *> &a) { return fused_bias_gelu(a[0], a[1]); },
-                                          in);
+            return detail::replay_forward([](const std::vector<Node *> &a) { return fused_bias_gelu(a[0], a[1]); }, in);
         };
 
         // Backward: dL/dx = dL/dy * GELU'(x + bias)
@@ -477,4 +469,3 @@ Node *flash_attention(Node *query, Node *key, Node *value, float scale, bool cau
 }  // namespace autograd
 }  // namespace core
 }  // namespace serius
-

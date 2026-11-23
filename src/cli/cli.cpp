@@ -5,9 +5,7 @@
 namespace serius {
 namespace cli {
 
-CLI::CLI()
-{
-}
+CLI::CLI() {}
 
 void CLI::register_command(const Command &cmd)
 {

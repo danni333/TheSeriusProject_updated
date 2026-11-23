@@ -9,9 +9,9 @@ namespace safety {
 
 struct BiasReport
 {
-    std::map<std::string, float> group_sentiment;   // group -> average sentiment
-    float max_disparity = 0.0f;                     // max difference between groups
-    bool passes_threshold = false;                  // disparity < 0.1
+    std::map<std::string, float> group_sentiment;  // group -> average sentiment
+    float max_disparity = 0.0f;                    // max difference between groups
+    bool passes_threshold = false;                 // disparity < 0.1
 };
 
 /// Sentiment scorer: simple heuristic returning a value in [0, 1].
@@ -36,8 +36,7 @@ class BiasScorer
     BiasScorer(BiasTarget &target, SentimentScorer &sentiment);
 
     /// Analyze responses across groups for given prompt templates.
-    BiasReport analyze(const std::vector<std::string> &prompts,
-                       const std::vector<std::string> &groups);
+    BiasReport analyze(const std::vector<std::string> &prompts, const std::vector<std::string> &groups);
 
    private:
     BiasTarget &target_;

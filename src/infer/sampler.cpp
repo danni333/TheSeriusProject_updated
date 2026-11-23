@@ -130,13 +130,13 @@ int Sampler::sample(const core::Tensor &logits, const std::vector<int> &recent_t
     return static_cast<int>(keys[chosen] & 0xFFFFFFFFull);
 }
 
-int Sampler::sample_from_candidates(const std::vector<int> &cand_idx,
-                                    const std::vector<float> &cand_logits,
-                                    const std::vector<int> &recent_tokens,
-                                    float repetition_penalty) const
+int Sampler::sample_from_candidates(const std::vector<int> &cand_idx, const std::vector<float> &cand_logits,
+                                    const std::vector<int> &recent_tokens, float repetition_penalty) const
 {
     const size_t nc = cand_idx.size();
-    if (nc == 0 || cand_logits.size() < nc) { return -1; }
+    if (nc == 0 || cand_logits.size() < nc) {
+        return -1;
+    }
 
     // Repetition penalty: identical semantics to sample() — each occurrence
     // of a token id in recent_tokens re-applies the penalty to its logit.
@@ -146,7 +146,9 @@ int Sampler::sample_from_candidates(const std::vector<int> &cand_idx,
     if (repetition_penalty > 1.0f && !recent_tokens.empty()) {
         std::unordered_map<int, int> counts;
         for (int tid : recent_tokens) {
-            if (tid >= 0) { ++counts[tid]; }
+            if (tid >= 0) {
+                ++counts[tid];
+            }
         }
         for (size_t i = 0; i < nc; ++i) {
             float v = cand_logits[i];
@@ -159,18 +161,20 @@ int Sampler::sample_from_candidates(const std::vector<int> &cand_idx,
             penalized[i] = v;
         }
     } else {
-        for (size_t i = 0; i < nc; ++i) { penalized[i] = cand_logits[i]; }
+        for (size_t i = 0; i < nc; ++i) {
+            penalized[i] = cand_logits[i];
+        }
     }
     return sample_from_penalized(cand_idx, penalized);
 }
 
-int Sampler::sample_from_candidates_dense(const std::vector<int> &cand_idx,
-                                          const std::vector<float> &cand_logits,
-                                          const int *token_counts, size_t counts_size,
-                                          float repetition_penalty) const
+int Sampler::sample_from_candidates_dense(const std::vector<int> &cand_idx, const std::vector<float> &cand_logits,
+                                          const int *token_counts, size_t counts_size, float repetition_penalty) const
 {
     const size_t nc = cand_idx.size();
-    if (nc == 0 || cand_logits.size() < nc || token_counts == nullptr) { return -1; }
+    if (nc == 0 || cand_logits.size() < nc || token_counts == nullptr) {
+        return -1;
+    }
 
     thread_local std::vector<float> penalized;
     penalized.resize(nc);
@@ -186,27 +190,31 @@ int Sampler::sample_from_candidates_dense(const std::vector<int> &cand_idx,
             penalized[i] = v;
         }
     } else {
-        for (size_t i = 0; i < nc; ++i) { penalized[i] = cand_logits[i]; }
+        for (size_t i = 0; i < nc; ++i) {
+            penalized[i] = cand_logits[i];
+        }
     }
     return sample_from_penalized(cand_idx, penalized);
 }
 
-int Sampler::sample_from_penalized(const std::vector<int> &cand_idx,
-                                   const std::vector<float> &penalized) const
+int Sampler::sample_from_penalized(const std::vector<int> &cand_idx, const std::vector<float> &penalized) const
 {
     const size_t nc = cand_idx.size();
-    if (nc == 0) { return -1; }
+    if (nc == 0) {
+        return -1;
+    }
 
     if (temperature_ <= 0.0f) {
         size_t best = 0;
         for (size_t i = 1; i < nc; ++i) {
-            if (penalized[i] > penalized[best]) { best = i; }
+            if (penalized[i] > penalized[best]) {
+                best = i;
+            }
         }
         return cand_idx[best];
     }
 
-    int k = (top_k_ > 0) ? static_cast<int>(std::min(static_cast<size_t>(top_k_), nc))
-                         : static_cast<int>(nc);
+    int k = (top_k_ > 0) ? static_cast<int>(std::min(static_cast<size_t>(top_k_), nc)) : static_cast<int>(nc);
 
     auto fkey = [](float f) -> uint32_t {
         uint32_t b;
@@ -244,7 +252,9 @@ int Sampler::sample_from_penalized(const std::vector<int> &cand_idx,
     }
     float sum = std::accumulate(probs.begin(), probs.end(), 0.f);
     if (sum > 0.f) {
-        for (float &p : probs) { p /= sum; }
+        for (float &p : probs) {
+            p /= sum;
+        }
     }
     if (top_p_ > 0.f && top_p_ < 1.f) {
         float cum = 0.f;
@@ -252,12 +262,16 @@ int Sampler::sample_from_penalized(const std::vector<int> &cand_idx,
         for (size_t i = 0; i < probs.size(); ++i) {
             cum += probs[i];
             n = i + 1;
-            if (cum >= top_p_) { break; }
+            if (cum >= top_p_) {
+                break;
+            }
         }
         probs.resize(n);
         sum = std::accumulate(probs.begin(), probs.end(), 0.f);
         if (sum > 0.f) {
-            for (float &p : probs) { p /= sum; }
+            for (float &p : probs) {
+                p /= sum;
+            }
         }
     }
     std::discrete_distribution<size_t> dist(probs.begin(), probs.end());
@@ -279,8 +293,7 @@ int Sampler::sample_greedy(const core::Tensor &logits) const
     return static_cast<int>(std::max_element(ptr, ptr + vocab_size) - ptr);
 }
 
-bool sample_gpu_candidates(const core::Tensor &logits, size_t row,
-                           const Sampler &sampler, int &out_id)
+bool sample_gpu_candidates(const core::Tensor &logits, size_t row, const Sampler &sampler, int &out_id)
 {
 #ifdef SERIUS_USE_CUDA
     const void *gp = logits.raw_data_gpu();
@@ -293,14 +306,16 @@ bool sample_gpu_candidates(const core::Tensor &logits, size_t row,
     thread_local std::vector<int> cidx;
     thread_local std::vector<float> cval;
     // Kernels overwrite the first `cnt` entries only — resize once, no memset.
-    if (cidx.size() < 16384) { cidx.resize(16384); }
-    if (cval.size() < 16384) { cval.resize(16384); }
-    int cnt = hal::gpu_topk_raw_candidates(lgp, static_cast<int>(vs), 16384, 2048,
-                                           cidx.data(), cval.data());
+    if (cidx.size() < 16384) {
+        cidx.resize(16384);
+    }
+    if (cval.size() < 16384) {
+        cval.resize(16384);
+    }
+    int cnt = hal::gpu_topk_raw_candidates(lgp, static_cast<int>(vs), 16384, 2048, cidx.data(), cval.data());
     if (cnt <= 0) {
         // Cooperative path unavailable/failed — iterative fallback.
-        cnt = hal::topk_logits_f32(lgp, static_cast<int>(vs), 384, 16384,
-                                   cidx.data(), cval.data());
+        cnt = hal::topk_logits_f32(lgp, static_cast<int>(vs), 384, 16384, cidx.data(), cval.data());
         if (cnt <= 0) {
             return false;
         }

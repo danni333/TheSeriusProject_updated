@@ -117,6 +117,7 @@ I sorgenti dei test si trovano in `tests/` (autograd, BLAS, CUDA, tensor, transf
 - `ui/` — web UI (HTML/JS/CSS) servita dal server.
 - `tests/` — test unitari e benchmark.
 - `todo/` — roadmap dettagliata per le varie fasi del progetto.
+- `experimental/` — moduli sperimentali/didattici (quantum, reasoning, eval, interpret, grounding, rlhf, knowledge, multimodal, inference, rag, agent, autoopt, ecc.), separati dal core e compilati solo su richiesta via flag CMake `SERIUS_EXPERIMENTAL_*`. Vedi `docs/experimental.md`.
 
 Per una descrizione più approfondita dell'architettura vedi `docs/architecture.md`.
 
@@ -134,6 +135,7 @@ La documentazione è in corso di scrittura nella cartella `docs/`:
 - `docs/supported-models.md` — panoramica sui modelli supportati e requisiti.
 - `docs/troubleshooting.md` — problemi comuni e relative soluzioni.
 - `docs/architecture.md` — descrizione dell'architettura interna per sviluppatori.
+- `docs/experimental.md` — moduli sperimentali/didattici in `experimental/` (opt-in, non production-ready).
 - `docs/changelog.md` — cronologia delle modifiche principali.
 
 Se un file è vuoto o marcato come "WIP", significa che la sezione è pianificata ma non ancora finalizzata.

@@ -1,12 +1,12 @@
 #include "transport_http.h"
 
-#include "../common/defaults.h"
-
 #include <httplib.h>
-#include <nlohmann/json.hpp>
 
 #include <atomic>
+#include <nlohmann/json.hpp>
 #include <string>
+
+#include "../common/defaults.h"
 
 namespace serius {
 namespace mcp {
@@ -17,7 +17,8 @@ namespace {
 
 std::atomic<int> g_next_http_id{1};
 
-struct ParsedUrl {
+struct ParsedUrl
+{
     std::string host;
     int port = 0;
     std::string path = "/";
@@ -61,14 +62,13 @@ json HttpTransport::send_request(const std::string &method, const json &params)
     if (url.host.empty()) {
         return json{{"jsonrpc", "2.0"},
                     {"id", nullptr},
-                    {"error", {{"code", -32600},
-                               {"message", "invalid MCP HTTP endpoint: " + endpoint_}}}};
+                    {"error", {{"code", -32600}, {"message", "invalid MCP HTTP endpoint: " + endpoint_}}}};
     }
     if (url.ssl) {
-        return json{{"jsonrpc", "2.0"},
-                    {"id", nullptr},
-                    {"error", {{"code", -32004},
-                               {"message", "HTTPS endpoints not supported (build without OpenSSL)"}}}};
+        return json{
+            {"jsonrpc", "2.0"},
+            {"id", nullptr},
+            {"error", {{"code", -32004}, {"message", "HTTPS endpoints not supported (build without OpenSSL)"}}}};
     }
 
     const int id = g_next_http_id++;
@@ -82,14 +82,12 @@ json HttpTransport::send_request(const std::string &method, const json &params)
     cli.set_connection_timeout(serius::defaults::kMcpConnectTimeoutSec);
     cli.set_read_timeout(serius::defaults::kMcpReadTimeoutSec);
 
-    httplib::Headers headers = {{"Content-Type", "application/json"},
-                                {"Accept", "application/json"}};
+    httplib::Headers headers = {{"Content-Type", "application/json"}, {"Accept", "application/json"}};
     auto res = cli.Post(url.path, headers, req.dump(), "application/json");
     if (!res) {
         return json{{"jsonrpc", "2.0"},
                     {"id", id},
-                    {"error", {{"code", -32005},
-                               {"message", "HTTP request failed (network error)"}}}};
+                    {"error", {{"code", -32005}, {"message", "HTTP request failed (network error)"}}}};
     }
     try {
         json resp = json::parse(res->body);
@@ -97,13 +95,13 @@ json HttpTransport::send_request(const std::string &method, const json &params)
             resp["id"] = id;
         }
         return resp;
-    } catch (...) {
+    }
+    catch (...) {
         json err;
         err["jsonrpc"] = "2.0";
         err["id"] = id;
         err["error"]["code"] = res->status;
-        err["error"]["message"] =
-            "non-JSON response (HTTP " + std::to_string(res->status) + ")";
+        err["error"]["message"] = "non-JSON response (HTTP " + std::to_string(res->status) + ")";
         return err;
     }
 }

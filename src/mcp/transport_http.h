@@ -1,8 +1,8 @@
 #pragma once
 
-#include "transport.h"
-
 #include <string>
+
+#include "transport.h"
 
 namespace serius {
 namespace mcp {
@@ -19,8 +19,7 @@ class HttpTransport : public Transport
     HttpTransport(const HttpTransport &) = delete;
     HttpTransport &operator=(const HttpTransport &) = delete;
 
-    json send_request(const std::string &method,
-                      const json &params = json::object()) override;
+    json send_request(const std::string &method, const json &params = json::object()) override;
 
    private:
     std::string endpoint_;

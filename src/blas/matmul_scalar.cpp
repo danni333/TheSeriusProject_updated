@@ -1,5 +1,6 @@
-#include "blas.h"
 #include <cstdint>
+
+#include "blas.h"
 
 namespace serius {
 namespace core {
@@ -14,13 +15,13 @@ void matmul_scalar(const float *A, const float *B, float *C, size_t M, size_t N,
                    size_t ldc)
 {
     if (M == 1) {
-        // High-performance path for token generation (M=1)
-        // Restructured to use tiled row-major accumulation (weighted sum of rows)
-        // to maximize cache line utilization on the weight matrix B.
-        #pragma omp parallel for
+// High-performance path for token generation (M=1)
+// Restructured to use tiled row-major accumulation (weighted sum of rows)
+// to maximize cache line utilization on the weight matrix B.
+#pragma omp parallel for
         for (int64_t j_start = 0; j_start < static_cast<int64_t>(N); j_start += 64) {
             int64_t j_end = (j_start + 64 < static_cast<int64_t>(N)) ? (j_start + 64) : static_cast<int64_t>(N);
-            
+
             // Local zeroing of this chunk of C
             for (int64_t j = j_start; j < j_end; ++j) {
                 C[j] = 0.0f;
@@ -35,7 +36,7 @@ void matmul_scalar(const float *A, const float *B, float *C, size_t M, size_t N,
             }
         }
     } else {
-        #pragma omp parallel for
+#pragma omp parallel for
         for (int64_t i = 0; i < static_cast<int64_t>(M); ++i) {
             for (size_t j = 0; j < N; ++j) {
                 float sum = 0.0f;
@@ -51,7 +52,7 @@ void matmul_scalar(const float *A, const float *B, float *C, size_t M, size_t N,
 // Transposed-weight GEMV: y[j] = dot(W[j,:], x[:]), W is [N,K] row-major.
 void matvec_t_scalar(const float *W, const float *x, float *y, size_t N, size_t K)
 {
-    #pragma omp parallel for schedule(static) if (N >= 1024)
+#pragma omp parallel for schedule(static) if (N >= 1024)
     for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
         const float *w = W + static_cast<size_t>(j) * K;
         float sum = 0.0f;

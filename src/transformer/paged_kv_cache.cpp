@@ -1,6 +1,5 @@
 #include "paged_kv_cache.h"
 
-#include <cstring>
 #include <stdexcept>
 #include <utility>
 

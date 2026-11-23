@@ -3,19 +3,16 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
-#include <vector>
-
 #include <nlohmann/json.hpp>
+#include <vector>
 
 namespace fs = std::filesystem;
 
 namespace serius {
 namespace io {
 
-bool write_sharded_safetensors(const std::string &directory,
-                               const std::string &base_name,
-                               const std::vector<std::pair<std::string, core::Tensor>> &tensors,
-                               size_t max_shard_bytes)
+bool write_sharded_safetensors(const std::string &directory, const std::string &base_name,
+                               const std::vector<std::pair<std::string, core::Tensor>> &tensors, size_t max_shard_bytes)
 {
     if (tensors.empty()) {
         return false;
@@ -34,7 +31,7 @@ bool write_sharded_safetensors(const std::string &directory,
     size_t shard_index = 0;
 
     nlohmann::json index = nlohmann::json::object();
-    index["__metadata__"] = { {"format", "serius-sharded"}, {"version", "1.0"} };
+    index["__metadata__"] = {{"format", "serius-sharded"}, {"version", "1.0"}};
     index["tensors"] = nlohmann::json::object();
 
     auto flush_shard = [&](const std::vector<std::pair<std::string, core::Tensor>> &list) {
@@ -52,7 +49,7 @@ bool write_sharded_safetensors(const std::string &directory,
         shard_files.push_back(shard_name);
 
         for (const auto &[name, tensor] : list) {
-            index["tensors"][name] = { {"file", shard_name}, {"bytes", tensor.size() * tensor.element_size()} };
+            index["tensors"][name] = {{"file", shard_name}, {"bytes", tensor.size() * tensor.element_size()}};
         }
     };
 

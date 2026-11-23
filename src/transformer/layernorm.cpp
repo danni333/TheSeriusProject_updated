@@ -28,7 +28,6 @@ LayerNorm::~LayerNorm()
 
 Node *LayerNorm::forward(Node *input) const
 {
-    // Simplified LN for example
     return core::autograd::ops::layernorm(input, gamma_, beta_, eps_);
 }
 

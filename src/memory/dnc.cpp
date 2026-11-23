@@ -7,12 +7,14 @@ namespace serius {
 namespace memory {
 
 namespace {
-float dot(const core::Tensor &a, const core::Tensor &b, size_t offA, size_t offB, size_t d) {
+float dot(const core::Tensor &a, const core::Tensor &b, size_t offA, size_t offB, size_t d)
+{
     float s = 0.0f;
     for (size_t i = 0; i < d; i++) s += a[offA + i] * b[offB + i];
     return s;
 }
-float norm(const core::Tensor &a, size_t off, size_t d) {
+float norm(const core::Tensor &a, size_t off, size_t d)
+{
     float s = 0.0f;
     for (size_t i = 0; i < d; i++) s += a[off + i] * a[off + i];
     return std::sqrt(s + 1e-8f);
@@ -27,8 +29,8 @@ DNCMemory::DNCMemory(size_t n_slots, size_t d_mem)
     usage_.zeros();
 }
 
-void DNCMemory::write(const core::Tensor &write_key, const core::Tensor &write_vector,
-                      float write_strength, float free_gate)
+void DNCMemory::write(const core::Tensor &write_key, const core::Tensor &write_vector, float write_strength,
+                      float free_gate)
 {
     // Content addressing weights based on keys_
     std::vector<float> w(n_, 0.0f);

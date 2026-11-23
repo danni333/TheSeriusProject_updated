@@ -2,8 +2,8 @@
 
 #include <cstring>
 
-#include "../common/serius_check.h"
-#include "../init/weight_init.h"
+#include "common/serius_check.h"
+#include "init/weight_init.h"
 
 namespace serius {
 namespace multimodal {
