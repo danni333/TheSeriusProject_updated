@@ -47,22 +47,23 @@ constexpr float EPSILON_DEFAULT = 1e-5F;
 constexpr size_t AVX_FLOAT_STRIDE = 8;
 constexpr float ATTENTION_MASK_VAL = -1e9F;
 
-// Batched prefill (seq_len > 1 in one forward) currently produces degenerate
-// output — verified end-to-end: prompts <= 8 tokens take the per-token decode
-// path and are fine, anything longer collapses into repetition on both the
-// CPU and CUDA paths. It stays opt-in via SERIUS_PREFILL_BATCH=1 until the
-// batched kernels are fixed; the default is the slower but correct
-// single-token prefill.
+// Batched prefill (seq_len > 1 in one forward) is enabled by default:
+// BatchedVsSequentialPrefill / BatchedVsSequentialRealModel verify KV-cache
+// and last-position logit parity vs the sequential path (max diff ~3e-3 on a
+// real Q4_K_M GGUF, same argmax). Set SERIUS_PREFILL_BATCH=0 to force the
+// slower per-token prefill for debugging.
 inline bool prefill_batch_enabled() {
     static const bool enabled = [] {
 #if defined(_MSC_VER)
         char buf[8];
         size_t len = 0;
-        return getenv_s(&len, buf, sizeof(buf), "SERIUS_PREFILL_BATCH") == 0 &&
-               len > 0 && buf[0] == '1';
+        if (getenv_s(&len, buf, sizeof(buf), "SERIUS_PREFILL_BATCH") != 0 || len == 0) {
+            return true;
+        }
+        return !(len > 0 && buf[0] == '0');
 #else
         const char *v = std::getenv("SERIUS_PREFILL_BATCH");
-        return v != nullptr && v[0] == '1';
+        return v == nullptr || v[0] != '0';
 #endif
     }();
     return enabled;
@@ -1089,10 +1090,9 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
 
     // Fast prefill: when the model carries packed quantized weights, run the
     // prompt through the single-token decode path. Only worthwhile for tiny
-    // prompts — the batched cuBLAS prefill below is far faster per token.
-    // Batched prefill is opt-in (SERIUS_PREFILL_BATCH=1): it is mathematically
-    // correct, but GGUF decode uses lossy-requantized packed weights while the
-    // batched path uses dense FP32 weights, so outputs can differ slightly.
+    // prompts — the batched prefill below is far faster per token. Note the
+    // batched path uses dense FP32 weights while decode uses lossy-requantized
+    // packed weights, so outputs can differ slightly (~1e-3 in logits).
     const bool has_quant = !model.layers().empty() && model.layers()[0]->qkv_w.valid();
     // Partial offload always takes the per-token path: batched prefill would
     // write every layer's KV on CPU while decode reads the GPU prefix KV.
@@ -1160,8 +1160,9 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
         if (model.topology().pp_rank < model.topology().pp_size - 1) {
             // Intermediate PP ranks only forward hidden states through the
             // pipeline; logits exist solely on the last rank. Return an empty
-            // tensor — callers must not read logits on non-last ranks.
-            return Tensor();
+            // rank-1 tensor ({0}) — same contract as the per-token path —
+            // callers must not read logits on non-last ranks.
+            return Tensor({0});
         }
     } else {
         // Single-rank path
@@ -1180,9 +1181,10 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
 Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache) {
     enable_ftz_daz_once();
     if (!prefill_batch_enabled()) {
-        // Batched prefill is opt-in — decode one token at a time instead.
-        // llama_forward_single_token dispatches to the CUDA graph path for
-        // GPU-resident models, so this stays reasonably fast.
+        // Batched prefill disabled (SERIUS_PREFILL_BATCH=0) — decode one
+        // token at a time instead. llama_forward_single_token dispatches to
+        // the CUDA graph path for GPU-resident models, so this stays
+        // reasonably fast.
         Tensor last_logits({0});
         for (size_t i = 0; i < token_ids.size(); ++i) {
             last_logits = llama_forward_single_token(model, static_cast<int>(token_ids[i]), i, cache);
@@ -1196,6 +1198,10 @@ Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor
     }
 #endif
     Tensor logits = llama_forward_inference(model, token_ids, cache);
+    if (logits.size() == 0) {
+        // Non-last PP rank: no logits exist on this rank.
+        return logits;
+    }
     const size_t vocab = logits.shape().back();
     const size_t rows = logits.shape()[0];
     Tensor out({1, vocab});

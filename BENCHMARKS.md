@@ -92,3 +92,42 @@ in una RTX 3060 da 6 GiB con desktop attivo e il modello ricade in CPU a
    CPU pieno; servono scratch persistente e kernel attention FP32.
    `serve` cablato: `--gpu-layers N` → `ServerConfig::gpu_layers` →
    `maybe_offload_to_gpu` prova il partial offload prima del path auto.
+
+## Confronto llama-bench diretto — MISURATO (2026-11-23, post-fix batched prefill)
+
+Misura con `llama-bench` (b12642, win-cuda-13.5, build 5bacb7c86) vs
+`serius bench --latency-only` sugli **stessi file GGUF**, stessa RTX 3060
+Laptop 6 GiB. Serius = build `build-ninja` Release CUDA.
+
+### Decode (token generation)
+
+| Modello | Serius decode | llama.cpp tg128 | Rapporto |
+|---------|---------------|-----------------|----------|
+| SmolLM2-135M Q4_0, GPU full-offload | **653 tok/s** | 567.8 tok/s | **1.15x** |
+| SmolLM2-135M Q8_0, GPU full-offload | 362 tok/s | 393.1 tok/s | 0.92x |
+| Qwen2.5-0.5B Q4_K_M, GPU full-offload | **469.7 tok/s** | 368.7 tok/s | **1.27x** |
+| SmolLM2-135M Q4_0, CPU-only | 17.8 tok/s | 67.4 tok/s (ngl 0) | **0.26x** |
+
+### Prefill (prompt processing)
+
+| Modello | Serius prefill | llama.cpp pp512 | Rapporto |
+|---------|----------------|-----------------|----------|
+| SmolLM2-135M Q4_0, prompt 601 tok | **8667 tok/s** (TTFT 69 ms) | 23701 tok/s | 0.37x |
+| Qwen2.5-0.5B Q4_K_M, prompt 601 tok | **5031 tok/s** (TTFT 119 ms) | 18897 tok/s | 0.27x |
+
+### Note
+
+- **Fix batched prefill**: `SERIUS_PREFILL_BATCH` era opt-in perché un bug
+  produceva output degenere; i test di parità
+  (`BatchedVsSequentialPrefill`, `BatchedVsSequentialRealModel` su Qwen2.5
+  Q4_K_M reale, max logit diff 3.2e-3, stesso argmax) verificano che il
+  path batched è corretto. Ora è **default ON**; `SERIUS_PREFILL_BATCH=0`
+  force il vecchio path per-token. Prima del fix: 383 tok/s prefill
+  (63x più lento di llama.cpp); dopo: 8667 tok/s (3.7x più lento).
+- Decode GPU è **competitivo o superiore** a llama.cpp sui modelli testati;
+  il gap residuo è nel prefill (batched GEMM CUDA di llama.cpp è più
+  maturo) e soprattutto nella **CPU** (0.26x: i kernel quantized GEMV CPU
+  di llama.cpp sono molto più ottimizzati).
+- Misure `serius bench` con prompt lungo includono contesto >600 token;
+  llama-bench `tg128` usa contesto più corto — confronto indicative,
+  non perfetto.
