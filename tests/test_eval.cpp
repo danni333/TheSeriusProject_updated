@@ -8,7 +8,10 @@
 #include "eval/eval_suite.h"
 #include "eval/metrics.h"
 #include "eval/perplexity.h"
+#include "eval/perplexity_runner.h"
 #include "eval/report.h"
+#include "tokenizer/bpe.h"
+#include "transformer/llama_model.h"
 
 using serius::eval::EvalResult;
 using serius::eval::eval_multiple_choice;
@@ -137,6 +140,107 @@ TEST(Eval, SaveJsonReport)
     EXPECT_NE(content.find("0.8"), std::string::npos);
     EXPECT_NE(content.find("0.9"), std::string::npos);
     std::remove(path.c_str());
+}
+
+// ---- PerplexityRunner: real model scoring ----
+
+namespace {
+
+serius::model::LLaMAModel make_tiny_model()
+{
+    serius::model::LLamaConfig cfg;
+    cfg.vocab_size = 320;  // >= basic tokenizer vocab (260)
+    cfg.hidden_size = 64;
+    cfg.num_attention_heads = 4;
+    cfg.num_key_value_heads = 4;
+    cfg.num_hidden_layers = 1;
+    cfg.intermediate_size = 128;
+    cfg.max_position_embeddings = 128;
+    cfg.rms_norm_eps = 1e-5f;
+    cfg.rope_theta = 10000.0f;
+    return serius::model::LLaMAModel(cfg);
+}
+
+serius::BPETokenizer make_basic_tokenizer()
+{
+    serius::BPETokenizer tok;
+    tok.init_basic_vocab();
+    return tok;
+}
+
+}  // namespace
+
+TEST(Eval, PerplexityRunnerScoresRealTokens)
+{
+    auto model = make_tiny_model();
+    auto tok = make_basic_tokenizer();
+
+    const std::string text = "hello world this is a test of perplexity scoring";
+    const auto r = serius::eval::evaluate_perplexity(model, tok, text);
+
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_GT(r.total_tokens, 2u);
+    // Every token except the very first stream token is scored.
+    EXPECT_EQ(r.scored_tokens, r.total_tokens - 1);
+    EXPECT_EQ(r.chunks, 1u);
+    EXPECT_TRUE(std::isfinite(r.mean_nll));
+    EXPECT_GT(r.perplexity, 0.0);
+    EXPECT_GT(r.elapsed_seconds, 0.0);
+}
+
+TEST(Eval, PerplexityRunnerDeterministic)
+{
+    auto model = make_tiny_model();
+    auto tok = make_basic_tokenizer();
+    const std::string text = "deterministic scoring check";
+
+    const auto a = serius::eval::evaluate_perplexity(model, tok, text);
+    const auto b = serius::eval::evaluate_perplexity(model, tok, text);
+    ASSERT_TRUE(a.ok && b.ok);
+    EXPECT_DOUBLE_EQ(a.mean_nll, b.mean_nll);
+    EXPECT_DOUBLE_EQ(a.perplexity, b.perplexity);
+}
+
+TEST(Eval, PerplexityRunnerEmptyText)
+{
+    auto model = make_tiny_model();
+    auto tok = make_basic_tokenizer();
+    const auto r = serius::eval::evaluate_perplexity(model, tok, "");
+    EXPECT_FALSE(r.ok);
+    EXPECT_EQ(r.scored_tokens, 0u);
+}
+
+TEST(Eval, PerplexityRunnerMaxTokens)
+{
+    auto model = make_tiny_model();
+    auto tok = make_basic_tokenizer();
+    const std::string text = "one two three four five six seven eight nine ten";
+
+    serius::eval::PerplexityOptions opts;
+    opts.max_tokens = 3;
+    const auto r = serius::eval::evaluate_perplexity(model, tok, text, opts);
+    ASSERT_TRUE(r.ok);
+    EXPECT_EQ(r.scored_tokens, 3u);
+}
+
+TEST(Eval, PerplexityRunnerMultiChunkCarryOver)
+{
+    auto model = make_tiny_model();
+    auto tok = make_basic_tokenizer();
+    // Long enough text to span several tiny context windows.
+    const std::string text =
+        "the quick brown fox jumps over the lazy dog and runs through the forest "
+        "while the wind blows softly across the riverbank near the old stone bridge";
+
+    serius::eval::PerplexityOptions opts;
+    opts.context_tokens = 8;
+    const auto r = serius::eval::evaluate_perplexity(model, tok, text, opts);
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_GT(r.chunks, 1u);
+    // Carry-over context keeps continuity: still every token but the first scored.
+    EXPECT_EQ(r.scored_tokens, r.total_tokens - 1);
+    EXPECT_TRUE(std::isfinite(r.mean_nll));
+    EXPECT_GT(r.perplexity, 0.0);
 }
 
 TEST(Eval, SaveCsvReport)

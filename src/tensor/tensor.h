@@ -268,6 +268,7 @@ class Tensor
     size_t size_ = 0;
     hal::DType dtype_ = hal::DType::Float32;
     bool owns_data_ = false;
+    bool owns_gpu_ = false;               // data_gpu_ was allocated by this Tensor
     memory::MemoryPool *pool_ = nullptr;  // nullptr if heap-allocated
     bool is_gpu_pool_ = false;            // Is the GPU memory from a pool?
     bool is_pinned_ = false;              // Whether host memory is pinned

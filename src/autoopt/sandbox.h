@@ -50,6 +50,15 @@ class Sandbox
                                  const std::vector<core::Tensor> &test_inputs,
                                  size_t iterations = 10) const;
 
+    /// Load a compiled shared library and wrap its exported kernel as a
+    /// KernelFn. The library must export:
+    ///   extern "C" void kernel_entry(const float *input, float *output,
+    ///                                const size_t *shape, size_t ndim);
+    /// `shape`/`ndim` describe the input tensor layout (row-major); `count`
+    /// is the product of shape. Returns an empty std::function on failure.
+    /// The returned KernelFn keeps the library loaded (process lifetime).
+    static KernelFn load_kernel(const std::string &library_path);
+
     float atol() const { return atol_; }
     void set_atol(float tol) { atol_ = tol; }
 

@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "../autograd/ops.h"
+#include "../infer/llama_inference.h"
 
 namespace serius {
 namespace rlhf {
@@ -141,32 +142,69 @@ RewardModel::GenerationResult RewardModel::generate_with_logprobs(const Tensor &
                                                                   int max_new_tokens) const
 {
     GenerationResult result;
-    result.tokens = prompt_tokens.copy();
     result.log_probs.clear();
 
-    Tensor current = prompt_tokens.copy();
-    for (int step = 0; step < max_new_tokens; ++step) {
-        auto log_probs = compute_logprobs(current);
+    const size_t prompt_len = prompt_tokens.shape()[0];
+    const size_t vocab_size = impl_->config.vocab_size;
 
-        size_t seq_len = current.shape()[0];
-        float best_log_prob = log_probs[seq_len - 1];
-        int best_token = static_cast<int>(current.item(seq_len - 1));
-
-        // Simplified generation: repeat the last token.
-        int next_token = best_token;
-
-        std::vector<size_t> new_shape = {seq_len + 1};
-        Tensor new_tokens(new_shape);
-        for (size_t i = 0; i < seq_len; ++i) {
-            new_tokens[i] = current.item(i);
-        }
-        new_tokens[seq_len] = static_cast<float>(next_token);
-
-        result.log_probs.push_back(best_log_prob);
-        current = new_tokens;
+    std::vector<int> tokens;
+    tokens.reserve(prompt_len + static_cast<size_t>(std::max(0, max_new_tokens)));
+    for (size_t i = 0; i < prompt_len; ++i) {
+        tokens.push_back(static_cast<int>(prompt_tokens.item(i)));
     }
 
-    result.tokens = current;
+    if (max_new_tokens <= 0 || vocab_size == 0) {
+        Tensor out({tokens.size()});
+        for (size_t i = 0; i < tokens.size(); ++i) { out[i] = static_cast<float>(tokens[i]); }
+        result.tokens = out;
+        return result;
+    }
+
+    // Real autoregressive decode: prefill the prompt, then run the standard
+    // single-token path with a KV cache. Greedy argmax keeps generation
+    // deterministic; the recorded log_prob is log_softmax(logits)[chosen].
+    infer::KVCache cache;
+    Tensor prompt_tensor({prompt_len});
+    for (size_t i = 0; i < prompt_len; ++i) { prompt_tensor[i] = static_cast<float>(tokens[i]); }
+
+    Tensor logits = infer::llama_forward_inference(impl_->transformer, prompt_tensor, &cache);
+    const size_t log_rows = logits.shape().empty() ? 0 : logits.shape()[0];
+    const float *last_row = logits.data() + (log_rows > 0 ? (log_rows - 1) * vocab_size : 0);
+
+    for (int step = 0; step < max_new_tokens; ++step) {
+        // argmax over the last-position logits
+        int next_token = 0;
+        float best = last_row[0];
+        for (size_t v = 1; v < vocab_size; ++v) {
+            if (last_row[v] > best) { best = last_row[v]; next_token = static_cast<int>(v); }
+        }
+
+        // log_softmax of the chosen logit (numerically stable)
+        float max_logit = last_row[0];
+        for (size_t v = 1; v < vocab_size; ++v) {
+            if (last_row[v] > max_logit) { max_logit = last_row[v]; }
+        }
+        float sum_exp = 0.0f;
+        for (size_t v = 0; v < vocab_size; ++v) {
+            sum_exp += std::exp(last_row[v] - max_logit);
+        }
+        result.log_probs.push_back((best - max_logit) - std::log(sum_exp));
+
+        tokens.push_back(next_token);
+
+        Tensor next_logits = infer::llama_forward_single_token(
+            impl_->transformer, next_token, prompt_len + static_cast<size_t>(step), &cache);
+        const size_t nrows = next_logits.shape().empty() ? 0 : next_logits.shape()[0];
+        last_row = next_logits.data() + (nrows > 0 ? (nrows - 1) * vocab_size : 0);
+        // next_logits must outlive this iteration: copy into a stable buffer.
+        static thread_local std::vector<float> logits_copy;
+        logits_copy.assign(last_row, last_row + vocab_size);
+        last_row = logits_copy.data();
+    }
+
+    Tensor out({tokens.size()});
+    for (size_t i = 0; i < tokens.size(); ++i) { out[i] = static_cast<float>(tokens[i]); }
+    result.tokens = out;
     return result;
 }
 

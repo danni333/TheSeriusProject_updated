@@ -302,6 +302,13 @@ core::autograd::Node *flash_attention(core::autograd::Node *query, core::autogra
     core::autograd::Node *out_node = new core::autograd::Node(std::move(out_tensor));
     out_node->name = "flash_attention";
     out_node->children = {query, key, value};
+    out_node->forward_fn = [config](const std::vector<const core::Tensor *> &in) -> core::Tensor {
+        return core::autograd::ops::detail::replay_forward(
+            [&config](const std::vector<core::autograd::Node *> &a) {
+                return flash_attention(a[0], a[1], a[2], config);
+            },
+            in);
+    };
 
     out_node->backward_fn = [query, key, value, out_node, lse = std::move(lse_tensor), config, batch_size, num_heads,
                              seq_len_q, seq_len_k, head_dim]() mutable {

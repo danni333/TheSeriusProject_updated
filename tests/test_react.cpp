@@ -5,8 +5,12 @@
 
 #include "agent/action_parser.h"
 #include "agent/context_manager.h"
+#include "agent/llama_model_adapter.h"
 #include "agent/model_interface.h"
 #include "agent/react.h"
+#include "tokenizer/bpe.h"
+#include "tools/registry.h"
+#include "transformer/llama_model.h"
 
 using serius::agent::ActionCall;
 using serius::agent::ActionParser;
@@ -151,4 +155,75 @@ TEST(React, EmptySystemPrompt)
     ReActEngine engine(model, 3);
     std::string answer = engine.run("Hi", "");
     EXPECT_NE(answer.find("Hello"), std::string::npos);
+}
+
+// ---- Real tool execution via ToolRegistry ----
+
+TEST(React, RegistryToolExecutesForReal)
+{
+    ScriptedModel model;
+    model.add_response("[THOUGHT] Search.\n[ACTION] {\"tool\":\"search\",\"args\":{\"query\":\"tokyo\"}}\n");
+    model.add_response("[THOUGHT] Done.\n[ANSWER] Found it.\n");
+
+    serius::tools::ToolRegistry registry;
+    int calls = 0;
+    registry.register_tool({"search", "web search",
+                            {{"properties", {{"query", {{"type", "string"}}}}}},
+                            [&calls](const serius::tools::json &args) {
+                                ++calls;
+                                EXPECT_EQ(args["query"], "tokyo");
+                                return serius::tools::json{{"result", "Tokyo is the capital."}};
+                            }});
+
+    ReActEngine engine(model, 5);
+    // A conflicting mock result must NOT be used: the registry wins.
+    ToolResult mock[] = {{"search", "MOCK DATA"}};
+    std::string answer = engine.run("Query", "Sys", mock, 1, &registry);
+
+    EXPECT_EQ(calls, 1);
+    EXPECT_FALSE(answer.empty());
+}
+
+TEST(React, RegistryMissFallsBackToMock)
+{
+    ScriptedModel model;
+    model.add_response("[THOUGHT] x\n[ACTION] {\"tool\":\"search\",\"args\":{}}\n");
+    model.add_response("[ANSWER] ok\n");
+
+    serius::tools::ToolRegistry registry;  // empty: tool not registered
+    ReActEngine engine(model, 5);
+    ToolResult mock[] = {{"search", "mock observation"}};
+    std::string answer = engine.run("Query", "Sys", mock, 1, &registry);
+    EXPECT_FALSE(answer.empty());
+}
+
+// ---- LlamaAgentModel adapter smoke test ----
+
+TEST(React, LlamaAgentModelGenerates)
+{
+    using namespace serius::model;
+    LLamaConfig cfg;
+    cfg.vocab_size = 320;  // >= basic tokenizer vocab (260)
+    cfg.hidden_size = 64;
+    cfg.num_attention_heads = 4;
+    cfg.num_key_value_heads = 4;
+    cfg.num_hidden_layers = 1;
+    cfg.intermediate_size = 128;
+    cfg.max_position_embeddings = 128;
+    cfg.rms_norm_eps = 1e-5f;
+    cfg.rope_theta = 10000.0f;
+
+    LLaMAModel llm(cfg);
+    serius::BPETokenizer tok;
+    tok.init_basic_vocab();
+
+    serius::agent::LlamaAgentModel adapter(llm, tok, 42);
+    SamplingParams params;
+    params.temperature = 1.0f;
+    params.max_tokens = 8;
+
+    // Zero-initialized weights produce uniform logits; we only verify the
+    // plumbing runs end-to-end without crashing, twice (cache reuse path).
+    EXPECT_NO_THROW({ (void)adapter.generate("hello world", params); });
+    EXPECT_NO_THROW({ (void)adapter.generate("second prompt", params); });
 }

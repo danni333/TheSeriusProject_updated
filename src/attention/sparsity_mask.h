@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include "../tensor/tensor.h"
@@ -46,6 +47,19 @@ Tensor random_block_mask(size_t num_blocks, float sparsity_ratio);
 /// Generate Longformer-style mask (global + local blocks).
 Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks,
                              const std::vector<size_t>& global_blocks);
+
+/// Generate a BigBird-style block mask: union of a causal sliding-window
+/// (local) pattern, global blocks (first `num_global_blocks` blocks attend to
+/// every block and are visible to every block), and random edges sampled with
+/// probability `random_keep_prob`. Sampling uses `seed` for determinism.
+/// @param num_blocks Number of blocks per side of the square mask
+/// @param window_blocks Local window radius in blocks (0 = all previous blocks)
+/// @param num_global_blocks Number of leading blocks treated as global (0 = none)
+/// @param random_keep_prob Probability of an extra random edge per block pair
+/// @param seed RNG seed for the random edges
+Tensor bigbird_block_mask(size_t num_blocks, size_t window_blocks,
+                          size_t num_global_blocks, float random_keep_prob,
+                          uint32_t seed = 0);
 
 /// Calculate sparsity ratio from a block mask.
 float calculate_sparsity_ratio(const Tensor& block_mask);

@@ -4,6 +4,7 @@
 #include <vector>
 #include <chrono>
 
+#include "attention/sparsity_mask.h"
 #include "blas/blas.h"
 #include "hal/device.h"
 #include "tensor/tensor.h"
@@ -123,6 +124,100 @@ void test_cuda_streams_parallel()
 #endif
 }
 
+#ifdef SERIUS_USE_CUDA
+void test_block_sparse_attention_cuda()
+{
+    std::cout << "\nTesting block-sparse attention CUDA kernel...\n";
+
+    hal::IBackend *backend = hal::get_backend(hal::DeviceType::CUDA);
+    if (!backend || !backend->is_available()) {
+        std::cout << "Skipping block-sparse attention test: CUDA backend not available.\n";
+        return;
+    }
+
+    namespace attn = serius::attention;
+    const size_t seq = 8, d = 8, bs = 4;
+
+    Tensor Q({seq, d}), K({seq, d}), V({seq, d});
+    for (size_t i = 0; i < seq; ++i) {
+        for (size_t j = 0; j < d; ++j) {
+            const float v = static_cast<float>((i * 31 + j * 17) % 23) * 0.05f - 0.5f;
+            Q.set_item(i, j, v);
+            K.set_item(i, j, static_cast<float>((i * 13 + j * 7) % 19) * 0.05f - 0.4f);
+            V.set_item(i, j, static_cast<float>((i * 5 + j * 11) % 17) * 0.05f - 0.3f);
+        }
+    }
+
+    // CPU reference: causal masked softmax attention restricted to active
+    // blocks (same semantics as the kernel: mask AND k <= q).
+    auto reference = [&](const Tensor &mask) {
+        Tensor ref({seq, d});
+        const float scale = 1.0f / std::sqrt(static_cast<float>(d));
+        const size_t nb = seq / bs;
+        for (size_t q = 0; q < seq; ++q) {
+            std::vector<float> scores(seq, -1e30f);
+            float m = -1e30f;
+            for (size_t k = 0; k <= q; ++k) {
+                const bool active = mask.item((q / bs) * nb + (k / bs)) > 0.5f;
+                if (!active) continue;
+                float dot = 0.f;
+                for (size_t j = 0; j < d; ++j) dot += Q.item(q, j) * K.item(k, j);
+                scores[k] = dot * scale;
+                m = std::max(m, scores[k]);
+            }
+            float l = 0.f;
+            for (size_t k = 0; k <= q; ++k) {
+                if (scores[k] <= -1e29f) continue;
+                scores[k] = std::exp(scores[k] - m);
+                l += scores[k];
+            }
+            for (size_t j = 0; j < d; ++j) {
+                float acc = 0.f;
+                for (size_t k = 0; k <= q; ++k) {
+                    if (scores[k] <= -1e29f) continue;
+                    acc += scores[k] * V.item(k, j);
+                }
+                ref.set_item(q, j, l > 0.f ? acc / l : 0.f);
+            }
+        }
+        return ref;
+    };
+
+    auto check = [&](const Tensor &mask, const char *name) {
+        Tensor out = attn::block_sparse_attention_cuda(Q, K, V, mask, bs, 0);
+        Tensor ref = reference(mask);
+        out.syncToHost();
+        double max_err = 0.0;
+        for (size_t i = 0; i < out.size(); ++i) {
+            max_err = std::max(max_err, static_cast<double>(std::abs(out[i] - ref[i])));
+        }
+        std::cout << name << " max abs err: " << max_err << "\n";
+        assert(max_err < 1e-4 && "block_sparse_attention_cuda mismatch vs reference");
+    };
+
+    // 1. Full causal mask.
+    check(attn::causal_block_mask(seq / bs), "causal");
+
+    // 2. Sliding-window mask (each block attends only to itself): exercises
+    //    skipped blocks and the causal guard inside active blocks.
+    Tensor local({2, 2});
+    local.fill(0.0f);
+    local.set_item(0, 0, 1.0f);
+    local.set_item(1, 1, 1.0f);
+    check(local, "local-window");
+
+    // 3. Sparse custom mask: q-block 1 attends only to k-block 0 (all keys
+    //    are in the past, so causality does not interfere).
+    Tensor past_only({2, 2});
+    past_only.fill(0.0f);
+    past_only.set_item(0, 0, 1.0f);
+    past_only.set_item(1, 0, 1.0f);
+    check(past_only, "past-only");
+
+    std::cout << "Block-sparse attention CUDA test ok.\n";
+}
+#endif
+
 }  // namespace test
 }  // namespace serius
 
@@ -131,6 +226,9 @@ int main()
     std::cout << "--- CUDA INTEGRATION TESTS ---\n";
     serius::test::test_cuda_matmul_integration();
     serius::test::test_cuda_streams_parallel();
+#ifdef SERIUS_USE_CUDA
+    serius::test::test_block_sparse_attention_cuda();
+#endif
     std::cout << "All integration tests completed.\n";
     return 0;
 }

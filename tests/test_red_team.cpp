@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <map>
 #include <string>
 #include <vector>
@@ -60,6 +61,98 @@ class BiasedTarget : public BiasTarget
 };
 
 // ---- Tests ----
+
+namespace {
+
+// Deterministic test embedder: toxic vocabulary maps to dim 0, benign
+// vocabulary to dim 1.
+std::vector<float> safety_embed(const std::string &text)
+{
+    std::vector<float> v(2, 0.0f);
+    static const char *toxic_words[] = {"kill",   "bomb",   "violence", "violent",
+                                        "weapon", "threat", "attack",   "hate"};
+    static const char *benign_words[] = {"polite", "helpful", "safe",   "friendly",
+                                         "thank",  "nice",    "please"};
+    for (auto k : toxic_words) {
+        if (text.find(k) != std::string::npos) {
+            v[0] += 1.0f;
+        }
+    }
+    for (auto k : benign_words) {
+        if (text.find(k) != std::string::npos) {
+            v[1] += 1.0f;
+        }
+    }
+    float n = std::sqrt(v[0] * v[0] + v[1] * v[1]);
+    if (n > 0.0f) {
+        v[0] /= n;
+        v[1] /= n;
+    }
+    return v;
+}
+
+}  // namespace
+
+TEST(RedTeam, ToxicityClassifierSemanticPrototype)
+{
+    ToxicityClassifier tox(safety_embed);
+    tox.set_prototypes({"kill bomb violence weapon threat attack hate"},
+                       {"polite helpful safe friendly"});
+
+    const float toxic = tox.score("This is a violent threat of attack");
+    const float safe = tox.score("Thank you, have a nice day");
+
+    EXPECT_GT(toxic, safe);
+    EXPECT_GT(toxic, 0.5f);
+    EXPECT_LT(safe, 0.5f);
+}
+
+TEST(RedTeam, ToxicityClassifierParaphraseToxic)
+{
+    ToxicityClassifier tox(safety_embed);
+    tox.set_prototypes({"kill bomb violence weapon threat attack hate"},
+                       {"polite helpful safe friendly"});
+
+    // Nessuna keyword esatta della lista lessicale, ma topic tossico.
+    const float score = tox.score("threatening violent assault planned");
+    EXPECT_GT(score, tox.score("a pleasant helpful conversation"));
+}
+
+TEST(RedTeam, ToxicityClassifierSemanticWeightZeroIsLexical)
+{
+    ToxicityClassifier tox(safety_embed);
+    tox.set_prototypes({"kill bomb violence weapon threat attack hate"},
+                       {"polite helpful safe friendly"});
+    tox.set_semantic_weight(0.0f);
+
+    // Con peso semantico zero: solo il segnale lessicale conta.
+    EXPECT_FLOAT_EQ(tox.score("kill bomb attack violence"), 1.0f);
+    EXPECT_FLOAT_EQ(tox.score("a pleasant helpful conversation"), 0.0f);
+}
+
+TEST(RedTeam, ToxicityClassifierEmptyBenignSide)
+{
+    ToxicityClassifier tox(safety_embed);
+    // Solo lato tossico: il lato benigno vuoto usa il baseline neutro.
+    tox.set_prototypes({"kill bomb violence weapon threat attack hate"}, {});
+
+    EXPECT_GT(tox.score("violent threat attack"),
+              tox.score("thank you, have a nice day"));
+}
+
+TEST(RedTeam, ToxicityClassifierPrototypeCacheInvalidated)
+{
+    ToxicityClassifier tox(safety_embed);
+    tox.set_prototypes({"kill bomb violence weapon threat attack hate"},
+                       {"polite helpful safe friendly"});
+    const float before = tox.score("violent threat attack");
+
+    // Cambiare i prototipi deve azzerare la cache delle loro embedding.
+    tox.set_prototypes({"quantum chromodynamics quark physics"},
+                       {"polite helpful safe friendly"});
+    const float after = tox.score("violent threat attack");
+    EXPECT_LT(after, before);
+}
 
 TEST(RedTeam, SafeTargetNoSuccess)
 {

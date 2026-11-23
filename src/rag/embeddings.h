@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -10,9 +11,16 @@ namespace rag {
 
 using core::Tensor;
 
-/// Compute embedding for text using mean pooling.
-/// In a production system, this would use a dedicated embedding model.
-/// For now, we provide a simple hash-based embedding for testing.
+/// Embedding backend: maps text to a vector. Used by RAGRetriever so real
+/// models (EmbeddingManager, NomicBert, remote /v1/embeddings, ...) can be
+/// plugged in instead of the built-in hash fallback.
+using EmbedFn = std::function<std::vector<float>(const std::string &text)>;
+
+/// Compute embedding for text using a deterministic hash projection.
+/// This is a fallback for tests/offline use — it carries no semantic
+/// signal. Production callers should install a real embedder via
+/// RAGRetriever::set_embedder (EmbeddingManager, NomicBert, remote
+/// /v1/embeddings, ...).
 ///
 /// @param text Input text
 /// @param dimension Embedding dimension

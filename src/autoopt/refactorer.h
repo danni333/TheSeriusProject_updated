@@ -63,6 +63,14 @@ class AutoRefactorer
     LLMClient &llm_client() { return llm_client_; }
 
    private:
+    /// Shared tail of optimize_hotspot/optimize_with_llm: verify+benchmark
+    /// the candidate against the live kernel, hot-swap and record git commit
+    /// when it wins.
+    RefactorReport evaluate_candidate(const std::string &kernel_name,
+                                      const KernelFn &candidate_kernel,
+                                      const std::vector<core::Tensor> &test_inputs,
+                                      RefactorReport report);
+
     HotSwapManager &hot_swap_;
     Sandbox &sandbox_;
     GitManager &git_mgr_;

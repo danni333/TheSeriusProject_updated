@@ -22,13 +22,12 @@ RAGRetriever::~RAGRetriever()
 void RAGRetriever::add_document(const std::string& id, const std::string& text,
                                 const json& metadata)
 {
-    std::vector<float> embedding = compute_embedding(text, config_.embedding_dim);
-    vector_db_.upsert(id, embedding, text, metadata);
+    vector_db_.upsert(id, embed(text), text, metadata);
 }
 
 std::string RAGRetriever::retrieve(const std::string& query)
 {
-    std::vector<float> query_embedding = compute_embedding(query, config_.embedding_dim);
+    std::vector<float> query_embedding = embed(query);
     std::vector<SearchResult> docs = vector_db_.search(query_embedding, config_.top_k,
                                                         config_.similarity_threshold);
 
@@ -57,6 +56,26 @@ std::string RAGRetriever::build_rag_prompt(const std::string& query,
 void RAGRetriever::clear()
 {
     vector_db_.clear();
+}
+
+void RAGRetriever::set_embedder(EmbedFn embedder)
+{
+    embedder_ = std::move(embedder);
+}
+
+std::vector<float> RAGRetriever::embed(const std::string& text) const
+{
+    if (embedder_) {
+        std::vector<float> v = embedder_(text);
+        // The vector DB requires exactly config_.embedding_dim components;
+        // a mismatched backend would silently corrupt the index, so fall
+        // back to the hash embedder instead of resizing.
+        if (v.size() == config_.embedding_dim) {
+            normalize_embedding(v);
+            return v;
+        }
+    }
+    return compute_embedding(text, config_.embedding_dim);
 }
 
 }  // namespace rag

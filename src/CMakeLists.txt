@@ -65,6 +65,7 @@ add_library(serius_core
     lora/lora_linear.cpp
     lora/lora_adapter.cpp
     transformer/llama_model.cpp
+    transformer/qwen_model.cpp
     moe/router.cpp
     moe/expert.cpp
     moe/moe_layer.cpp
@@ -120,6 +121,13 @@ add_library(serius_core
     stress/stress_runner.cpp
     stress/worker.cpp
     stress/leak_detector.cpp
+    stress/report.cpp
+    infer/speculative.cpp
+    autoopt/git_manager.cpp
+    autoopt/hot_swap.cpp
+    autoopt/llm_client.cpp
+    autoopt/refactorer.cpp
+    autoopt/sandbox.cpp
 )
 
 if(SERIUS_EXPERIMENTAL_NEURO)
@@ -194,6 +202,7 @@ if(SERIUS_EXPERIMENTAL_RLHF)
     target_sources(serius_core PRIVATE
         rlhf/reward_model.cpp
         rlhf/ppo.cpp
+        rlhf/ppo_trainer.cpp
     )
 endif()
 
@@ -240,6 +249,14 @@ if(SERIUS_EXPERIMENTAL_KNOWLEDGE)
         knowledge/knowledge_base.cpp
     )
 endif()
+
+# Expose enabled experimental flags to consumers (cli, tests) via #ifdef.
+foreach(_exp_flag NEURO LIQUID WORLD QUANTUM SSM AUTOML MULTIMODAL INTERPRET
+                   RLHF GROUNDING EVAL REASONING FEDERATED KNOWLEDGE)
+    if(SERIUS_EXPERIMENTAL_${_exp_flag})
+        target_compile_definitions(serius_core PUBLIC SERIUS_EXPERIMENTAL_${_exp_flag}=1)
+    endif()
+endforeach()
 
 if(SERIUS_USE_CUDA)
     target_sources(serius_core PRIVATE
@@ -308,9 +325,6 @@ add_subdirectory(hub)
 # --- CLI executable (serve, chat, doctor, import, bench, stress) ---
 add_executable(serius cli/serius_cli.cpp
     cli/cmd_chat.cpp
-    cli/cmd_eval.cpp
-    cli/cmd_inspect.cpp
-    cli/cmd_think.cpp
     cli/llama_loader.cpp
     cli/cmd_serve.cpp
     cli/cmd_doctor.cpp
@@ -322,3 +336,13 @@ add_executable(serius cli/serius_cli.cpp
     cli/cmd_mcp.cpp)
 target_link_libraries(serius PRIVATE serius_core serius_server hub)
 target_include_directories(serius PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+if(SERIUS_EXPERIMENTAL_EVAL)
+    target_sources(serius PRIVATE cli/cmd_eval.cpp)
+endif()
+if(SERIUS_EXPERIMENTAL_INTERPRET)
+    target_sources(serius PRIVATE cli/cmd_inspect.cpp)
+endif()
+if(SERIUS_EXPERIMENTAL_REASONING)
+    target_sources(serius PRIVATE cli/cmd_think.cpp)
+endif()

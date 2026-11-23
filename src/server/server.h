@@ -1,10 +1,12 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <httplib.h>
@@ -39,9 +41,17 @@ struct ServerConfig
     int default_top_k = defaults::kTopK;
     float default_top_p = defaults::kTopP;
     std::string ui_dir = "ui";  // Directory for web UI static files
+    /// Optional dedicated port for /health and /metrics only. On the main
+    /// port these cheap handlers queue behind generation jobs in httplib's
+    /// FIFO thread pool and can starve under load; a separate listener keeps
+    /// monitoring responsive. 0 = disabled (endpoints only on `port`).
+    uint16_t health_port = 0;
     /// GPU backend for the loaded LLaMA model: auto = plan from model size vs
     /// free VRAM, cpu = never offload, cuda = require GPU (warn if it can't fit).
     enum class GpuMode { kAuto, kCpu, kCuda } gpu_mode = GpuMode::kAuto;
+    /// Partial GPU offload (--gpu-layers N): leading N blocks on GPU, rest
+    /// CPU. <= 0 disables; >= layer count falls back to the full offload.
+    int gpu_layers = -1;
 };
 
 /// A model loaded into the server's registry, keyed by name.
@@ -113,6 +123,11 @@ public:
 private:
     void setup_routes();
 
+    /// Shared handlers for /health and /metrics, used by both the main
+    /// listener and the optional dedicated ops listener (health_port).
+    void handle_health(const httplib::Request &req, httplib::Response &res);
+    void handle_metrics(const httplib::Request &req, httplib::Response &res);
+
     /// Resolve a requested model name to a registry entry.
     /// Empty/"default-ish" names fall back to model_name_ then the first
     /// loaded model. Caller must hold inference_mutex_.
@@ -134,6 +149,13 @@ private:
     std::string host_;
     ServerConfig config_;
     httplib::Server server_;
+    /// Optional dedicated ops listener (health_port): owns its own
+    /// httplib::Server so /health//metrics never queue behind inference.
+    std::unique_ptr<httplib::Server> ops_server_;
+    std::thread ops_thread_;
+    /// Set by stop(); lets run() distinguish a user-requested shutdown
+    /// from a transient listener failure worth retrying.
+    std::atomic<bool> stop_requested_{false};
 
     std::string model_name_ = "default";
     std::string model_type_ = "llama";

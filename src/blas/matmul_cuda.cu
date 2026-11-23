@@ -409,6 +409,29 @@ void logits_gemv_mixed_cublas(const void *x, const void *w, void *out, size_t se
     }
 }
 
+void logits_gemm_mixed_cublas(const void *x, const void *w, void *out, size_t seq, size_t vocab_total,
+                              size_t v0, size_t n, size_t hidden, float beta, void *stream)
+{
+    cudaStream_t cu_stream = static_cast<cudaStream_t>(stream);
+    cublasHandle_t handle = get_cublas_handle();
+    if (handle == nullptr || n == 0) return;
+    cublasSetStream(handle, cu_stream);
+
+    // Same col-major mapping as logits_gemv_mixed_cublas, restricted to the
+    // row block [v0, v0+n): `w` already points at the tile's n FP16 rows
+    // ([n, hidden] row-major); only the C' side needs the v0 column-slice
+    // offset (pointer offset v0 with ldc=vocab_total).
+    const float alpha = 1.0f;
+    char *c_ptr = static_cast<char *>(out) + v0 * sizeof(float);
+    cublasStatus_t st = cublasGemmEx(handle, CUBLAS_OP_T, CUBLAS_OP_N, (int)n, (int)seq, (int)hidden, &alpha,
+                                     w, CUDA_R_16F, (int)hidden, x, CUDA_R_16F, (int)hidden, &beta,
+                                     c_ptr, CUDA_R_32F, (int)vocab_total, CUBLAS_COMPUTE_32F,
+                                     CUBLAS_GEMM_DEFAULT);
+    if (st != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "[cublas] logits_gemm_mixed failed st=" << (int)st << std::endl;
+    }
+}
+
 }  // namespace blas
 }  // namespace core
 }  // namespace serius

@@ -52,12 +52,14 @@ std::vector<float> compute_hessian(const float *activations, size_t num_tokens, 
 
 /// Quantize a weight matrix using the GPTQ algorithm.
 ///
-/// Algorithm (simplified):
-///   For each column j (or column group):
-///     1. q_j = quantize(W[:, j])
-///     2. error_j = W[:, j] - dequantize(q_j)
-///     3. For all remaining columns k > j:
-///        W[:, k] += error_j * H_inv[j, k] / H_inv[j, j]
+/// Algorithm:
+///   H_inv = (H + damp)^-1 via Cholesky decomposition.
+///   Columns are processed left to right in groups of `group_size`; within a
+///   group, each column j is quantized with its group's scale/zero-point and
+///   the quantization error is propagated to the remaining columns of the
+///   same group as W[:, k] += (w_j - dequant(q_j)) * H_inv[j, k] / H_inv[j, j].
+///   (Error feedback is restricted to the current group rather than all
+///   remaining columns, which keeps the pass O(cols * group_size).)
 ///
 /// @param weights     Weight matrix [rows, cols] in row-major order
 /// @param rows        Number of output features (rows of W)

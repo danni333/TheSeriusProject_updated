@@ -1,18 +1,24 @@
-#include <gtest/gtest.h>
+#include "gtest/gtest.h"
 
 #include <cmath>
 #include <vector>
 
+#include "infer/llama_inference.h"
 #include "interpret/activation_probe.h"
 #include "interpret/attention_capture.h"
 #include "interpret/export.h"
+#include "interpret/inference_capture.h"
 #include "interpret/logit_lens.h"
 #include "tensor/tensor.h"
+#include "transformer/llama_model.h"
 
 using serius::core::Tensor;
 using serius::interpret::ActivationProbe;
 using serius::interpret::AttentionCapture;
+using serius::interpret::InferenceCapture;
 using serius::interpret::LogitLens;
+using serius::model::LLaMAModel;
+using serius::model::LLamaConfig;
 
 TEST(AttentionCapture, StartStopAndRecord)
 {
@@ -153,4 +159,138 @@ TEST(Export, ProbeJsonExport)
     std::string json = export_probe_json(probe);
     EXPECT_NE(json.find("expert"), std::string::npos);
     EXPECT_NE(json.find("0.8"), std::string::npos);
+}
+// ---- InferenceCapture: real LLaMA forward instrumentation ----
+
+namespace {
+
+LLaMAModel make_capture_model()
+{
+    LLamaConfig cfg;
+    cfg.vocab_size = 64;
+    cfg.hidden_size = 16;
+    cfg.num_attention_heads = 4;
+    cfg.num_key_value_heads = 4;
+    cfg.num_hidden_layers = 2;
+    cfg.intermediate_size = 64;
+    cfg.max_position_embeddings = 64;
+    cfg.rms_norm_eps = 1e-5f;
+    cfg.rope_theta = 10000.0f;
+    return LLaMAModel(cfg);
+}
+
+Tensor make_prompt(size_t n)
+{
+    Tensor ids({n});
+    for (size_t i = 0; i < n; ++i) { ids[i] = static_cast<float>((i * 7 + 3) % 64); }
+    return ids;
+}
+
+}  // namespace
+
+TEST(InferenceCapture, CapturesAllLayersHiddenAndAttention)
+{
+    auto model = make_capture_model();
+    const Tensor ids = make_prompt(6);
+
+    InferenceCapture cap;
+    cap.run(model, ids);
+
+    ASSERT_EQ(cap.num_layers(), 2u);
+    for (size_t l = 0; l < 2; ++l) {
+        const Tensor hidden = cap.hidden_last_position(static_cast<int>(l));
+        ASSERT_EQ(hidden.shape().size(), 2u);
+        EXPECT_EQ(hidden.shape()[0], 1u);
+        EXPECT_EQ(hidden.shape()[1], 16u);
+        // Finite values
+        for (size_t i = 0; i < hidden.size(); ++i) {
+            EXPECT_TRUE(std::isfinite(hidden[i]));
+        }
+
+        const size_t heads = cap.num_attention_heads(static_cast<int>(l));
+        EXPECT_EQ(heads, 4u);
+        for (size_t h = 0; h < heads; ++h) {
+            const auto &rows = cap.attention_rows(static_cast<int>(l), static_cast<int>(h));
+            ASSERT_FALSE(rows.empty());
+            // One row per query position (6 prompt tokens).
+            EXPECT_EQ(rows.size(), 6u);
+            const Tensor &last = rows.back();
+            ASSERT_EQ(last.shape()[0], 6u);  // attends to all 6 positions
+            float sum = 0.0f;
+            for (size_t k = 0; k < last.shape()[0]; ++k) {
+                EXPECT_TRUE(std::isfinite(last[k]));
+                EXPECT_GE(last[k], 0.0f);
+                sum += last[k];
+            }
+            EXPECT_NEAR(sum, 1.0f, 1e-4f);
+        }
+    }
+    // Hooks are removed after run().
+    EXPECT_FALSE(serius::infer::activation_hooks_enabled());
+}
+
+TEST(InferenceCapture, LogitLensOnCapturedHidden)
+{
+    auto model = make_capture_model();
+    const Tensor ids = make_prompt(5);
+
+    InferenceCapture cap;
+    cap.run(model, ids);
+
+    const Tensor head = serius::interpret::logit_lens_head(model);
+    ASSERT_GT(head.size(), 0u);
+    EXPECT_EQ(head.shape()[0], 64u);   // vocab
+    EXPECT_EQ(head.shape()[1], 16u);   // hidden
+
+    LogitLens lens;
+    const auto preds = lens.compute(cap.hidden_last_position(0), head, 3);
+    ASSERT_EQ(preds.size(), 3u);
+    for (const auto &p : preds) {
+        EXPECT_GE(p.token_id, 0);
+        EXPECT_LT(p.token_id, 64);
+    }
+    // Predictions are sorted by descending logit.
+    EXPECT_GE(preds[0].logit, preds[1].logit);
+    EXPECT_GE(preds[1].logit, preds[2].logit);
+}
+
+TEST(InferenceCapture, HooksDoNotChangeLogits)
+{
+    auto model = make_capture_model();
+    const Tensor ids = make_prompt(4);
+
+    // Baseline: plain forward with the same KV-cache setup as capture.run.
+    serius::infer::KVCache cache;
+    const Tensor baseline = serius::infer::llama_forward_inference(model, ids, &cache);
+
+    InferenceCapture cap;
+    const Tensor captured = cap.run(model, ids);
+
+    ASSERT_EQ(baseline.size(), captured.size());
+    for (size_t i = 0; i < baseline.size(); ++i) {
+        EXPECT_FLOAT_EQ(baseline[i], captured[i]);
+    }
+}
+
+TEST(InferenceCapture, FeedsAttentionCapture)
+{
+    auto model = make_capture_model();
+    const Tensor ids = make_prompt(4);
+
+    InferenceCapture cap;
+    cap.run(model, ids);
+
+    // Bridge captured rows into the classic AttentionCapture store.
+    AttentionCapture store;
+    store.start();
+    const auto &rows = cap.attention_rows(0, 0);
+    ASSERT_FALSE(rows.empty());
+    store.record(0, 0, rows.back());
+    store.stop();
+
+    const Tensor got = store.get(0, 0);
+    ASSERT_EQ(got.shape()[0], 4u);
+    float sum = 0.0f;
+    for (size_t i = 0; i < got.size(); ++i) { sum += got[i]; }
+    EXPECT_NEAR(sum, 1.0f, 1e-4f);
 }

@@ -112,6 +112,16 @@ Node *apply_rope_impl(Node *input_node, size_t batch_size, size_t seq_len, size_
     Node *out = new Node(std::move(rot_data));
     out->name = is_query ? "rope_q" : "rope_k";
     out->children = {input_node};
+    out->forward_fn = [batch_size, seq_len, d_head, d_model, is_batched, is_query, rope_base, pos_offset,
+                       training_ctx, target_ctx](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward(
+            [batch_size, seq_len, d_head, d_model, is_batched, is_query, rope_base, pos_offset, training_ctx,
+             target_ctx](const std::vector<Node *> &a) {
+                return apply_rope_impl(a[0], batch_size, seq_len, d_head, is_batched, is_query, rope_base,
+                                       pos_offset, training_ctx, target_ctx);
+            },
+            in);
+    };
 
     out->backward_fn = [input_node, out, batch_size, seq_len, d_head, d_model, is_batched, rope_base, pos_offset,
                         training_ctx, target_ctx]() {

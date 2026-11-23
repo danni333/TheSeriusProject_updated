@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@ using serius::grounding::self_consistent_index;
 using serius::grounding::majority_vote;
 using serius::grounding::extract_citations;
 using serius::grounding::support_score;
+using serius::grounding::SupportScorer;
 using serius::grounding::confidence_from_logprobs;
 
 TEST(Grounding, CosineSimilarityIdentical)
@@ -92,6 +94,119 @@ TEST(Grounding, SupportScoreNoOverlap)
 {
     const float score = support_score("xyz abc", "qualunque altra cosa");
     EXPECT_FLOAT_EQ(score, 0.0f);
+}
+
+namespace {
+
+// Deterministic test embedder: synonym groups share embedding dimensions,
+// so paraphrases score high even with zero lexical overlap.
+std::vector<float> topic_embed(const std::string &text)
+{
+    std::vector<float> v(4, 0.0f);
+    auto has = [&](std::initializer_list<const char *> kws) {
+        for (auto k : kws) {
+            if (text.find(k) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    };
+    if (has({"dog", "canine", "puppy"})) {
+        v[0] = 1.0f;
+    }
+    if (has({"cat", "feline", "kitten"})) {
+        v[1] = 1.0f;
+    }
+    if (has({"mammal", "animal"})) {
+        v[2] = 1.0f;
+    }
+    if (has({"car", "vehicle", "auto"})) {
+        v[3] = 1.0f;
+    }
+    float n = 0.0f;
+    for (float x : v) {
+        n += x * x;
+    }
+    n = std::sqrt(n);
+    if (n > 0.0f) {
+        for (auto &x : v) {
+            x /= n;
+        }
+    }
+    return v;
+}
+
+}  // namespace
+
+TEST(Grounding, SupportScorerLexicalOnlyWithoutEmbedder)
+{
+    SupportScorer scorer;
+    // Nessuna parola in comune: overlap nullo senza embedder.
+    EXPECT_FLOAT_EQ(scorer.score("dogs are mammals", "canines are animals"), 0.0f);
+}
+
+TEST(Grounding, SupportScorerSemanticBridging)
+{
+    SupportScorer scorer(topic_embed);
+    // Claim e documento non condividono parole, ma lo stesso topic
+    // (cani/mammiferi) → lo scorer semantico deve dare supporto.
+    const float score = scorer.score("dogs are mammals", "canines are animals");
+    EXPECT_GT(score, 0.4f);
+}
+
+TEST(Grounding, SupportScorerUnrelatedStaysLow)
+{
+    SupportScorer scorer(topic_embed);
+    const float score = scorer.score("dogs are mammals", "cars are vehicles");
+    EXPECT_LT(score, 0.2f);
+}
+
+TEST(Grounding, SupportScorerMorphologicalMatch)
+{
+    SupportScorer scorer;
+    // "mammals" vs "mammal": match morfologico senza embedder.
+    const float score = scorer.score("whales are mammals", "mammal animals live");
+    EXPECT_GT(score, 0.4f);
+}
+
+TEST(Grounding, SupportScorerSemanticWeightZeroIsLexical)
+{
+    SupportScorer scorer(topic_embed);
+    scorer.set_semantic_weight(0.0f);
+    // Con peso semantico zero torna il comportamento puramente lessicale.
+    EXPECT_FLOAT_EQ(scorer.score("dogs are mammals", "canines are animals"), 0.0f);
+}
+
+TEST(Grounding, SupportScorerCosineRangeRescales)
+{
+    // Due embedding fissi con cosine = 1/sqrt(2) ~= 0.707.
+    auto two_vec = [](const std::string &t) {
+        if (t.find("claim") != std::string::npos) {
+            return std::vector<float>{1.0f, 0.0f, 0.0f};
+        }
+        return std::vector<float>{1.0f, 1.0f, 0.0f};
+    };
+    SupportScorer wide(two_vec);
+    wide.set_cosine_range(0.0f, 1.0f);   // semantic = 0.707
+    SupportScorer narrow(two_vec);
+    narrow.set_cosine_range(0.6f, 0.8f); // semantic = (0.707-0.6)/0.2 = 0.536
+
+    EXPECT_GT(wide.score("claim text", "doc text"),
+              narrow.score("claim text", "doc text"));
+}
+
+TEST(Grounding, SupportScorerBatchDocuments)
+{
+    SupportScorer scorer(topic_embed);
+    const std::vector<std::string> docs = {
+        "canines are animals",
+        "cars are vehicles",
+        "felines are animals",
+    };
+    const auto scores = scorer.score_claim_against_documents("dogs are mammals", docs);
+    ASSERT_EQ(scores.size(), 3u);
+    EXPECT_GT(scores[0], scores[1]);
+    EXPECT_GT(scores[0], 0.4f);
 }
 
 TEST(Grounding, ConfidenceHigh)

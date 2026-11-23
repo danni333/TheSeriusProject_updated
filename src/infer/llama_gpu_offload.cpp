@@ -7,8 +7,10 @@
 #include "llama_inference.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
+#include <unordered_map>
 
 #include "../blas/blas.h"
 #include "../quant/quant_weight.h"
@@ -32,6 +34,52 @@ size_t quant_weight_bytes(const quant::QuantWeight &qw)
     return qw.dev_stride ? qw.dev_bytes.size() : qw.bytes.size();
 }
 
+/// Whether a packed weight can live on the GPU: valid, 32-aligned inner dim,
+/// and a type the repack/GEMV kernels support (Q5_K has no GPU path — the
+/// offload skips its upload and decode falls back to dense weights).
+bool qw_gpu_supported(const quant::QuantWeight &qw)
+{
+    if (!qw.valid() || (qw.in % 32) != 0) {
+        return false;
+    }
+    switch (qw.type) {
+        case quant::QuantType::Q4_0:
+        case quant::QuantType::Q4_1:
+        case quant::QuantType::Q8_0:
+            return true;
+        case quant::QuantType::Q4_K:
+            return (qw.in % 256) == 0;
+        default:
+            return false;
+    }
+}
+
+/// True when packed quantized weights may be uploaded to the GPU at all.
+bool quant_upload_enabled()
+{
+    return std::getenv("SERIUS_NO_QUANT") == nullptr;
+}
+
+/// True when every layer's fused projections are packed-quantized in a GPU
+/// supported layout — the offload can then skip the dense FP16 projection
+/// copies entirely (decode is already fully quantized; batched prefill
+/// dequantizes on the fly). The quantized CUDA paths require FP16
+/// activations, which the offload itself guarantees by casting the
+/// embedding (and every moved param) to Float16.
+bool model_quant_layers(const model::LLaMAModel &model)
+{
+    if (!quant_upload_enabled() || model.layers().empty()) {
+        return false;
+    }
+    for (const auto &blk : model.layers()) {
+        if (!qw_gpu_supported(blk->qkv_w) || !qw_gpu_supported(blk->gate_up_w) ||
+            !qw_gpu_supported(blk->o_w) || !qw_gpu_supported(blk->down_w)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace
 
 LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model)
@@ -44,42 +92,98 @@ LlamaGpuPlan plan_llama_gpu_offload(const model::LLaMAModel &model)
     const size_t vocab = cfg.vocab_size;
     const size_t n_layers = cfg.num_hidden_layers;
 
-    // Dense FP16 params uploaded by the offload (embed + per-block weights).
-    const size_t per_layer_params =
-        hidden * hidden +            // q_proj
-        2 * hidden * kv_dim +        // k_proj + v_proj
-        hidden * hidden +            // o_proj
-        3 * hidden * inter;          // gate + up + down
-    size_t dense_params = vocab * hidden + n_layers * per_layer_params;
-    size_t need = dense_params * 2;  // FP16
+    // GPU KV cache starts at 1024 positions/layer and grows on demand
+    // (ensure_kv_capacity_gpu) — size the estimate to the initial footprint;
+    // long contexts add KV bytes at runtime.
+    const size_t kv_bytes = n_layers * 1024 * kv_dim * 2 * 2;  // K+V, fp16
 
-    // lm_head copies: FP16 transposed always; FP32 only without packed lm_head.
-    need += vocab * hidden * 2;
+    const bool quant = model_quant_layers(model);
     const auto *lm_head_q = model.lm_head_q();
-    if (lm_head_q == nullptr) {
-        need += vocab * hidden * 4;
+    // The packed lm_head can replace BOTH dense transposed copies only when
+    // it will actually be repacked+uploaded (qw_gpu_supported predicts that)
+    // and has the [vocab, hidden] shape the logits kernels expect. FP16
+    // activations come for free: the offload casts embed_tokens to Float16.
+    const bool quant_lm = quant_upload_enabled() && lm_head_q != nullptr &&
+        qw_gpu_supported(*lm_head_q) && lm_head_q->out == vocab && lm_head_q->in == hidden;
+
+    size_t need = 0;
+    if (quant) {
+        // Packed-quant mode: embed table, norms and biases stay dense FP16;
+        // projections exist on the GPU only as packed QuantWeights.
+        need += vocab * hidden * 2;                    // embed_tokens
+        need += n_layers * (3 * hidden + 2 * kv_dim) * 2;  // 2 LN + q/k/v bias
+        need += hidden * 2;                            // final norm
+        for (const auto &blk : model.layers()) {
+            need += quant_weight_bytes(blk->qkv_w);
+            need += quant_weight_bytes(blk->gate_up_w);
+            need += quant_weight_bytes(blk->o_w);
+            need += quant_weight_bytes(blk->down_w);
+        }
+        // Batched-prefill dequant scratch: dq + dq_t, each max(in*out) FP16.
+        size_t max_elems = 0;
+        for (const auto &blk : model.layers()) {
+            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w,
+                                              &blk->o_w, &blk->down_w};
+            for (const auto *qw : ws) {
+                max_elems = std::max(max_elems, qw->in * qw->out);
+            }
+        }
+        need += max_elems * 2 * 2;
+        need += kv_bytes;
+    } else {
+        // Dense FP16 params uploaded by the offload (embed + per-block weights).
+        const size_t per_layer_params =
+            hidden * hidden +            // q_proj
+            2 * hidden * kv_dim +        // k_proj + v_proj
+            hidden * hidden +            // o_proj
+            3 * hidden * inter;          // gate + up + down
+        size_t dense_params = vocab * hidden + n_layers * per_layer_params;
+        need = dense_params * 2;  // FP16
+        need += kv_bytes;
+
+        // Packed weights still upload alongside the dense copies whenever
+        // the repack supports them (mixed-quant models keep both paths).
+        for (const auto &blk : model.layers()) {
+            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w,
+                                              &blk->o_w, &blk->down_w};
+            for (const auto *qw : ws) {
+                if (qw_gpu_supported(*qw)) {
+                    need += quant_weight_bytes(*qw);
+                }
+            }
+        }
+        // Batched-prefill dequant scratch is still needed for layers whose
+        // packed weights did upload even in dense mode.
+        size_t max_elems = 0;
+        for (const auto &blk : model.layers()) {
+            const quant::QuantWeight *ws[] = {&blk->qkv_w, &blk->gate_up_w,
+                                              &blk->o_w, &blk->down_w};
+            for (const auto *qw : ws) {
+                if (qw_gpu_supported(*qw)) {
+                    max_elems = std::max(max_elems, qw->in * qw->out);
+                }
+            }
+        }
+        need += max_elems * 2 * 2;
     }
 
-    // Packed quantized weights kept alongside the dense FP16 copies.
-    for (const auto &blk : model.layers()) {
-        need += quant_weight_bytes(blk->qkv_w);
-        need += quant_weight_bytes(blk->gate_up_w);
-        need += quant_weight_bytes(blk->o_w);
-        need += quant_weight_bytes(blk->down_w);
-    }
-    if (lm_head_q != nullptr) {
+    // lm_head: packed + dequant tile scratch when GPU-ready, otherwise the
+    // FP16 transposed copy (always needed by the prefill logits GEMV) plus
+    // the FP32 copy only when no packed lm_head exists at all.
+    if (quant_lm) {
         need += quant_weight_bytes(*lm_head_q);
+        need += 8192 * hidden * 2;
+    } else {
+        need += vocab * hidden * 2;
+        if (lm_head_q == nullptr) {
+            need += vocab * hidden * 4;
+        } else if (quant_upload_enabled() && qw_gpu_supported(*lm_head_q)) {
+            need += quant_weight_bytes(*lm_head_q);  // uploaded, logits gates skip it
+        }
     }
 
-    // KV cache on GPU: K+V per layer, FP16, sized on max context (capped —
-    // prompts rarely reach the full training context).
-    const size_t max_seq = cfg.max_position_embeddings > 0
-        ? std::min<size_t>(cfg.max_position_embeddings, 16384)
-        : 4096;
-    need += n_layers * max_seq * kv_dim * 2 * 2;  // K+V, fp16
-
-    // cuBLAS/prefill scratch + decode-graph buffers + fragmentation margin.
-    need = need * 6 / 5 + (size_t{512} << 20);
+    // Prefill scratch + decode buffers + fragmentation margin.
+    need = need * 6 / 5 + (size_t{256} << 20);
     plan.need_bytes = need;
 
 #ifdef SERIUS_USE_CUDA
@@ -156,16 +260,64 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model)
         return false;
     }
 
+    // Packed GGUF quantized weights (Q4_0/Q4_1/Q8_0/Q4_K) go first: whether
+    // the dense FP16 projection copies are needed at all is decided by the
+    // residency check below, not by a prediction.
+    if (std::getenv("SERIUS_NO_QUANT") == nullptr) {
+        hal::IBackend *be = hal::get_gpu_backend();
+        auto upload_qw = [be](quant::QuantWeight &qw) {
+            if (!qw.valid() || qw.gpu_data != nullptr) { return; }
+            // Repack into the aligned layout the vectorized kernels read.
+            // Types/layouts it rejects stay host-only: gpu_data is only ever
+            // set for the repacked dev_bytes layout (dev_stride != 0), so a
+            // non-null gpu_data always means a usable GPU-resident weight.
+            quant::repack_quant_for_gpu(qw);
+            if (qw.dev_stride == 0) { return; }
+            qw.gpu_data = be->malloc(qw.dev_bytes.size());
+            be->memcpy_h2d(qw.gpu_data, qw.dev_bytes.data(), qw.dev_bytes.size());
+        };
+        for (auto &blk : model.layers()) {
+            upload_qw(blk->qkv_w);
+            upload_qw(blk->gate_up_w);
+            upload_qw(blk->o_w);
+            upload_qw(blk->down_w);
+        }
+        upload_qw(model.lm_head_q());
+    }
+
+    // A projection set is GPU-quantized only when every fused weight was
+    // repacked and uploaded — the CUDA-graph decode, the eager decode and
+    // the batched prefill all have quantized paths for that case, so the
+    // dense FP16 copies (the dominant VRAM cost for GGUF models) can be
+    // skipped entirely. The FP32 host tensors remain as the CPU fallback /
+    // source of truth. FP16 activations are guaranteed: move_param below
+    // casts embed_tokens (and every moved param) to Float16.
+    auto qw_ready = [](const quant::QuantWeight &qw) {
+        return qw.gpu_data != nullptr && qw.dev_stride != 0;
+    };
+    bool quant_layers = !model.layers().empty();
+    for (const auto &blk : model.layers()) {
+        if (!qw_ready(blk->qkv_w) || !qw_ready(blk->gate_up_w) ||
+            !qw_ready(blk->o_w) || !qw_ready(blk->down_w)) {
+            quant_layers = false;
+            break;
+        }
+    }
+    const auto &cfg = model.config();
+    const auto &lq = model.lm_head_q();
+    const bool quant_lm_head = lq.valid() && qw_ready(lq) &&
+        lq.out == cfg.vocab_size && lq.in == cfg.hidden_size;
+
     // Keep an FP32 transposed lm_head [vocab, hidden] on the GPU:
     // the dedicated logits GEMV kernel reads it coalesced, and FP32
     // preserves the fine-grained ranking over the 150k+ vocabulary.
     // The FP32 transposed lm_head (~933 MB VRAM) is only read by the
     // non-quantized logits fallback; skip it when a packed lm_head
-    // exists. The FP16 copy is still needed by the prefill logits GEMV.
-    const bool need_fp32_lm_head = !model.lm_head_q().valid();
-    if (model.lm_head() != nullptr) {
+    // exists. The FP16 copy is still needed by the prefill logits GEMV —
+    // unless the packed lm_head feeds the tiled dequant head instead.
+    if (model.lm_head() != nullptr && !quant_lm_head) {
         core::Tensor w_t = model.lm_head()->data.transpose(0, 1).contiguous();
-        if (need_fp32_lm_head) {
+        if (!model.lm_head_q().valid()) {
             model.lm_head_fp32() = w_t;
             model.lm_head_fp32().set_device(hal::DeviceType::CUDA);
         }
@@ -182,49 +334,29 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model)
     move_param(model.embed_tokens_raw());
     for (auto &blk : model.layers()) {
         move_param(blk->input_layernorm_weight.get());
-        move_param(blk->q_proj.get());
-        move_param(blk->k_proj.get());
-        move_param(blk->v_proj.get());
         move_param(blk->q_bias.get());
         move_param(blk->k_bias.get());
         move_param(blk->v_bias.get());
-        move_param(blk->o_proj.get());
         move_param(blk->post_attention_layernorm_weight.get());
-        move_param(blk->gate_proj.get());
-        move_param(blk->up_proj.get());
-        move_param(blk->down_proj.get());
+        if (!quant_layers) {
+            move_param(blk->q_proj.get());
+            move_param(blk->k_proj.get());
+            move_param(blk->v_proj.get());
+            move_param(blk->o_proj.get());
+            move_param(blk->gate_proj.get());
+            move_param(blk->up_proj.get());
+            move_param(blk->down_proj.get());
+        }
     }
     move_param(model.norm_weight());
-    // Upload packed GGUF quantized weights (Q4_0/Q4_1/Q8_0) for the
-    // CUDA decode GEMV kernels; no-op for non-quantized models.
-    if (std::getenv("SERIUS_NO_QUANT") == nullptr) {
-        hal::IBackend *be = hal::get_gpu_backend();
-        auto upload_qw = [be](quant::QuantWeight &qw) {
-            if (!qw.valid() || qw.gpu_data != nullptr) { return; }
-            // No CUDA GEMV kernel for Q5_K yet: leave gpu_data null so the
-            // decode path falls back to the FP32 weights instead of reading
-            // an unsupported packed layout.
-            if (qw.type == quant::QuantType::Q5_K) { return; }
-            // Repack into the aligned layout the vectorized kernel reads.
-            quant::repack_quant_for_gpu(qw);
-            const std::vector<uint8_t> &src = qw.dev_stride ? qw.dev_bytes : qw.bytes;
-            qw.gpu_data = be->malloc(src.size());
-            be->memcpy_h2d(qw.gpu_data, src.data(), src.size());
-        };
-        for (auto &blk : model.layers()) {
-            upload_qw(blk->qkv_w);
-            upload_qw(blk->gate_up_w);
-            upload_qw(blk->o_w);
-            upload_qw(blk->down_w);
-        }
-        upload_qw(model.lm_head_q());
-    }
 
     // cuBLAS warmup: the first GemmEx/GemmStridedBatchedEx per kernel
     // variant lazily loads driver modules (cuLibraryLoadData, ~300 ms
     // total) — pay it here during weight upload instead of inside the
     // first prompt's prefill. Shapes mirror the real prefill GEMMs.
-    {
+    // Skipped in packed-quant mode: the dense projection tensors are not on
+    // the GPU (prefill dequantizes into scratch instead).
+    if (!quant_layers) {
         hal::IBackend *gbe = hal::get_gpu_backend();
         const size_t hidden = model.config().hidden_size;
         const size_t inter = model.config().intermediate_size;
@@ -287,6 +419,75 @@ bool offload_llama_model_to_gpu(model::LLaMAModel &model)
     return true;
 #else
     (void)model;
+    return false;
+#endif
+}
+
+namespace {
+
+/// Models with a partial GPU offload: leading N layers resident on device.
+/// Keyed by model address — the registry lives as long as the process and
+/// model objects are unique_ptr-stable for the CLI/server lifetime.
+std::unordered_map<const model::LLaMAModel *, size_t> &partial_layers_registry()
+{
+    static std::unordered_map<const model::LLaMAModel *, size_t> reg;
+    return reg;
+}
+
+}  // namespace
+
+size_t partial_gpu_layers(const model::LLaMAModel &model)
+{
+    const auto &reg = partial_layers_registry();
+    const auto it = reg.find(&model);
+    return it == reg.end() ? 0 : it->second;
+}
+
+bool offload_llama_model_partial(model::LLaMAModel &model, size_t n_layers)
+{
+#ifdef SERIUS_USE_CUDA
+    hal::IBackend *be = hal::get_gpu_backend();
+    if (be == nullptr || !be->is_available()) {
+        return false;
+    }
+    const size_t total = model.layers().size();
+    if (n_layers == 0 || n_layers >= total) {
+        return false;  // 0 or "all" is handled by the full-offload path
+    }
+
+    // Dual residency: set_device(CUDA) uploads an FP32 copy while the host
+    // FP32 weights stay intact — the CPU suffix keeps reading them.
+    auto gpu_copy = [](core::autograd::Node *p) {
+        if (p != nullptr) {
+            p->data.set_device(hal::DeviceType::CUDA);
+        }
+    };
+
+    gpu_copy(model.embed_tokens_raw());
+    for (size_t i = 0; i < n_layers; ++i) {
+        const auto &blk = model.layers()[i];
+        gpu_copy(blk->input_layernorm_weight.get());
+        gpu_copy(blk->q_bias.get());
+        gpu_copy(blk->k_bias.get());
+        gpu_copy(blk->v_bias.get());
+        gpu_copy(blk->post_attention_layernorm_weight.get());
+        gpu_copy(blk->q_proj.get());
+        gpu_copy(blk->k_proj.get());
+        gpu_copy(blk->v_proj.get());
+        gpu_copy(blk->o_proj.get());
+        gpu_copy(blk->gate_proj.get());
+        gpu_copy(blk->up_proj.get());
+        gpu_copy(blk->down_proj.get());
+    }
+    // norm_weight and lm_head stay CPU-only: the suffix computes them there.
+
+    partial_layers_registry()[&model] = n_layers;
+    std::fprintf(stderr, "[offload] partial: %zu/%zu layers on GPU (FP32 dual-resident)\n",
+                 n_layers, total);
+    return true;
+#else
+    (void)model;
+    (void)n_layers;
     return false;
 #endif
 }

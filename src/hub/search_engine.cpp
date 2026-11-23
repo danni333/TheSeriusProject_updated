@@ -451,6 +451,16 @@ std::vector<std::vector<float>> EmbeddingManager::compute_embeddings(const std::
     return out;
 }
 
+common::TextEmbedFn EmbeddingManager::query_embed_fn()
+{
+    return [this](const std::string &text) { return compute_query_embedding(text); };
+}
+
+common::TextEmbedFn EmbeddingManager::document_embed_fn()
+{
+    return [this](const std::string &text) { return compute_document_embedding(text); };
+}
+
 bool EmbeddingManager::load_model(const std::string &model_path)
 {
     unload_model();
@@ -534,7 +544,13 @@ bool EmbeddingManager::try_load_gguf(const std::string &path)
         return try_load_nomic_gguf(path);
     }
 
-    auto tensors = io::load_all_tensors(path);
+    std::unordered_map<std::string, core::Tensor> tensors;
+    try {
+        tensors = io::load_all_tensors(path);
+    } catch (const std::exception &e) {
+        spdlog::warn("EmbeddingManager: GGUF '{}' rejected: {}", path, e.what());
+        return false;
+    }
     auto it = tensors.find("token_embd.weight");
     if (it == tensors.end()) {
         return false;
@@ -564,7 +580,13 @@ bool EmbeddingManager::try_load_gguf(const std::string &path)
 
 bool EmbeddingManager::try_load_nomic_gguf(const std::string &path)
 {
-    auto tensors = io::load_all_tensors(path);
+    std::unordered_map<std::string, core::Tensor> tensors;
+    try {
+        tensors = io::load_all_tensors(path);
+    } catch (const std::exception &e) {
+        spdlog::warn("EmbeddingManager: nomic-bert GGUF '{}' rejected: {}", path, e.what());
+        return false;
+    }
     if (tensors.empty()) {
         return false;
     }

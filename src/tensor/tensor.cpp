@@ -178,6 +178,7 @@ Tensor::Tensor(const Tensor &other)
                 bytes = size_ * element_size();
                 data_gpu_ = gpu_backend->malloc(bytes);
                 if (data_gpu_ != nullptr) {
+                    owns_gpu_ = true;
                     gpu_backend->memcpy_d2d(data_gpu_, other.data_gpu_, bytes);
                 }
             }
@@ -201,6 +202,7 @@ Tensor::Tensor(Tensor &&other) noexcept
       size_(other.size_),
       dtype_(other.dtype_),
       owns_data_(other.owns_data_),
+      owns_gpu_(other.owns_gpu_),
       pool_(other.pool_),
       is_gpu_pool_(other.is_gpu_pool_),
       is_pinned_(other.is_pinned_)
@@ -210,6 +212,7 @@ Tensor::Tensor(Tensor &&other) noexcept
     other.location_ = DataLocation::CPU;
     other.size_ = 0;
     other.owns_data_ = false;
+    other.owns_gpu_ = false;
     other.pool_ = nullptr;
 }
 
@@ -250,6 +253,7 @@ Tensor &Tensor::operator=(Tensor &&other) noexcept
     size_ = other.size_;
     dtype_ = other.dtype_;
     owns_data_ = true; // 'other' was an owner, so we are now
+    owns_gpu_ = other.owns_gpu_;
     pool_ = other.pool_;
     is_gpu_pool_ = other.is_gpu_pool_;
     is_pinned_ = other.is_pinned_;
@@ -260,6 +264,7 @@ Tensor &Tensor::operator=(Tensor &&other) noexcept
     other.location_ = DataLocation::CPU;
     other.size_ = 0;
     other.owns_data_ = false;
+    other.owns_gpu_ = false;
     other.pool_ = nullptr;
     other.is_gpu_pool_ = false;
     other.is_pinned_ = false;
@@ -287,15 +292,18 @@ void Tensor::free_data()
         }
 
     }
-    // data_gpu_ is always tensor-owned (allocated by syncToDevice/copy ctor)
-    // regardless of host ownership — free it even for non-owning views.
-    if (data_gpu_ != nullptr) {
+    // Free GPU memory only when this tensor allocated it. Views
+    // (gpu_view, host_gpu_view, reshape/slice/permute/contiguous aliases)
+    // share the owner's buffer and must not free it — freeing here caused
+    // use-after-free + double-free in CUDA inference paths.
+    if (data_gpu_ != nullptr && owns_gpu_) {
         hal::IBackend *backend = hal::get_gpu_backend();
         if (backend != nullptr) {
             backend->free(data_gpu_);
         }
-        data_gpu_ = nullptr;
     }
+    data_gpu_ = nullptr;
+    owns_gpu_ = false;
     // For non-owners, we just detach
     data_ = nullptr;
     owns_data_ = false;
@@ -467,6 +475,7 @@ Tensor Tensor::contiguous() const
             if (result.data_gpu_ == nullptr) {
                 throw std::runtime_error("CUDA malloc failed in contiguous()");
             }
+            result.owns_gpu_ = true;
             
             // Call our new GPU-native copy layout kernel
             hal::copy_layout(result.data_gpu_, this->data_gpu_, shape_.data(), strides_.data(), shape_.size(), dtype_);
@@ -528,6 +537,10 @@ Tensor Tensor::expand(const std::vector<size_t> &new_shape) const
 
     Tensor res(data_, new_shape, new_strides);
     res.dtype_ = dtype_;
+    if (this->data_gpu_) {
+        res.data_gpu_ = this->data_gpu_;
+        res.location_ = this->location_;
+    }
     return res;
 }
 
@@ -547,6 +560,7 @@ Tensor Tensor::gpu_only(const std::vector<size_t> &shape, hal::DType dtype)
     if (t.size_ > 0) {
         t.data_gpu_ = be->malloc(t.size_ * t.element_size());
         if (t.data_gpu_ == nullptr) throw std::runtime_error("CUDA malloc failed in gpu_only");
+        t.owns_gpu_ = true;
         t.location_ = DataLocation::GPU;
     } else {
         t.location_ = DataLocation::CPU;
@@ -1163,6 +1177,7 @@ void Tensor::syncToDevice() const
     if (data_gpu_ == nullptr) {
         const_cast<Tensor *>(this)->data_gpu_ = backend->malloc(size_ * element_size());
         if (data_gpu_ == nullptr) throw std::runtime_error("CUDA malloc failed in syncToDevice");
+        const_cast<Tensor *>(this)->owns_gpu_ = true;
     }
 
     if (location_ == DataLocation::CPU) {
@@ -1185,6 +1200,7 @@ void Tensor::alloc_gpu()
     if (data_gpu_ == nullptr) {
         data_gpu_ = backend->malloc(size_ * element_size());
         if (data_gpu_ == nullptr) throw std::runtime_error("CUDA malloc failed in alloc_gpu");
+        owns_gpu_ = true;
     }
     location_ = DataLocation::GPU;
 }
@@ -1204,9 +1220,15 @@ void Tensor::syncToHost() const
 
     // Ensure host memory is allocated before copying back
     if (data_ == nullptr) {
-        hal::IBackend *cpu_backend = hal::get_backend(hal::DeviceType::CPU);
-        const_cast<Tensor *>(this)->data_ = cpu_backend->malloc(size_ * element_size());
+        size_t bytes = size_ * element_size();
+        if (pool_ != nullptr) {
+            const_cast<Tensor *>(this)->data_ = pool_->allocate(bytes);
+        } else {
+            hal::IBackend *cpu_backend = hal::get_backend(hal::DeviceType::CPU);
+            const_cast<Tensor *>(this)->data_ = cpu_backend->malloc(bytes);
+        }
         if (data_ == nullptr) throw std::runtime_error("CPU malloc failed in syncToHost");
+        const_cast<Tensor *>(this)->owns_data_ = true;
     }
 
     if (data_ != nullptr && data_gpu_ != nullptr) {

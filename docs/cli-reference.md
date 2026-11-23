@@ -123,6 +123,52 @@ Run performance benchmarks (matmul, memory, mixed precision, …).
 serius bench [OPTIONS]
 ```
 
+### `serius eval`
+
+Evaluate a model. Currently supports `--task ppl` (perplexity): teacher-forced
+scoring through the real inference path (KV cache + `llama_forward_single_token`).
+
+```bash
+serius eval --model models/smollm2-q4 --file corpus.txt
+serius eval --model models/Qwen2.5-0.5B-Instruct-GGUF/qwen2.5-0.5b-instruct-q4_k_m.gguf \
+    --text "Some text to score" --max-tokens 1000 --context 512 --gpu cpu
+```
+
+Options: `--model/-m` (path or `hf://repo`), `--task/-t` (`ppl`), `--file/-f`
+(corpus file), `--text/-x` (inline text), `--context/-c` (tokens per forward,
+default 512), `--max-tokens/-n` (cap scored tokens, 0 = all), `--gpu/-g`
+(auto/cpu/cuda), `--quant` (GGUF tag for `hf://`).
+
+### `serius inspect`
+
+Per-layer interpretability on a real prompt: runs one instrumented forward
+pass (`infer::ActivationHooks`, CPU path only) and reports, for every
+transformer layer, the top-k next-token predictions via logit lens
+(`interpret::LogitLens` on the captured hidden state + real LM head) and
+attention statistics (entropy + top attended positions, averaged over heads).
+
+```bash
+serius inspect --model models/smollm2-q4 --prompt "The capital of France is"
+```
+
+Options: `--model/-m`, `--prompt/-p` (required), `--topk/-k` (lens top-k,
+default 3), `--attn-top/-a` (top attended positions, default 3), `--gpu/-g`
+(default `cpu` — CUDA kernels do not emit activation hooks), `--quant`.
+
+### `serius think`
+
+Chain-of-thought reasoning: the model first produces a hidden "thinking"
+buffer, then the final answer conditioned on it. Uses the real inference path
+(`LlamaAgentModel` → `reasoning::AgentReasoningModel` → `ChainOfThought`).
+
+```bash
+serius think --model models/smollm2-q4 --prompt "What is 2+2?" \
+    --max-thinking-tokens 512 --show-thinking --gpu cpu
+```
+
+Options: `--model/-m`, `--prompt/-p` (required), `--max-thinking-tokens`,
+`--show-thinking` (print the thinking buffer), `--gpu/-g`, `--quant`.
+
 ### `serius stress`
 
 Run stress tests against the server.

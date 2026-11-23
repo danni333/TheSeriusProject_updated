@@ -14,6 +14,12 @@ namespace stress {
 
 namespace {
 
+/// Base URL used for /health memory sampling: the dedicated ops port when
+/// configured, otherwise the main server URL.
+std::string health_base(const StressConfig& cfg) {
+    return cfg.health_url.empty() ? cfg.server_url : cfg.health_url;
+}
+
 /// Spawn `count` worker threads running StressWorker with the given config.
 void spawn_workers(int count, const StressConfig& cfg,
                    std::atomic<bool>& running, StressResult& result,
@@ -64,7 +70,7 @@ StressResult StressRunner::run_ramp(const StressConfig& cfg) {
         // Record metrics for this step only (delta since step start)
         auto step_elapsed = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - step_start).count();
-        const auto [ram_bytes, vram_bytes] = sample_server_memory(cfg.server_url);
+        const auto [ram_bytes, vram_bytes] = sample_server_memory(health_base(cfg));
         {
             std::lock_guard<std::mutex> lock(mtx);
             float step_tokens = static_cast<float>(result.total_tokens - tokens_before);
@@ -106,7 +112,7 @@ StressResult StressRunner::run_soak(const StressConfig& cfg) {
 
         auto elapsed = std::chrono::duration<float>(
             std::chrono::steady_clock::now() - start_time).count();
-        const auto [ram_bytes, vram_bytes] = sample_server_memory(cfg.server_url);
+        const auto [ram_bytes, vram_bytes] = sample_server_memory(health_base(cfg));
         {
             std::lock_guard<std::mutex> lock(mtx);
             float tps = elapsed > 0.0f

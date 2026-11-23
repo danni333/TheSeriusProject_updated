@@ -16,6 +16,10 @@ struct Node
     core::Tensor grad;
     std::vector<Node *> children;
     std::function<void()> backward_fn;
+    /// Optional forward replay: recomputes this node's output from operand
+    /// tensors (same order as `children`). Set by ops that support compiled
+    /// execution plans (see optim::GraphCompiler). May be null.
+    std::function<core::Tensor(const std::vector<const core::Tensor *> &inputs)> forward_fn;
     bool requires_grad;
     std::string name;  // Optional, for debugging
 

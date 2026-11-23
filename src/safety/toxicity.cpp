@@ -8,12 +8,12 @@
 namespace serius {
 namespace safety {
 
-ToxicityClassifier::ToxicityClassifier()
-    : ToxicityClassifier(Config{})
+TokenToxicityClassifier::TokenToxicityClassifier()
+    : TokenToxicityClassifier(Config{})
 {
 }
 
-ToxicityClassifier::ToxicityClassifier(const Config& config)
+TokenToxicityClassifier::TokenToxicityClassifier(const Config& config)
     : config_(config), threshold_(config.threshold)
 {
     // Initialize embedding with small random values
@@ -35,11 +35,11 @@ ToxicityClassifier::ToxicityClassifier(const Config& config)
     output_bias_.fill(0.0f);
 }
 
-ToxicityClassifier::~ToxicityClassifier()
+TokenToxicityClassifier::~TokenToxicityClassifier()
 {
 }
 
-float ToxicityClassifier::compute_embedding_mean(const std::vector<int>& tokens) const
+float TokenToxicityClassifier::compute_embedding_mean(const std::vector<int>& tokens) const
 {
     if (tokens.empty()) {
         return 0.0f;
@@ -63,7 +63,7 @@ float ToxicityClassifier::compute_embedding_mean(const std::vector<int>& tokens)
     return valid_count > 0 ? (sum / valid_count) : 0.0f;
 }
 
-float ToxicityClassifier::score(const std::vector<int>& tokens) const
+float TokenToxicityClassifier::score(const std::vector<int>& tokens) const
 {
     if (tokens.empty()) {
         return 0.0f;
@@ -87,7 +87,7 @@ float ToxicityClassifier::score(const std::vector<int>& tokens) const
     return sigmoid;
 }
 
-bool ToxicityClassifier::is_toxic(const std::vector<int>& tokens) const
+bool TokenToxicityClassifier::is_toxic(const std::vector<int>& tokens) const
 {
     return score(tokens) > threshold_;
 }

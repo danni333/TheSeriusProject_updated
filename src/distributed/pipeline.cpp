@@ -71,15 +71,15 @@ void PipelineExecutor::execute(ForwardFn forward_fn, BackwardFn backward_fn, con
         std::vector<float> grad_input(hs, 0.0f);
 
         if (is_last_stage()) {
-            // Last stage: gradient comes from the loss. Use the caller-provided
-            // dL/d(output) slice for this micro-batch when available; otherwise
-            // fall back to a unit gradient (documented placeholder).
-            if (loss_gradients != nullptr) {
-                std::memcpy(grad_output.data(), loss_gradients + mb_idx * hs,
-                            hs * sizeof(float));
-            } else {
-                std::fill(grad_output.begin(), grad_output.end(), 1.0f);
+            // Last stage: the gradient must come from the actual loss. There
+            // is no sensible default — a unit gradient silently corrupts
+            // training — so require the caller to provide dL/d(output).
+            if (loss_gradients == nullptr) {
+                throw std::invalid_argument(
+                    "PipelineExecutor: loss_gradients is required on the last stage");
             }
+            std::memcpy(grad_output.data(), loss_gradients + mb_idx * hs,
+                        hs * sizeof(float));
         } else {
             // Receive gradient from next stage
             comm_->recv(grad_output.data(), hs, my_stage + 1);
@@ -124,6 +124,70 @@ void PipelineExecutor::execute_forward(ForwardFn forward_fn, const float *input_
         } else {
             comm_->send(outputs[mb_idx].data(), hidden_size, my_stage + 1);
         }
+    }
+}
+
+void PipelineExecutor::execute_1f1b(ForwardFn forward_fn, BackwardFn backward_fn,
+                                    const float *input_data, float *output_data,
+                                    const float *loss_gradients)
+{
+    const int my_stage = stage();
+    const int n_stages = config_.num_stages;
+    const int n_mb = config_.num_micro_batches;
+    const size_t hs = config_.hidden_size;
+    if (n_mb <= 0) { return; }
+
+    // warmup = forwards this stage runs before its first backward: later
+    // stages have less warmup (last stage = 0, first stage = n_stages - 1).
+    const int warmup = (n_stages - 1) - my_stage;
+
+    std::vector<std::vector<float>> activations(static_cast<size_t>(n_mb), std::vector<float>(hs, 0.0f));
+    std::vector<std::vector<float>> outputs(static_cast<size_t>(n_mb), std::vector<float>(hs, 0.0f));
+
+    auto do_forward = [&](int mb) {
+        const auto mb_idx = static_cast<size_t>(mb);
+        if (is_first_stage()) {
+            std::memcpy(activations[mb_idx].data(), input_data + mb_idx * hs, hs * sizeof(float));
+        } else {
+            comm_->recv(activations[mb_idx].data(), hs, my_stage - 1);
+        }
+        forward_fn(activations[mb_idx].data(), outputs[mb_idx].data(), hs);
+        if (is_last_stage()) {
+            if (output_data != nullptr) {
+                std::memcpy(output_data + mb_idx * hs, outputs[mb_idx].data(), hs * sizeof(float));
+            }
+        } else {
+            comm_->send(outputs[mb_idx].data(), hs, my_stage + 1);
+        }
+    };
+
+    auto do_backward = [&](int mb) {
+        const auto mb_idx = static_cast<size_t>(mb);
+        std::vector<float> grad_output(hs, 0.0f);
+        std::vector<float> grad_input(hs, 0.0f);
+
+        if (is_last_stage()) {
+            if (loss_gradients == nullptr) {
+                throw std::invalid_argument(
+                    "PipelineExecutor: loss_gradients is required on the last stage");
+            }
+            std::memcpy(grad_output.data(), loss_gradients + mb_idx * hs, hs * sizeof(float));
+        } else {
+            comm_->recv(grad_output.data(), hs, my_stage + 1);
+        }
+
+        backward_fn(grad_output.data(), grad_input.data(), hs);
+
+        if (!is_first_stage()) {
+            comm_->send(grad_input.data(), hs, my_stage - 1);
+        }
+    };
+
+    // Iteration i: forward micro-batch i (while they last), then backward
+    // micro-batch i - warmup (once enough forwards have been issued).
+    for (int i = 0; i < n_mb + warmup; ++i) {
+        if (i < n_mb) { do_forward(i); }
+        if (i >= warmup) { do_backward(i - warmup); }
     }
 }
 

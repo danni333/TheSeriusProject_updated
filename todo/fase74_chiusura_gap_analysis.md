@@ -109,16 +109,35 @@ E2E stdio+HTTP, `test_mcp_server` 11/11).
   ([n_mb * hidden_size]): l'ultimo stage usa dL/d(out) reale invece del
   placeholder 1.0. Test `LossGradientPropagatesToFirstStage` verifica la
   propagazione mb-reverse attraverso 2 stage.
-- RestaOOT: scheduling 1F1B (oggi GPipe: tutto il forward, poi tutto il
-  backward) e integrazione con micro-batch su dati reali.
+- `PipelineExecutor::execute_1f1b()` implementa lo scheduling 1F1B
+  (Megatron-LM): warmup = `num_stages-1-stage` forward, poi alternanza
+  1F/1B; `execute()` resta la variante GPipe. Test: `OneF1BPropagatesLossGradient`,
+  `OneF1BThreeStages`.
+- RestaOOT: integrazione con micro-batch su dati reali.
 
 ### D3. Graph compiler trace reale ✅ FATTO (parziale)
 - `GraphCompiler::trace_graph(Node*)`: walk topologico del grafo autograd
   reale (usa `core::autograd::topological_sort`), un GraphOp per nodo
   calcolato (type = node->name, input/output shape reali).
-- `trace()` dummy resta per compatibilità test; `ExecutionPlan::execute`
-  resta copia inputs→outputs (kernel fusion reale non implementata).
-- Test: `TraceGraphFromRealAutogradGraph`, `TraceGraphNullIsEmpty`.
+- `ExecutionPlan::execute` ora ri-esegue davvero il grafo: `GraphOp::executor`
+  copiado da `Node::forward_fn` (replay zero-copy via `detail::replay_forward`,
+  view host per operand float32/contiguous); `in_replay()` evita le catture
+  Tensor di backward/forward durante il replay. `trace()` dummy resta per
+  compatibilità test (i suoi piani non sono eseguibili).
+- Optimization passes implementati: `fuse_layernorm_linear` (fusione
+  norm→matmul con executor composto dai due executor originali),
+  `eliminate_redundant_copies` (match sul nome reale `contiguous(...)` +
+  rewiring degli slot consumatori), `reorder_for_locality` (list-scheduling
+  greedy topologico), `preallocate_buffers` (liveness → `workspace_size()` =
+  picco tensor vivi invece della somma conservativa). Fix leak workspace:
+  `~ExecutionPlan` libera via `hal::IBackend::free`, `compile()` alloca col
+  CPU backend alla dimensione peak (non più `::operator new` di `total_size`).
+  `fuse_elementwise_chains` fonde tutte le catene; `is_executable()` +
+  errore esplicito per piani da `trace()` sintetico.
+- Test: `TraceGraphFromRealAutogradGraph`, `TraceGraphNullIsEmpty`,
+  `ExecuteReplaysTracedGraph`, `ExecuteBranchingGraph`, `IsExecutable`,
+  `FuseLayernormLinear`, `PreallocateBuffersUsesLivenessPeak`,
+  `EliminateCopiesPreservesExecution`, `ReorderForLocalityPreservesExecution`.
 
 ### D4. CPU backend stream asincrono / BLAS stream params — ✅ FATTO
 - `CpuBackend::create_stream()` ora restituisce un `CpuStream` reale: worker

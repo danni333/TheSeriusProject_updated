@@ -7,6 +7,13 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 add_compile_definitions(SERIUS_VERSION="${PROJECT_VERSION}")
 
+# cpp-httplib defaults its connection thread pool to max(8, cores-1). Under
+# concurrent load every in-flight generation occupies a pool slot, so a
+# handful of slow requests can starve cheap endpoints like /health. 64 slots
+# keeps monitoring responsive; generation itself is serialized by
+# inference_mutex_ anyway, so extra slots only wait on I/O/mutex.
+add_compile_definitions(CPPHTTPLIB_THREAD_POOL_COUNT=64)
+
 # Force MSVC to use Dynamic (MD) runtime to match dependencies like spdlog/gtest
 if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")

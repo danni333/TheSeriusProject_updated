@@ -40,15 +40,11 @@ class PPOTrainer
     std::vector<float> compute_logprobs(const Tensor &tokens) const;
 
     /// Generate a sequence of tokens with log probabilities
-    struct GenerationResult
-    {
-        Tensor tokens;
-        std::vector<float> log_probs;
-    };
+    using GenerationResult = RewardModel::GenerationResult;
     GenerationResult generate_with_logprobs(const Tensor &prompt_tokens, int max_new_tokens = 16) const;
 
-    const RewardModel &reward_model() const { return *impl_->reward_model; }
-    const Config &config() const { return impl_->ppo_config; }
+    const RewardModel &reward_model() const;
+    const Config &config() const;
 
    private:
     struct Impl;

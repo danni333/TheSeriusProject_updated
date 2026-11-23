@@ -1,6 +1,6 @@
 # Gap competitivi e stato del progetto
 
-**Aggiornamento:** 2026-10-18 (audit completo da sorgenti `src/`, `tests/`, `todo/task.md`, workflow CI e container).
+**Aggiornamento:** 2026-11-22 (sezioni 2, 4.1, 4.2, 5 riviste su codice corrente; vedi anche `AUDIT_STUBS_AND_GAPS_2026-11-22.md` per l'audit stub/placeholder completo).
 
 ---
 
@@ -23,12 +23,12 @@ Obiettivo dichiarato del repo resta **didattico / estensibile**; la roadmap `tod
 |------|-------------------|-------------------------|
 | **Serving ad alto throughput** | vLLM, TGI | Continuous batching end-to-end, scheduling richieste, SLO/latency come prodotto |
 | **KV cache “data center”** | PagedAttention + gestione blocchi a runtime | Esiste `PagedKVCache` / `BlockManager` nel transformer; integrazione completa con stack HTTP e molte richieste concorrenti non è paragonabile a vLLM |
-| **Formati pesi** | llama.cpp (GGUF completo) | GGUF: lettura metadati e nomi tensor; **non** caricamento tensor end-to-end come llama.cpp. Safetensors: percorso LLaMA HF (`hf_llama_loader`) più maturo |
-| **API compatibile OpenAI** | LangChain, client generici | Solo parte delle rotte; chat è ancora **stub** (nessun modello agganciato nel handler). Manca parità con `todo/fase48_api_openai.md` (completions, embeddings, `GET /v1/models/{id}`, SSE streaming, metriche Prometheus) |
-| **Quantizzazione “production”** | TensorRT-LLM, GGML quants | INT4/dequant; `fp8.cpp` in tree; tracker segnala refinement FP8/BF16; copertura formati/industry minor di stack dedicati |
+| **Formati pesi** | llama.cpp (GGUF completo) | GGUF: metadati, tokenizer, **caricamento tensor end-to-end** con dequant packed (Q4_0/Q4_1/Q8_0/Q4_K/Q5_K/Q6_K/Q5_0). dtype non supportati (Q2_K/Q3_K/Q8_K/IQ/TQ) falliscono esplicitamente per tensori critici. Safetensors: percorso LLaMA HF (`hf_llama_loader`) maturo |
+| **API compatibile OpenAI** | LangChain, client generici | `/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/models` (+ load/unload) attivi con inferenza reale e SSE. Manca ancora parità completa con `todo/fase48_api_openai.md` (GET /v1/models/{id}, metriche Prometheus) |
+| **Quantizzazione “production”** | TensorRT-LLM, GGML quants | INT4/dequant + kernel packed GGUF (Q4_0/Q4_1/Q8_0/Q4_K/Q5_K/Q6_K/Q5_0); `fp8.cpp` in tree; manca coverage Q2_K/Q3_K/IQ/TQ e formati industry |
 | **Distribuito** | DeepSpeed, FSDP, NCCL-first | Moduli `distributed/*` (local, data parallel, pipeline, tensor parallel); **NCCL/MPI** opzionali via CMake. Fase 8 in roadmap ancora ambiziosa rispetto allo stato corrente |
 | **MLOps / osservabilità** | Prometheus, tracing, CI | Metriche server in JSON semplice, non formato Prometheus. **Nessun workflow GitHub Actions** nella root del repo (solo nelle dipendenze in `build_*`) |
-| **Feature modello avanzate** | MoE, speculative, lunghi contesti | Molte fasi `todo/` ancora `[ ]`: MoE, speculative decoding, long context strutturato, LoRA, multimodale, RAG/tooling lato engine |
+| **Feature modello avanzate** | MoE, speculative, lunghi contesti | Molte fasi `todo/` segnate `[x]` ma con aree a scala didattica (vedi audit stub); MoE, speculative decoding, long context (paged/sliding/prefix cache), LoRA, RAG/tooling agentico (ReAct+ToolRegistry+LlamaAgentModel, 2026-11) collegati al modello reale |
 
 ---
 
@@ -48,19 +48,20 @@ Obiettivo dichiarato del repo resta **didattico / estensibile**; la roadmap `tod
 | Rotta | Stato |
 |-------|--------|
 | `GET /health` | Attivo — JSON `{"status":"ok"}` |
-| `GET /metrics` | Attivo — **JSON** (`uptime_seconds`, `request_count`), non formato Prometheus testo (diverso da `todo/fase48_api_openai.md`) |
-| `POST /v1/chat/completions` | Attivo — **risposta fissa stub** (“Load a model…”), nessun collegamento al forward del modello |
-| `GET /v1/models` | Attivo — lista stub con `default` |
-| `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models/{id}` | **Non presenti** (solo in roadmap Fase 48) |
-| Streaming SSE | **Non implementato** nel handler corrente |
-| Model hub | Route hub **disabilitate** (`#if 0` / commento “disabled to fix build”) |
+| `GET /metrics` | Attivo — **JSON** (`uptime_seconds`, `request_count`, …), non formato Prometheus testo |
+| `POST /v1/chat/completions` | Attivo — inferenza reale (prefill KV + decode + sampler), SSE streaming, KV cache persistente multi-turn, multi-modello a runtime |
+| `POST /v1/completions` | Attivo — inferenza reale |
+| `POST /v1/embeddings` | Attivo |
+| `GET /v1/models`, `POST /v1/models/load`, `DELETE /v1/models/{id}` | Attivi — registry multi-modello, load `hf://` e GGUF |
+| `GET /v1/models/{id}` | Non presente |
+| Streaming SSE | Implementato sui completions/chat |
 
 ### 4.2 I/O modelli (`src/io/`)
 
 | Componente | Stato |
 |------------|--------|
 | `config_loader` | JSON → ModelConfig (documentato in architettura) |
-| `gguf_loader` | Metadati header + `gguf_tensor_names`; **nessun load tensor weights nel modello** |
+| `gguf_loader` | Metadati, tokenizer, **caricamento pesi tensor end-to-end**: dtype supportati F32/F16/BF16/Q4_0/Q4_1/Q8_0/Q4_K/Q5_K/Q6_K/Q5_0 con dequant packed per il decode; dtype non supportati (Q2_K/Q3_K/Q8_K/IQ/TQ) falliscono esplicitamente per tensori critici (attention/FFN), skippati con warning per non-critici |
 | `safetensors_loader` + `hf_llama_loader` | Caricamento pesi LLaMA da `.safetensors` (anche sharded) |
 | `simple_weights_loader` | Presente (test dedicato) |
 
@@ -105,11 +106,14 @@ Stato aggiornato del master tracker:
 
 ## 5. Azioni consigliate (priorità operative)
 
-1. **Collegare `/v1/chat/completions` all'inferenza reale del modello** (agganciare `llama_forward_inference` o `ContinuousBatcher` con caricamento safetensors e streaming SSE token-by-token anziché lo stub corrente).
-2. **Correggere l'inizializzazione statica in `src/mcp/guard.cpp`** per garantire che `MCPGuard::risk_level()` funzioni in isolamento senza richiedere preventiva istanziazione (sbloccando `Guard.RiskLevelDefaults`).
-3. **Mappare GGUF sui modelli** (`LLaMAModel`/`QwenModel`) per abilitare l'esecuzione diretta da file `.gguf` oltre ai `.safetensors`.
-4. **Integrare la quantizzazione INT4 nel forward del Transformer** (collegare i kernel `dequant_matmul` al loop di inferenza, chiudendo il gap T1.05).
-5. **Creare un adapter tra `agent::Model` / `reasoning::Model` e i modelli reali** (per consentire a ReAct, MCTS e Multi-Agent di eseguire prompt reali invece dei mock).
+Stato al 2026-11-22 (dettaglio completo in `AUDIT_STUBS_AND_GAPS_2026-11-22.md`):
+
+1. ~~**Collegare `/v1/chat/completions` all'inferenza reale**~~ — **FATTO**: inference reale + SSE + KV cache multi-turn.
+2. ~~**Fix `src/mcp/guard.cpp`**~~ — **FATTO**: `tool_risk_` inizializzato a dichiarazione.
+3. ~~**Mappare GGUF sui modelli**~~ — **FATTO**: `load_llama_weights_from_gguf_file` con pesi packed quantizzati.
+4. ~~**Quantizzazione nel forward**~~ — **FATTO**: fast path packed-quant GEMV nel decode (`llama_inference.cpp`).
+5. ~~**Adapter agent ↔ modelli reali**~~ — **FATTO**: `agent/llama_model_adapter` + `ToolRegistry` in `ReActEngine`.
+6. **Residui aperti**: Vulkan/Metal backend non compilano se attivati; `graph_compiler`/`autoopt`/`rag::embeddings` ancora placeholder; `bench/latency` ora usa inferenza reale; `test_cuda`/`test_distributed_llama`/`test_pipeline_llama` registrati in ctest; manca benchmark vs llama.cpp.
 
 ---
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -151,7 +152,13 @@ bool export_gguf_to_hf_dir(const std::string &gguf_path, const std::string &out_
         return false;
     }
 
-    std::unordered_map<std::string, core::Tensor> tensors = load_all_tensors(gguf_path, nullptr);
+    std::unordered_map<std::string, core::Tensor> tensors;
+    try {
+        tensors = load_all_tensors(gguf_path, nullptr);
+    } catch (const std::exception &e) {
+        std::cerr << "[convert] GGUF load failed: " << e.what() << "\n";
+        return false;
+    }
     if (tensors.empty()) {
         std::cerr << "[convert] no tensors loaded from " << gguf_path << "\n";
         return false;

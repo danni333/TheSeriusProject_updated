@@ -90,5 +90,10 @@ GGUFTokenizerData load_gguf_tokenizer(const std::string &path);
 /// QuantWeight on mismatch.
 quant::QuantWeight quant_weight_q4k_to_q41(const quant::QuantWeight &w);
 
+/// Convert a native-Q8_0 QuantWeight into an equivalent Q4_1 QuantWeight —
+/// used when row-fusion requires a uniform quant type (e.g. Q8_0 v fused
+/// with Q4_1 q/k). Returns an invalid QuantWeight on mismatch.
+quant::QuantWeight quant_weight_q80_to_q41(const quant::QuantWeight &w);
+
 }  // namespace io
 }  // namespace serius

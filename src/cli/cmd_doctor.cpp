@@ -140,7 +140,7 @@ int cmd_doctor(int argc, char **argv)
         print_warn("RAM", "could not query system memory");
     }
 
-    // GPU via HAL backend registry (CUDA > Metal > Vulkan)
+    // GPU via HAL backend registry (CUDA only; Vulkan/Metal not implemented)
     hal::IBackend *gpu = hal::get_gpu_backend();
     if (gpu && gpu->is_available()) {
         std::string detail = device_type_name(gpu->get_type()) + " backend available";
@@ -160,7 +160,7 @@ int cmd_doctor(int argc, char **argv)
 #endif
         print_ok("GPU", detail);
     } else {
-        print_warn("GPU", "no CUDA/Metal/Vulkan backend available — CPU inference only");
+        print_warn("GPU", "no CUDA backend available — CPU inference only");
     }
 
     // Build flags

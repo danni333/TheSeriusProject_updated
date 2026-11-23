@@ -184,3 +184,51 @@ TEST(RAGRetriever, Clear)
     retriever.clear();
     EXPECT_EQ(retriever.get_vector_db().size(), 0);
 }
+
+TEST(RAGRetriever, CustomEmbedderIsUsed)
+{
+    RAGRetriever::Config cfg;
+    cfg.embedding_dim = 8;
+    cfg.similarity_threshold = 0.0f;
+    RAGRetriever retriever(cfg);
+    EXPECT_FALSE(retriever.has_custom_embedder());
+
+    int calls = 0;
+    retriever.set_embedder([&calls](const std::string &text) {
+        ++calls;
+        // Deterministic "semantic" embedding: bag-of-chars hashed into 8 dims.
+        std::vector<float> v(8, 0.0f);
+        for (char c : text) { v[static_cast<size_t>(c) % 8] += 1.0f; }
+        return v;
+    });
+    EXPECT_TRUE(retriever.has_custom_embedder());
+
+    retriever.add_document("doc1", "hello world");
+    retriever.add_document("doc2", "goodbye moon");
+    // add_document + retrieve => at least 3 embedder calls (2 docs + query)
+    EXPECT_GE(calls, 2);
+
+    std::string prompt = retriever.retrieve("hello there");
+    EXPECT_TRUE(prompt.find("[DOMANDA]") != std::string::npos);
+    EXPECT_GE(calls, 3);
+}
+
+TEST(RAGRetriever, MismatchedEmbedderFallsBackToHash)
+{
+    RAGRetriever::Config cfg;
+    cfg.embedding_dim = 16;
+    RAGRetriever retriever(cfg);
+
+    // Embedder returns the wrong dimension: retriever must not corrupt the
+    // vector DB — it falls back to the hash embedder of matching size.
+    retriever.set_embedder([](const std::string &) {
+        return std::vector<float>(7, 1.0f);
+    });
+
+    retriever.add_document("doc1", "test document");
+    EXPECT_EQ(retriever.get_vector_db().size(), 1);
+
+    // Retrieval must not crash and must produce a prompt.
+    std::string prompt = retriever.retrieve("test query");
+    EXPECT_TRUE(prompt.find("[DOMANDA]") != std::string::npos);
+}

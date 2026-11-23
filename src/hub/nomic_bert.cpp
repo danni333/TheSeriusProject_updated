@@ -376,4 +376,9 @@ std::vector<float> NomicBertEmbedder::embed(const std::string &text) const
     return emb;
 }
 
+common::TextEmbedFn NomicBertEmbedder::embed_fn() const
+{
+    return [this](const std::string &text) { return embed(text); };
+}
+
 }  // namespace serius::hub

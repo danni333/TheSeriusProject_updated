@@ -197,6 +197,49 @@ TEST(GGUFWritTest, EmbedsTokenizerMetadata)
     EXPECT_EQ(tok.token_types[4], 3);
 }
 
+TEST(GGUFWritTest, TruncatedGgufFailsLoadOnCriticalTensor)
+{
+    std::mt19937 rng(5);
+    const auto dir = std::filesystem::temp_directory_path() / "serius_ggufw_test5";
+    const auto out = dir.parent_path() / "serius_ggufw_test5.gguf";
+    const auto trunc = dir.parent_path() / "serius_ggufw_test5_trunc.gguf";
+    std::filesystem::remove_all(dir);
+    std::filesystem::remove(out);
+    std::filesystem::remove(trunc);
+
+    TinyCfg c;
+    write_hf_dir(dir, c, "qwen2", false, rng);
+    ASSERT_TRUE(io::write_hf_dir_to_gguf(dir.string(), out.string()));
+
+    // Keep header + KV + tensor infos, drop ~70% of the payload section.
+    // Tensors whose declared payload no longer fits must not load silently.
+    const auto fsize = std::filesystem::file_size(out);
+    {
+        std::ifstream in(out, std::ios::binary);
+        std::ofstream o(trunc, std::ios::binary);
+        std::vector<char> buf(static_cast<size_t>(fsize * 30 / 100));
+        in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+        o.write(buf.data(), static_cast<std::streamsize>(buf.size()));
+    }
+
+    // load_all_tensors must throw on the first critical tensor out of bounds.
+    EXPECT_THROW(io::load_all_tensors(trunc.string(), nullptr), std::runtime_error);
+
+    // The model loader must report failure instead of returning a
+    // zero/partial-weight model.
+    model::LLamaConfig cfg;
+    cfg.vocab_size = c.vocab;
+    cfg.hidden_size = c.hidden;
+    cfg.num_attention_heads = c.heads;
+    cfg.num_key_value_heads = c.kv_heads;
+    cfg.num_hidden_layers = c.layers;
+    cfg.intermediate_size = c.inter;
+    model::LLaMAModel model(cfg);
+    EXPECT_FALSE(io::load_llama_weights_from_gguf_file(trunc.string(), &model));
+
+    std::filesystem::remove(trunc);
+}
+
 TEST(GGUFWritTest, LlamaArchPermutesQkRows)
 {
     std::mt19937 rng(11);

@@ -274,18 +274,8 @@ IBackend *get_backend(DeviceType type)
         return get_cuda_backend();
     }
 #endif
-#ifdef SERIUS_USE_VULKAN
-    extern IBackend *get_vulkan_backend();
-    if (type == DeviceType::VULKAN) {
-        return get_vulkan_backend();
-    }
-#endif
-#ifdef SERIUS_USE_METAL
-    extern IBackend *get_metal_backend();
-    if (type == DeviceType::METAL) {
-        return get_metal_backend();
-    }
-#endif
+    // Vulkan/Metal backends were removed: no implementations exist. Only
+    // CPU and CUDA (SERIUS_USE_CUDA) are supported GPU backends.
     return nullptr;
 }
 
@@ -294,14 +284,6 @@ IBackend *get_gpu_backend()
 #ifdef SERIUS_USE_CUDA
     IBackend *cuda = get_backend(DeviceType::CUDA);
     if (cuda && cuda->is_available()) return cuda;
-#endif
-#ifdef SERIUS_USE_METAL
-    IBackend *metal = get_backend(DeviceType::METAL);
-    if (metal && metal->is_available()) return metal;
-#endif
-#ifdef SERIUS_USE_VULKAN
-    IBackend *vulkan = get_backend(DeviceType::VULKAN);
-    if (vulkan && vulkan->is_available()) return vulkan;
 #endif
     return nullptr;
 }

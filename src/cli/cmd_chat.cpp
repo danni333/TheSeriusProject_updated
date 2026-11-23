@@ -1,6 +1,12 @@
 #include "cli/cmd_chat.h"
 #include "cli/args_parser.h"
+#include "cli/llama_loader.h"
+#ifdef SERIUS_EXPERIMENTAL_GROUNDING
+#include "grounding/confidence.h"
+#endif
 #include "../common/defaults.h"
+#include "../hub/search_engine.h"
+#include "../safety/red_team.h"
 #include "hal/device.h"
 #include "infer/sampler.h"
 #include "io/config_loader.h"
@@ -25,16 +31,43 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
 namespace serius {
 namespace cli {
+
+namespace {
+
+/// Log-probability of token `id` under softmax(logits[row0]) — numerically
+/// stable. `logits` may be {vocab} or {rows, vocab}; row0 selects the row.
+float token_logprob(const core::Tensor &logits, size_t row0, int id)
+{
+    const size_t vocab = logits.shape().back();
+    if (id < 0 || static_cast<size_t>(id) >= vocab || logits.size() < vocab) {
+        return 0.0f;
+    }
+    const float *row = logits.data() + row0 * vocab;
+    float mx = row[0];
+    for (size_t v = 1; v < vocab; ++v) {
+        if (row[v] > mx) { mx = row[v]; }
+    }
+    double sum_exp = 0.0;
+    for (size_t v = 0; v < vocab; ++v) {
+        sum_exp += std::exp(static_cast<double>(row[v]) - static_cast<double>(mx));
+    }
+    return static_cast<float>(static_cast<double>(row[static_cast<size_t>(id)]) -
+                              (std::log(sum_exp) + static_cast<double>(mx)));
+}
+
+}  // namespace
 
 int cmd_chat(int argc, char **argv)
 {
@@ -58,6 +91,10 @@ int cmd_chat(int argc, char **argv)
     parser.add_flag({"system", "s", "System prompt", true, "You are a helpful AI assistant."});
     parser.add_flag({"raw", "", "Do not format prompt with ChatML template", false, ""});
     parser.add_flag({"gpu", "", "GPU backend (auto/cpu/cuda)", true, "auto"});
+    parser.add_flag({"gpu-layers", "", "Partial GPU offload: layers on GPU, rest CPU (-1 = auto)", true, "-1"});
+    parser.add_flag({"embed-model", "", "Embedding model (GGUF/safetensors dir) enabling semantic scorers (--toxicity)", true, ""});
+    parser.add_flag({"toxicity", "", "Score each response for toxicity (0-1); warns above --toxicity-threshold", false, ""});
+    parser.add_flag({"toxicity-threshold", "", "Toxicity warning threshold", true, "0.7"});
 
     if (!parser.parse(argc, argv)) {
         std::cerr << "Error: " << parser.error() << "\n";
@@ -89,183 +126,47 @@ int cmd_chat(int argc, char **argv)
         seed = rd();
     }
 
-    // hf://repo_id → resolve the best GGUF on HuggingFace Hub, download it to
-    // models/<repo>/ if missing, then load the local file like any other path.
-    if (model_path.rfind("hf://", 0) == 0) {
-        const std::string repo_id = model_path.substr(5);
-        const std::string quant_want = parser.get("quant");
-
-        hub::ModelDownloader dl;
-        std::cout << "[Serius] Resolving hf://" << repo_id << " ...\n";
-        std::string chosen, local;
-        if (!dl.resolve_hf_gguf(repo_id, quant_want, local, chosen)) {
-            if (!quant_want.empty()) {
-                std::cerr << "[Serius] No GGUF matching --quant=" << quant_want
-                          << " in hf://" << repo_id << ".\n";
-            } else {
-                std::cerr << "[Serius] No .gguf files in hf://" << repo_id
-                          << " — use a '-GGUF' repo, or 'serius import' for safetensors.\n";
-            }
-            return 1;
-        }
-
-        model_path = local;
-        std::cout << "[Serius] Model: " << model_path << "\n";
+    // Qwen2-family models (GGUF arch "qwen2", HF config.json) run through
+    // the LLaMA path: architecture specifics come from config/metadata.
+    if (model_type == "qwen") {
+        model_type = "llama";
+    }
+    if (model_type != "llama") {
+        std::cerr << "Model type '" << model_type << "' not yet fully wired in CLI chat.\n";
+        return 1;
     }
 
-    // Load Tokenizer
-    BPETokenizer tokenizer;
-    std::string model_dir = model_path;
-    std::string config_path = model_path;
-    if (std::filesystem::is_directory(model_path)) {
-        model_dir = model_path;
-        config_path = model_path + "/config.json";
-    } else {
-        size_t pos = model_path.find_last_of("/\\");
-        model_dir = (pos != std::string::npos) ? model_path.substr(0, pos) : ".";
+    // Shared loader: hf:// resolution, tokenizer, config, weights, GPU offload.
+    auto loaded = load_llama_cli_model(model_path, gpu_mode, parser.get("quant"),
+                                       parser.get_int("gpu-layers", -1));
+    if (!loaded) {
+        return 1;
     }
+    model::LLaMAModel &model = *loaded->model;
+    BPETokenizer &tokenizer = loaded->tokenizer;
 
-    std::string vocab_path = model_dir + "/tokenizer.json";
-    if (!std::filesystem::exists(vocab_path)) {
-        vocab_path = model_dir + "/vocab.json";
-    }
-    if (std::filesystem::exists(vocab_path)) {
-        tokenizer.load(vocab_path);
-        std::cout << "[Serius] Loaded vocab (" << tokenizer.vocab_size() << " tokens) from " << vocab_path << "\n";
-    }
-
-    // If no vocab was loaded from JSON, look for GGUF tokenizer in model_path or model_dir
-    if (tokenizer.vocab_size() <= 260) {
-        std::string candidate_gguf;
-        if (std::filesystem::is_regular_file(model_path) &&
-            model_path.size() >= 5 && model_path.compare(model_path.size() - 5, 5, ".gguf") == 0) {
-            candidate_gguf = model_path;
-        } else if (std::filesystem::is_directory(model_dir)) {
-            for (const auto &entry : std::filesystem::directory_iterator(model_dir)) {
-                std::string p = entry.path().string();
-                if (p.size() >= 5 && p.compare(p.size() - 5, 5, ".gguf") == 0) {
-                    candidate_gguf = p;
-                    break;
-                }
-            }
-        }
-
-        if (!candidate_gguf.empty()) {
-            auto tok_data = io::load_gguf_tokenizer(candidate_gguf);
-            if (tok_data.valid) {
-                tokenizer.load_from_gguf(tok_data);
-                std::cout << "[Serius] Loaded vocab (" << tokenizer.vocab_size() << " tokens) from GGUF " << candidate_gguf << "\n";
-            }
-        }
-    }
+    bool is_chatml = (tokenizer.get_id("<|im_start|>") != BPETokenizer::UNK_ID);
 
     infer::Sampler sampler(temperature, top_k, top_p, seed);
 
-    if (model_type == "llama") {
-        model::LLamaConfig config;
-        // config_path may point at a .gguf file itself — only treat it as a
-        // JSON config when it actually ends in .json.
-        bool has_config_json = config_path.size() >= 5 &&
-            config_path.compare(config_path.size() - 5, 5, ".json") == 0 &&
-            std::filesystem::exists(config_path);
-        if (has_config_json) {
-            config = io::load_llama_config(config_path);
+    // Optional post-generation toxicity check. Without --embed-model the
+    // classifier uses its lexical keyword path; with a real embedding model
+    // it also scores prototype similarity semantically.
+    const bool toxicity_enabled = parser.has("toxicity");
+    const float toxicity_threshold = parser.get_float("toxicity-threshold", 0.7f);
+    safety::ToxicityClassifier toxicity_classifier;
+    std::unique_ptr<hub::EmbeddingManager> embed_mgr;
+    const std::string embed_model = parser.get("embed-model");
+    if (!embed_model.empty()) {
+        embed_mgr = std::make_unique<hub::EmbeddingManager>();
+        embed_mgr->load_model(embed_model);
+        if (embed_mgr->is_model_loaded()) {
+            toxicity_classifier.set_embedder(embed_mgr->document_embed_fn());
+            std::cerr << "[chat] embed model loaded: " << embed_model << "\n";
+        } else {
+            std::cerr << "[chat] embed model unavailable, lexical scorers only\n";
         }
-
-        // If config.json is missing (common with GGUF-only distributions),
-        // extract model dimensions directly from the GGUF metadata.
-        if (!has_config_json) {
-            std::string candidate_gguf;
-            if (std::filesystem::is_regular_file(model_path) &&
-                model_path.size() >= 5 && model_path.compare(model_path.size() - 5, 5, ".gguf") == 0) {
-                candidate_gguf = model_path;
-            } else if (std::filesystem::is_directory(model_dir)) {
-                for (const auto &entry : std::filesystem::directory_iterator(model_dir)) {
-                    std::string p = entry.path().string();
-                    if (p.size() >= 5 && p.compare(p.size() - 5, 5, ".gguf") == 0) {
-                        candidate_gguf = p;
-                        break;
-                    }
-                }
-            }
-
-            if (!candidate_gguf.empty()) {
-                auto mc = io::gguf_to_model_config(candidate_gguf);
-                if (mc.vocab_size > 0) {
-                    config.vocab_size        = mc.vocab_size;
-                    config.hidden_size       = mc.d_model;
-                    config.num_hidden_layers = mc.n_layers;
-                    config.num_attention_heads = mc.n_heads;
-                    config.num_key_value_heads = mc.n_kv_heads;
-                    config.intermediate_size   = mc.d_ff;
-                    config.max_position_embeddings = mc.max_seq_len;
-                    config.rope_theta          = mc.rope_theta;
-                    config.rms_norm_eps        = mc.rms_norm_eps;
-                    // GGUF has no reliable vocab_size key for all archs; the
-                    // tokenizer (loaded from the same file) knows the truth.
-                    if (tokenizer.vocab_size() > 0) {
-                        config.vocab_size = tokenizer.vocab_size();
-                    }
-                    std::cout << "[Serius] Loaded model config from GGUF metadata (" << candidate_gguf << ")\n";
-                }
-            }
-        }
-
-        if (config.vocab_size == 0) {
-            config.vocab_size = tokenizer.vocab_size() > 0 ? tokenizer.vocab_size() : 32000;
-        }
-
-        std::cout << "[Serius] Initializing LLaMA model (hidden=" << config.hidden_size
-                  << ", layers=" << config.num_hidden_layers
-                  << ", heads=" << config.num_attention_heads
-                  << ", kv_heads=" << config.num_key_value_heads << ")...\n";
-
-        model::LLaMAModel model(config);
-
-        if (std::filesystem::is_regular_file(model_path) &&
-            model_path.size() >= 5 && model_path.compare(model_path.size() - 5, 5, ".gguf") == 0) {
-            if (io::load_llama_weights_from_gguf_file(model_path, &model)) {
-                std::cout << "[Serius] Successfully loaded weights from GGUF file " << model_path << "\n";
-            } else {
-                std::cout << "[Serius] Warning: Could not load weights from " << model_path << " (using random init)\n";
-            }
-        } else if (std::filesystem::is_directory(model_dir)) {
-            if (io::load_llama_weights_from_dir(model_dir, &model)) {
-                std::cout << "[Serius] Successfully loaded weights from " << model_dir << "\n";
-            } else {
-                std::cout << "[Serius] Warning: Could not load weights from " << model_dir << " (using random init)\n";
-            }
-        }
-
-        const auto gpu_mode_enum = (gpu_mode == "cpu")   ? infer::LlamaGpuMode::kCpu
-                                 : (gpu_mode == "cuda") ? infer::LlamaGpuMode::kCuda
-                                                        : infer::LlamaGpuMode::kAuto;
-        const auto gpu_dec = infer::resolve_llama_gpu(model, gpu_mode_enum);
-        if (gpu_dec.use_gpu) {
-            if (gpu_dec.fit == infer::LlamaGpuFit::kInsufficientVram) {
-                std::cerr << "[Serius] Warning: GPU forced but estimate needs ~"
-                          << gpu_dec.need_bytes / 1073741824.0 << " GiB vs "
-                          << gpu_dec.free_bytes / 1073741824.0 << " GiB free\n";
-            }
-            try {
-                if (infer::offload_llama_model_to_gpu(model)) {
-                    std::cout << "[Serius] Model ~" << gpu_dec.est_params / 1e9
-                              << "B params moved to GPU (~" << gpu_dec.need_bytes / 1073741824.0
-                              << " GiB, " << gpu_dec.reason << ")\n";
-                }
-            } catch (const std::exception &e) {
-                std::cerr << "[Serius] GPU offload failed: " << e.what() << " — CPU fallback\n";
-            }
-        } else if (gpu_dec.fit == infer::LlamaGpuFit::kInsufficientVram) {
-            std::cerr << "[Serius] Model ~" << gpu_dec.est_params / 1e9
-                      << "B params needs ~" << gpu_dec.need_bytes / 1073741824.0
-                      << " GiB VRAM but only " << gpu_dec.free_bytes / 1073741824.0
-                      << " GiB free — staying on CPU (" << gpu_dec.reason << ")\n";
-        } else if (gpu_mode == "cpu") {
-            std::cout << "[Serius] CPU inference (--gpu cpu)\n";
-        }
-
-        bool is_chatml = (tokenizer.get_id("<|im_start|>") != BPETokenizer::UNK_ID);
+    }
 
         // Reuse one KVCache across turns: the GPU arena + per-layer views
         // persist, so the CUDA decode graph (bound to those raw pointers)
@@ -369,6 +270,8 @@ int cmd_chat(int argc, char **argv)
             };
 
             int next_id = 0;
+            float pending_lp = 0.0f;
+            bool pending_valid = false;
             {
                 size_t vocab_size = logits.shape().back();
                 size_t last_row = logits.shape()[0] - 1;
@@ -376,7 +279,14 @@ int cmd_chat(int argc, char **argv)
                 const float *src = logits.data() + (last_row * vocab_size);
                 std::copy(src, src + vocab_size, last_logits.data());
                 next_id = sampler.sample(last_logits, recent_ids, repeat_penalty);
+                pending_lp = token_logprob(last_logits, 0, next_id);
+                pending_valid = true;
             }
+
+            // Per-token log-probs of emitted tokens → grounding confidence.
+            std::vector<float> gen_logprobs;
+            // Full decoded response → post-generation safety scoring.
+            std::string response_text;
 
             size_t tokens_generated = 0;
             const char *_prof_env = std::getenv("SERIUS_PROF");
@@ -400,8 +310,13 @@ int cmd_chat(int argc, char **argv)
 
                 const double to0 = chat_prof ? now_s() : 0.0;
                 std::cout << tok_str << std::flush;
+                response_text += tok_str;
                 if (chat_prof) { t_out += now_s() - to0; }
                 tokens_generated++;
+                if (pending_valid) {
+                    gen_logprobs.push_back(pending_lp);
+                    pending_valid = false;
+                }
 
                 size_t pos = ids.size();
                 ids.push_back(static_cast<TokenId>(next_id));
@@ -415,6 +330,8 @@ int cmd_chat(int argc, char **argv)
                 if (!gpu_sample(next_logits, 0, next_id)) {
                     next_id = sampler.sample(next_logits, recent_ids, repeat_penalty);
                 }
+                pending_lp = token_logprob(next_logits, 0, next_id);
+                pending_valid = true;
                 if (chat_prof) { t_smp += now_s() - ts0; }
             }
             if (chat_prof && tokens_generated > 0) {
@@ -428,6 +345,20 @@ int cmd_chat(int argc, char **argv)
             double elapsed = std::chrono::duration<double>(gen_end - gen_start).count();
             std::cout << "\n[" << tokens_generated << " tokens generated in " << elapsed
                       << "s (" << (tokens_generated / (elapsed > 0 ? elapsed : 1.0)) << " tok/s)]\n";
+#ifdef SERIUS_EXPERIMENTAL_GROUNDING
+            if (!gen_logprobs.empty()) {
+                const float conf = grounding::confidence_from_logprobs(gen_logprobs);
+                std::cout << "[mean token confidence: " << conf << "]\n";
+            }
+#endif
+            if (toxicity_enabled && !response_text.empty()) {
+                const float tox = toxicity_classifier.score(response_text);
+                std::cout << "[toxicity score: " << tox << "]";
+                if (tox >= toxicity_threshold) {
+                    std::cout << " WARNING: above threshold " << toxicity_threshold;
+                }
+                std::cout << "\n";
+            }
         };
 
         if (!single_prompt.empty()) {
@@ -449,10 +380,6 @@ int cmd_chat(int argc, char **argv)
             run_turn(line);
         }
         return 0;
-    }
-
-    std::cerr << "Model type '" << model_type << "' not yet fully wired in CLI chat.\n";
-    return 1;
 }
 
 }  // namespace cli

@@ -8,6 +8,9 @@
 #include "cli/cmd_bench.h"
 #include "cli/cmd_stress.h"
 #include "cli/cmd_mcp.h"
+#include "cli/cmd_eval.h"
+#include "cli/cmd_inspect.h"
+#include "cli/cmd_think.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -30,6 +33,15 @@ int main_cli(int argc, char **argv)
     cli.register_command({"convert", "Convert a GGUF model to a safetensors directory", cmd_convert});
     cli.register_command({"generate", "Generate text from a single prompt (non-interactive)", cmd_generate});
     cli.register_command({"bench", "Run performance benchmarks", cmd_bench});
+#ifdef SERIUS_EXPERIMENTAL_EVAL
+    cli.register_command({"eval", "Evaluate a model (perplexity)", cmd_eval});
+#endif
+#ifdef SERIUS_EXPERIMENTAL_INTERPRET
+    cli.register_command({"inspect", "Per-layer logit lens + attention inspection", cmd_inspect});
+#endif
+#ifdef SERIUS_EXPERIMENTAL_REASONING
+    cli.register_command({"think", "Chain-of-thought reasoning (hidden thinking buffer)", cmd_think});
+#endif
     cli.register_command({"stress", "Run stress tests on the server", cmd_stress});
     cli.register_command({"mcp-serve", "Serve MCP tools over stdio or HTTP", cmd_mcp_serve});
 

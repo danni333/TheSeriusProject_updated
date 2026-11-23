@@ -9,6 +9,7 @@
 #include <vector>
 // #include <sqlite3.h>
 
+#include "../common/text_embed.h"
 #include "../tensor/tensor.h"
 #include "../tokenizer/bpe.h"
 #include "nomic_bert.h"
@@ -124,6 +125,14 @@ class EmbeddingManager
 
     // Batch compute embeddings
     std::vector<std::vector<float>> compute_embeddings(const std::vector<std::string> &texts);
+
+    /// Embedder factories: return `common::TextEmbedFn` callables bound to
+    /// this manager, ready to plug into scorers that accept an embedder
+    /// (grounding::SupportScorer, safety::ToxicityClassifier,
+    /// reasoning::EmbeddingVerifier). The callables hold a pointer to `this`:
+    /// the EmbeddingManager must outlive them.
+    common::TextEmbedFn query_embed_fn();
+    common::TextEmbedFn document_embed_fn();
 
     // Model management
     bool load_model(const std::string &model_path);

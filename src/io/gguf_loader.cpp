@@ -10,6 +10,7 @@
 #include <numeric>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <unordered_map>
 
@@ -370,6 +371,31 @@ quant::QuantWeight quant_weight_q4k_to_q41(const quant::QuantWeight &w)
     return out;
 }
 
+quant::QuantWeight quant_weight_q80_to_q41(const quant::QuantWeight &w)
+{
+    quant::QuantWeight out;
+    if (w.type != quant::QuantType::Q8_0 || w.in == 0 || w.out == 0 ||
+        (w.in % 32) != 0) {
+        return out;
+    }
+    const size_t bpr = w.in / 32;
+    std::vector<float> f32(static_cast<size_t>(w.out) * w.in);
+    for (size_t r = 0; r < w.out; ++r) {
+        const uint8_t *row = w.bytes.data() + r * bpr * 34;
+        float *dst = f32.data() + r * w.in;
+        for (size_t b = 0; b < bpr; ++b) {
+            const uint8_t *blk = row + b * 34;
+            const float d = half_to_float(static_cast<uint16_t>(blk[0] | (blk[1] << 8)));
+            const int8_t *q = reinterpret_cast<const int8_t *>(blk + 2);
+            for (size_t j = 0; j < 32; ++j) {
+                dst[b * 32 + j] = static_cast<float>(q[j]) * d;
+            }
+        }
+    }
+    quantize_f32_to_q41(f32.data(), w.in, w.out, out);
+    return out;
+}
+
 namespace {
 
 uint64_t read_u64_le(std::ifstream &f)
@@ -674,7 +700,7 @@ std::optional<uint64_t> gguf_payload_bytes(GGMLType dtype, uint64_t numel)
 // Tensors that are critical for model functionality — loading must fail if
 // their quantization is unsupported. Embedding/lm_head can sometimes fall back
 // (tied weights), but attention/FFN weights are essential.
-bool is_critical_tensor(const std::string &name)
+static bool is_critical_tensor(const std::string &name)
 {
     // Critical: attention projections, FFN weights, output norm
     return name.find("attn_q.weight") != std::string::npos ||
@@ -850,6 +876,17 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
     const uint64_t file_size = static_cast<uint64_t>(static_cast<std::streamoff>(file_end));
     const uint64_t data_avail = file_size > data_base_u64 ? file_size - data_base_u64 : 0;
 
+    // Critical tensors (attention/FFN/norm weights) must never be skipped
+    // silently: a zero-weight model that "loads" is worse than a hard error.
+    // Throws on critical tensors; warns and returns otherwise.
+    auto skip_or_fail = [](const GGUFTensorInfo &info, const std::string &reason) {
+        if (is_critical_tensor(info.name)) {
+            throw std::runtime_error(
+                "[GGUF] critical tensor '" + info.name + "' " + reason);
+        }
+        std::fprintf(stderr, "[GGUF] tensor %s skipped: %s\n", info.name.c_str(), reason.c_str());
+    };
+
     for (const auto &info : tensor_infos) {
         // Checked product of dims — crafted shapes must not overflow.
         uint64_t numel64 = 1;
@@ -862,19 +899,23 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
             numel64 *= dim;
         }
         if (dims_bad || numel64 == 0 || numel64 > std::numeric_limits<size_t>::max()) {
+            skip_or_fail(info, "has invalid shape/dimensions");
             continue;
         }
 
         const auto payload = gguf_payload_bytes(info.dtype, numel64);
         if (payload.has_value()) {
             if (info.offset > data_avail || *payload > data_avail - info.offset) {
-                continue;  // declared payload doesn't fit in the file
+                skip_or_fail(info, "payload exceeds file bounds");
+                continue;
             }
         } else if (gguf_dtype_supported(info.dtype)) {
-            continue;  // known dtype but malformed shape/divisibility
+            skip_or_fail(info, "has unsupported shape for its dtype");
+            continue;
         } else {
-            std::fprintf(stderr, "[GGUF] unsupported dtype %u for tensor %s — skipped\n",
-                         static_cast<unsigned>(info.dtype), info.name.c_str());
+            skip_or_fail(info, "uses unsupported dtype " +
+                         std::to_string(static_cast<unsigned>(info.dtype)) +
+                         " (supported: F32, F16, BF16, Q4_0, Q4_1, Q8_0, Q5_0, Q4_K, Q5_K, Q6_K)");
             continue;
         }
 
@@ -936,7 +977,7 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
                 quant_out->emplace(info.name, std::move(qw));
             }
         } else if (info.dtype == GGMLType::Q4_K) {
-            if (numel % 256 != 0) { continue; }
+            if (numel % 256 != 0) { skip_or_fail(info, "size not divisible by 256"); continue; }
             const size_t sb_count = numel / 256;
             std::vector<uint8_t> packed(sb_count * 144);
             f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
@@ -956,7 +997,7 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
                 if (qw.valid()) { quant_out->emplace(info.name, std::move(qw)); }
             }
         } else if (info.dtype == GGMLType::Q5_K) {
-            if (numel % 256 != 0) { continue; }
+            if (numel % 256 != 0) { skip_or_fail(info, "size not divisible by 256"); continue; }
             const size_t sb_count = numel / 256;
             std::vector<uint8_t> packed(sb_count * 176);
             f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
@@ -971,7 +1012,7 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
                 if (qw.valid()) { quant_out->emplace(info.name, std::move(qw)); }
             }
         } else if (info.dtype == GGMLType::Q6_K) {
-            if (numel % 256 != 0) { continue; }
+            if (numel % 256 != 0) { skip_or_fail(info, "size not divisible by 256"); continue; }
             const size_t sb_count = numel / 256;
             std::vector<uint8_t> packed(sb_count * 210);
             f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
@@ -995,25 +1036,25 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
                 values[i] = fv;
             }
         } else if (info.dtype == GGMLType::Q5_0) {
-            if (numel % 32 != 0) { continue; }
+            if (numel % 32 != 0) { skip_or_fail(info, "size not divisible by 32"); continue; }
             const size_t block_count = numel / 32;
             std::vector<uint8_t> packed(block_count * 22);
             f.read(reinterpret_cast<char *>(packed.data()), static_cast<std::streamsize>(packed.size()));
             dequantize_q5_0(packed.data(), numel, values.data());
-            // No Q5_0 quant kernel yet — dense FP16 path only.
-        } else {
-            // Unsupported quantization (K-quants, IQ types, etc.)
-            // For critical tensors (attention/FFN weights), fail explicitly
-            // instead of silently skipping which leads to zero-weight models.
-            if (is_critical_tensor(info.name)) {
-                throw std::runtime_error(
-                    "[GGUF] critical tensor '" + info.name + "' uses unsupported quantization " +
-                    std::to_string(static_cast<unsigned>(info.dtype)) +
-                    ". Supported: F32, F16, BF16, Q4_0, Q4_1, Q8_0, Q5_0, Q4_K, Q5_K, Q6_K");
+            // No native Q5_0 packed kernel: requantize to Q4_1 (same policy as
+            // Q6_K above) so these tensors use matvec_q instead of the
+            // ~4x-slower FP32 fallback. Skip token_embd — it only feeds
+            // gather + the lm_head fallback, which requantizes from FP32 anyway.
+            if (quant_out != nullptr && shape.size() == 2 && info.name != "token_embd.weight") {
+                quant::QuantWeight qw;
+                quantize_f32_to_q41(values.data(), shape[0], shape[1], qw);
+                if (qw.valid()) { quant_out->emplace(info.name, std::move(qw)); }
             }
-            // Non-critical (e.g., token_embd.weight with tied lm_head fallback): warn and skip
-            std::fprintf(stderr, "[GGUF] unsupported dtype %u for tensor %s — skipped\n",
-                         static_cast<unsigned>(info.dtype), info.name.c_str());
+        } else {
+            // Unreachable in practice (pre-validation filters unsupported
+            // dtypes); kept as a safety net.
+            skip_or_fail(info, "uses unsupported dtype " +
+                         std::to_string(static_cast<unsigned>(info.dtype)));
             continue;
         }
 

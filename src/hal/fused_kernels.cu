@@ -2327,5 +2327,57 @@ void extract_cols_f16(void *dst, const void *src, size_t rows, size_t src_stride
         (const __half *)src, (__half *)dst, rows, src_stride, col_off, ncols);
 }
 
+// --- Packed-quant dequantization to dense FP16 (batched prefill) ---
+// One thread per output weight: out[r, k] for row-major [out, in]. A warp
+// covers 32 consecutive k of one row — exactly one quant block — so scale
+// loads broadcast and payload bytes are read coalesced.
+__global__ void dequant_qw_f16_kernel(const uint8_t *__restrict__ w, __half *__restrict__ out,
+                                      int in, int out_n, int stride, int qs, int d_off,
+                                      int m_off, int kind)
+{
+    const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    const long long total = (long long)in * (long long)out_n;
+    if (idx >= total) return;
+    const int r = (int)(idx / in);
+    const int k = (int)(idx - (long long)r * in);
+    const uint8_t *wr = w + (size_t)r * (size_t)stride;
+    const int b = k >> 5;   // 32-weight block
+    const int o = k & 31;
+    float v;
+    if (kind == 5) {  // Q8_0: 32 x int8, w = q*d
+        const int8_t q = (int8_t)wr[(size_t)b * qs + o];
+        const float d = __half2float(*reinterpret_cast<const __half *>(wr + d_off + b * 2));
+        v = (float)q * d;
+    } else {          // 4-bit: 16 payload bytes -> 32 weights per block
+        const int j = o & 15;
+        const uint32_t byte = wr[(size_t)b * qs + j];
+        const int nib = (o < 16) ? (int)(byte & 0xFu) : (int)(byte >> 4);
+        if (kind == 6) {  // Q4_K: 16B header {d,dmin,scales[12]} per 256 weights
+            const uint4 hh = *reinterpret_cast<const uint4 *>(wr + d_off + ((b >> 3) << 4));
+            float d, m;
+            k4_block_scales(hh, b & 7, d, m);
+            v = (float)nib * d + m;
+        } else {
+            const float d = __half2float(*reinterpret_cast<const __half *>(wr + d_off + b * 2));
+            const float m = (m_off != 0)
+                ? __half2float(*reinterpret_cast<const __half *>(wr + m_off + b * 2))
+                : 0.0f;
+            v = (kind == 4) ? ((float)nib * d + m) : (((float)nib - 8.0f) * d);
+        }
+    }
+    out[idx] = __float2half(v);
+}
+
+void dequant_qw_f16(const void *w, int kind, size_t in, size_t out, int stride, int qs,
+                    int d_off, int m_off, void *out_f16, cudaStream_t stream)
+{
+    if (!w || !out_f16 || in == 0 || out == 0 || (in % 32) != 0) return;
+    const long long total = (long long)in * (long long)out;
+    const int threads = 256;
+    const long long blocks = (total + threads - 1) / threads;
+    dequant_qw_f16_kernel<<<(unsigned)blocks, threads, 0, stream>>>(
+        (const uint8_t *)w, (__half *)out_f16, (int)in, (int)out, stride, qs, d_off, m_off, kind);
+}
+
 }  // namespace hal
 }  // namespace serius

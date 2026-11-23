@@ -32,6 +32,16 @@ PPOTrainer::PPOTrainer(const model::LLamaConfig &model_config)
 
 PPOTrainer::~PPOTrainer() = default;
 
+const RewardModel &PPOTrainer::reward_model() const
+{
+    return *impl_->reward_model;
+}
+
+const PPOTrainer::Config &PPOTrainer::config() const
+{
+    return impl_->ppo_config;
+}
+
 std::vector<float> PPOTrainer::compute_logprobs(const Tensor &tokens) const
 {
     return impl_->reward_model->compute_logprobs(tokens);
@@ -70,20 +80,34 @@ float PPOTrainer::train_step(const std::vector<Tensor> &prompts)
         }
     }
 
-    // Step 2: Compute relative advantages (GRPO-style)
-    std::vector<float> advantages = compute_advantages(all_rewards, advantage_eps);
+    // Step 2: GRPO-style advantages — KL-penalized rewards normalized
+    // within each prompt's group of G samples (group-relative, not global).
+    std::vector<float> adjusted_rewards(all_rewards.size());
+    for (size_t i = 0; i < all_rewards.size(); ++i) {
+        const float kl = kl_divergence(all_log_probs_new[i], all_log_probs_old[i]);
+        adjusted_rewards[i] = kl_penalty(all_rewards[i], kl, kl_beta);
+    }
 
-    // Step 3: Compute PPO loss with KL penalty
+    std::vector<float> advantages(all_rewards.size(), 0.0f);
+    for (size_t p = 0; p < prompts.size(); ++p) {
+        std::vector<float> group;
+        group.reserve(G);
+        for (size_t g = 0; g < G; ++g) {
+            group.push_back(adjusted_rewards[p * G + g]);
+        }
+        const std::vector<float> group_adv =
+            compute_advantages(group, advantage_eps);
+        for (size_t g = 0; g < G && g < group_adv.size(); ++g) {
+            advantages[p * G + g] = group_adv[g];
+        }
+    }
+
+    // Step 3: Compute PPO loss with clipped objective
     float total_loss = 0.0f;
     size_t num_tokens = 0;
 
     for (size_t i = 0; i < all_responses.size(); ++i) {
-        // KL penalty: compute log_probs from reference model (same as old for now)
-        float kl = kl_divergence(all_log_probs_new[i], all_log_probs_old[i]);
-        float adjusted_reward = kl_penalty(all_rewards[i], kl, kl_beta);
-
-        // Use adjusted reward as advantage (simplified: advantage is already relative)
-        float advantage = advantages[i];
+        const float advantage = advantages[i];
 
         // Compute PPO loss for this response
         float response_loss = ppo_loss(all_log_probs_new[i], all_log_probs_old[i], advantage, clip_eps);

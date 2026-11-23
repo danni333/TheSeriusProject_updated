@@ -12,7 +12,7 @@ using core::Tensor;
 
 /// Lightweight toxicity classifier for real-time output filtering.
 /// Uses a simple linear model: embedding -> linear -> relu -> linear -> sigmoid.
-class ToxicityClassifier
+class TokenToxicityClassifier
 {
 public:
     struct Config {
@@ -22,9 +22,9 @@ public:
         float threshold = 0.8f;
     };
 
-    ToxicityClassifier();
-    explicit ToxicityClassifier(const Config& config);
-    ~ToxicityClassifier();
+    TokenToxicityClassifier();
+    explicit TokenToxicityClassifier(const Config& config);
+    ~TokenToxicityClassifier();
 
     /// Score the toxicity of a token sequence.
     /// @param tokens Token IDs to classify

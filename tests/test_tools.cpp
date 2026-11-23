@@ -64,6 +64,7 @@ TEST(ToolRegistry, ExecuteInvalidArguments)
     json schema;
     schema["type"] = "object";
     schema["properties"]["required_field"]["type"] = "string";
+    schema["required"] = {"required_field"};
 
     ToolDefinition tool("test", "Test tool", schema,
                          [](const json& args) -> json {
@@ -76,6 +77,50 @@ TEST(ToolRegistry, ExecuteInvalidArguments)
     json result = registry.execute("test", args);
 
     EXPECT_TRUE(result.contains("error"));
+}
+
+TEST(ToolRegistry, OptionalPropertiesAreNotRequired)
+{
+    ToolRegistry registry;
+
+    json schema;
+    schema["type"] = "object";
+    schema["properties"]["optional_field"]["type"] = "string";
+    schema["properties"]["other"]["type"] = "integer";
+    schema["required"] = {};  // nothing required
+
+    ToolDefinition tool("test", "Test tool", schema,
+                         [](const json&) -> json {
+                             return json{{"result", "ok"}};
+                         });
+    registry.register_tool(tool);
+
+    // Empty args must pass: no field is declared required.
+    json result = registry.execute("test", json{});
+    EXPECT_FALSE(result.contains("error"));
+    EXPECT_EQ(result["result"], "ok");
+}
+
+TEST(ToolRegistry, WrongArgumentTypeIsRejected)
+{
+    ToolRegistry registry;
+
+    json schema;
+    schema["type"] = "object";
+    schema["properties"]["count"]["type"] = "integer";
+    schema["required"] = {"count"};
+
+    ToolDefinition tool("test", "Test tool", schema,
+                         [](const json&) -> json {
+                             return json{{"result", "ok"}};
+                         });
+    registry.register_tool(tool);
+
+    json bad = json{{"count", "not a number"}};
+    EXPECT_TRUE(registry.execute("test", bad).contains("error"));
+
+    json good = json{{"count", 3}};
+    EXPECT_FALSE(registry.execute("test", good).contains("error"));
 }
 
 TEST(ToolRegistry, UnregisterTool)

@@ -15,6 +15,7 @@
 #define popen _popen
 #define pclose _pclose
 #else
+#include <dlfcn.h>
 #include <unistd.h>
 #endif
 
@@ -264,6 +265,45 @@ VerificationResult Sandbox::benchmark(const KernelFn &reference,
     }
 
     return res;
+}
+
+KernelFn Sandbox::load_kernel(const std::string &library_path)
+{
+    if (library_path.empty()) return {};
+
+    // C ABI contract for generated kernels:
+    //   extern "C" void kernel_entry(const float *input, float *output,
+    //                                const size_t *shape, size_t ndim);
+    using ExportedFn = void (*)(const float *, float *, const size_t *, size_t);
+
+#ifdef _WIN32
+    HMODULE mod = LoadLibraryA(library_path.c_str());
+    if (!mod) return {};
+    auto fn = reinterpret_cast<ExportedFn>(GetProcAddress(mod, "kernel_entry"));
+#else
+    void *mod = dlopen(library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!mod) return {};
+    auto fn = reinterpret_cast<ExportedFn>(dlsym(mod, "kernel_entry"));
+#endif
+    if (!fn) {
+#ifdef _WIN32
+        FreeLibrary(mod);
+#else
+        dlclose(mod);
+#endif
+        return {};
+    }
+
+    // Keep the module loaded for the process lifetime (no FreeLibrary/dlclose):
+    // unloading would invalidate the code the returned KernelFn calls.
+    return [fn](const core::Tensor &in) -> core::Tensor {
+        core::Tensor in_c = in.contiguous();
+        core::Tensor out(in_c.shape(), in_c.dtype());
+        const size_t count = in_c.size();
+        if (count == 0) return out;
+        fn(in_c.data(), out.data(), in_c.shape().data(), in_c.ndim());
+        return out;
+    };
 }
 
 }  // namespace autoopt

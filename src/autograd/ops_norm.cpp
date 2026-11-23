@@ -24,6 +24,9 @@ Node *contiguous(Node *input_node)
     Node *res = new Node(input_node->data.copy(), input_node->requires_grad);
     res->name = "contiguous(" + input_node->name + ")";
     res->children.push_back(input_node);
+    res->forward_fn = [](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward([](const std::vector<Node *> &a) { return contiguous(a[0]); }, in);
+    };
 
     res->backward_fn = [input_node, res]() {
         if (input_node->requires_grad) {
@@ -87,6 +90,10 @@ Node *layernorm(Node *input, Node *gamma, Node *beta, float eps)
     Node *out = new Node(std::move(output_data));
     out->children = {input, gamma, beta};
     out->name = "layernorm";
+    out->forward_fn = [eps](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward(
+            [eps](const std::vector<Node *> &a) { return layernorm(a[0], a[1], a[2], eps); }, in);
+    };
 
     out->backward_fn = [input, gamma, beta, out, eps]() {
         if (!input->requires_grad && !gamma->requires_grad && !beta->requires_grad) return;
@@ -159,6 +166,10 @@ Node *rmsnorm(Node *input, Node *gamma, float eps)
     Node *out = new Node(std::move(output_data));
     out->children = {input, gamma};
     out->name = "rmsnorm";
+    out->forward_fn = [eps](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward(
+            [eps](const std::vector<Node *> &a) { return rmsnorm(a[0], a[1], eps); }, in);
+    };
     out->backward_fn = [input, gamma, out, eps]() {
         if (!input->requires_grad && !gamma->requires_grad) return;
         const Tensor &x = input->data;
@@ -209,6 +220,13 @@ Node *fused_add_layernorm(Node *input, Node *residual, Node *gamma, Node *beta, 
         Node *out = new Node(std::move(output_data));
         out->children = {input, residual, gamma, beta};
         out->name = "fused_add_layernorm";
+        out->forward_fn = [eps](const std::vector<const Tensor *> &in) -> Tensor {
+            return detail::replay_forward(
+                [eps](const std::vector<Node *> &a) {
+                    return fused_add_layernorm(a[0], a[1], a[2], a[3], eps);
+                },
+                in);
+        };
 
         // Backward: dL/d(x+res) is same as dL/dx for LayerNorm.
         // Then dL/dx += dL/d(x+res), dL/dres += dL/d(x+res).
@@ -309,6 +327,15 @@ Node *fused_masked_softmax(Node *input, const Tensor &mask, float scale)
     Node *out = new Node(std::move(res));
     out->children = {input};
     out->name = "fused_masked_softmax";
+    if (!detail::in_replay()) {
+        out->forward_fn = [mask, scale](const std::vector<const Tensor *> &in) -> Tensor {
+            return detail::replay_forward(
+                [&mask, scale](const std::vector<Node *> &a) {
+                    return fused_masked_softmax(a[0], mask, scale);
+                },
+                in);
+        };
+    }
     out->backward_fn = [input, out, scale]() {
         if (!input->requires_grad) {
             return;
@@ -370,6 +397,10 @@ Node *fused_bias_gelu(Node *input, Node *bias)
         Node *out = new Node(std::move(output_data));
         out->children = {input, bias};
         out->name = "fused_bias_gelu";
+        out->forward_fn = [](const std::vector<const Tensor *> &in) -> Tensor {
+            return detail::replay_forward([](const std::vector<Node *> &a) { return fused_bias_gelu(a[0], a[1]); },
+                                          in);
+        };
 
         // Backward: dL/dx = dL/dy * GELU'(x + bias)
         // dL/dbias = sum(dL/dx) over appropriate dimensions

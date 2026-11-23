@@ -13,7 +13,7 @@ void ToolRegistry::unregister_tool(const std::string& name)
     tools_.erase(name);
 }
 
-json ToolRegistry::execute(const std::string& name, const json& arguments)
+json ToolRegistry::execute(const std::string& name, const json& arguments) const
 {
     auto it = tools_.find(name);
     if (it == tools_.end()) {
@@ -65,16 +65,46 @@ void ToolRegistry::clear()
 
 bool ToolRegistry::validate_schema(const json& arguments, const json& schema) const
 {
-    // Simplified validation: check if required fields are present
-    // In production, this would use a full JSON Schema validator
-    if (!schema.contains("properties")) {
+    // null counts as "no arguments" (same as {}); anything else non-object
+    // (array, scalar) is malformed.
+    if (!arguments.is_object() && !arguments.is_null()) {
+        return false;
+    }
+    if (!schema.is_object() || !schema.contains("properties")) {
         return true;  // No schema = no validation
     }
 
+    // Only the fields listed under "required" must be present; every other
+    // declared property is optional (standard JSON Schema semantics).
+    if (schema.contains("required") && schema["required"].is_array()) {
+        for (const auto& req : schema["required"]) {
+            if (req.is_string() && !arguments.contains(req.get<std::string>())) {
+                return false;
+            }
+        }
+    }
+
+    // Type-check provided arguments against the declared property schemas.
     const auto& properties = schema["properties"];
-    for (auto it = properties.begin(); it != properties.end(); ++it) {
-        const std::string& key = it.key();
-        if (!arguments.contains(key)) {
+    for (auto it = arguments.begin(); it != arguments.end(); ++it) {
+        if (!properties.contains(it.key())) {
+            continue;  // Undeclared argument: allowed (schemas are not closed)
+        }
+        const json& prop = properties[it.key()];
+        if (!prop.is_object() || !prop.contains("type")) {
+            continue;
+        }
+        const std::string& t = prop["type"].is_string() ? prop["type"].get<std::string>() : "";
+        const json& v = it.value();
+        bool ok = true;
+        if (t == "string") ok = v.is_string();
+        else if (t == "integer") ok = v.is_number_integer();
+        else if (t == "number") ok = v.is_number();
+        else if (t == "boolean") ok = v.is_boolean();
+        else if (t == "object") ok = v.is_object();
+        else if (t == "array") ok = v.is_array();
+        else if (t == "null") ok = v.is_null();
+        if (!ok) {
             return false;
         }
     }

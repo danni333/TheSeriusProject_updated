@@ -1,5 +1,7 @@
 #include "llm_client.h"
 
+#include <nlohmann/json.hpp>
+
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -111,55 +113,55 @@ std::string LLMClient::http_post(const std::string &url, const std::string &json
 
 std::string LLMClient::generate(const std::string &prompt) const
 {
-    // Build request body based on API type
-    std::ostringstream json;
-    json << "{";
+    // Build request body based on API type. nlohmann/json handles escaping,
+    // so prompts containing quotes/newlines can't corrupt the request.
+    const bool is_ollama =
+        config_.api_endpoint.find("ollama") != std::string::npos ||
+        config_.api_endpoint.find("localhost:11434") != std::string::npos;
 
-    // Check if this is Ollama (default) or OpenAI-compatible
-    if (config_.api_endpoint.find("ollama") != std::string::npos ||
-        config_.api_endpoint.find("localhost:11434") != std::string::npos) {
+    nlohmann::json body;
+    if (is_ollama) {
         // Ollama format
-        json << "\"model\": \"" << config_.model_name << "\",";
-        json << "\"prompt\": \"" << prompt << "\",";
-        json << "\"stream\": false,";
-        json << "\"options\": {\"temperature\": " << config_.temperature << "}";
+        body["model"] = config_.model_name;
+        body["prompt"] = prompt;
+        body["stream"] = false;
+        body["options"] = nlohmann::json{{"temperature", config_.temperature}};
     } else {
         // OpenAI-compatible format
-        json << "\"model\": \"" << config_.model_name << "\",";
-        json << "\"messages\": [{\"role\": \"user\", \"content\": \"" << prompt << "\"}],";
-        json << "\"temperature\": " << config_.temperature << ",";
-        json << "\"max_tokens\": " << config_.max_tokens;
+        body["model"] = config_.model_name;
+        body["messages"] = nlohmann::json::array(
+            {nlohmann::json{{"role", "user"}, {"content", prompt}}});
+        body["temperature"] = config_.temperature;
+        body["max_tokens"] = config_.max_tokens;
     }
 
-    json << "}";
-
-    std::string response = http_post(config_.api_endpoint, json.str());
+    std::string response = http_post(config_.api_endpoint, body.dump());
 
     if (response.empty()) {
         return "";
     }
 
-    // Extract text from response (simplified parsing)
-    // In production, use nlohmann/json for proper parsing
-    size_t text_pos = response.find("\"response\"");
-    if (text_pos != std::string::npos) {
-        // Ollama format
-        size_t colon = response.find(":", text_pos);
-        size_t start = response.find("\"", colon) + 1;
-        size_t end = response.find("\"", start);
-        if (end != std::string::npos) {
-            return response.substr(start, end - start);
-        }
+    // Parse the JSON response properly: Ollama returns {"response": "..."},
+    // OpenAI-compatible returns {"choices": [{"message": {"content": ...}}]}.
+    const auto j = nlohmann::json::parse(response, nullptr, false);
+    if (j.is_discarded()) {
+        return response;  // Not JSON — return raw
     }
 
-    text_pos = response.find("\"content\"");
-    if (text_pos != std::string::npos) {
-        // OpenAI format
-        size_t colon = response.find(":", text_pos);
-        size_t start = response.find("\"", colon) + 1;
-        size_t end = response.find("\"", start);
-        if (end != std::string::npos) {
-            return response.substr(start, end - start);
+    if (j.contains("response") && j["response"].is_string()) {
+        return j["response"].get<std::string>();
+    }
+
+    if (j.contains("choices") && j["choices"].is_array() &&
+        !j["choices"].empty()) {
+        const auto &choice = j["choices"][0];
+        if (choice.contains("message") && choice["message"].is_object() &&
+            choice["message"].contains("content") &&
+            choice["message"]["content"].is_string()) {
+            return choice["message"]["content"].get<std::string>();
+        }
+        if (choice.contains("text") && choice["text"].is_string()) {
+            return choice["text"].get<std::string>();
         }
     }
 

@@ -371,7 +371,13 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
 
     std::cout << "[Loader] Detected GGUF file: " << gguf_path << "\n";
     std::unordered_map<std::string, quant::QuantWeight> qmap;
-    auto tensors = io::load_all_tensors(gguf_path, &qmap);
+    std::unordered_map<std::string, core::Tensor> tensors;
+    try {
+        tensors = io::load_all_tensors(gguf_path, &qmap);
+    } catch (const std::exception &e) {
+        std::cerr << "[Loader] GGUF load failed for " << gguf_path << ": " << e.what() << "\n";
+        return false;
+    }
     if (tensors.empty()) {
         std::cerr << "[Loader] GGUF: no tensors loaded from " << gguf_path << "\n";
         return false;
@@ -410,9 +416,21 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
         return true;
     };
 
+    // Tensors the model cannot run without. A GGUF that lacks one of these
+    // (unsupported dtype skipped by load_all_tensors, truncated file, wrong
+    // arch) must fail the load instead of silently leaving zero weights.
+    std::vector<std::string> missing_required;
+    auto require_tensor = [&](const std::string &name, float *dst, size_t rows, size_t cols,
+                              bool should_transpose, bool allow_prefix = false) {
+        if (!copy_tensor(name, dst, rows, cols, should_transpose, allow_prefix)) {
+            missing_required.push_back(name);
+        }
+    };
+
     // Embedding (no transpose: rows=vocab_size, cols=hidden)
     if (model->embed_tokens() != nullptr) {
-        copy_tensor("token_embd.weight", model->embed_tokens()->data.data(), vocab_size, hidden, false, true);
+        require_tensor("token_embd.weight", model->embed_tokens()->data.data(), vocab_size, hidden,
+                       false, true);
     }
 
     // Only the "llama" arch family stores Q/K with RoPE head_dim pairs
@@ -435,35 +453,49 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
         model::LLaMABlock *block = model->layers()[l].get();
         std::string pfx = "blk." + std::to_string(l) + ".";
 
-        copy_tensor(pfx + "attn_norm.weight",   block->input_layernorm_weight->data.data(),         1, hidden, false);
-        copy_tensor(pfx + "attn_q.weight",       block->q_proj->data.data(),       hidden, hidden, true);
-        copy_tensor(pfx + "attn_k.weight",       block->k_proj->data.data(),       kv_dim, hidden, true);
+        require_tensor(pfx + "attn_norm.weight",   block->input_layernorm_weight->data.data(),         1, hidden, false);
+        require_tensor(pfx + "attn_q.weight",       block->q_proj->data.data(),       hidden, hidden, true);
+        require_tensor(pfx + "attn_k.weight",       block->k_proj->data.data(),       kv_dim, hidden, true);
         // GGUF permutes Q/K head_dim pairs for RoPE (llama arch only); restore HF ordering.
         if (rope_perm) {
             unpermute_gguf_rope_heads(block->q_proj->data.data(), hidden, hidden, head_dim);
             unpermute_gguf_rope_heads(block->k_proj->data.data(), hidden, kv_dim, head_dim);
         }
-        copy_tensor(pfx + "attn_v.weight",       block->v_proj->data.data(),       kv_dim, hidden, true);
+        require_tensor(pfx + "attn_v.weight",       block->v_proj->data.data(),       kv_dim, hidden, true);
         copy_tensor(pfx + "attn_q.bias",         block->q_bias->data.data(),       1, hidden, false);
         copy_tensor(pfx + "attn_k.bias",         block->k_bias->data.data(),       1, kv_dim, false);
         copy_tensor(pfx + "attn_v.bias",         block->v_bias->data.data(),       1, kv_dim, false);
-        copy_tensor(pfx + "attn_output.weight",  block->o_proj->data.data(),       hidden, hidden, true);
-        copy_tensor(pfx + "ffn_norm.weight",     block->post_attention_layernorm_weight->data.data(), 1, hidden, false);
-        copy_tensor(pfx + "ffn_gate.weight",     block->gate_proj->data.data(),    inter_size, hidden, true);
-        copy_tensor(pfx + "ffn_up.weight",       block->up_proj->data.data(),      inter_size, hidden, true);
-        copy_tensor(pfx + "ffn_down.weight",     block->down_proj->data.data(),    hidden, inter_size, true);
+        require_tensor(pfx + "attn_output.weight",  block->o_proj->data.data(),       hidden, hidden, true);
+        require_tensor(pfx + "ffn_norm.weight",     block->post_attention_layernorm_weight->data.data(), 1, hidden, false);
+        require_tensor(pfx + "ffn_gate.weight",     block->gate_proj->data.data(),    inter_size, hidden, true);
+        require_tensor(pfx + "ffn_up.weight",       block->up_proj->data.data(),      inter_size, hidden, true);
+        require_tensor(pfx + "ffn_down.weight",     block->down_proj->data.data(),    hidden, inter_size, true);
     }
 
     // Final norm and lm_head
     if (model->norm_weight() != nullptr) {
-        copy_tensor("output_norm.weight", model->norm_weight()->data.data(), 1, hidden, false);
+        require_tensor("output_norm.weight", model->norm_weight()->data.data(), 1, hidden, false);
     }
     if (model->lm_head() != nullptr) {
-        if (!copy_tensor("output.weight", model->lm_head()->data.data(), vocab_size, hidden, true, true)) {
-            // Weight-tying fallback: reuse embedding weights transposed
+        const bool lm_head_ok =
+            copy_tensor("output.weight", model->lm_head()->data.data(), vocab_size, hidden, true, true) ||
             copy_tensor("token_embd.weight", model->lm_head()->data.data(), vocab_size, hidden, true, true);
-        }
+        if (!lm_head_ok) { missing_required.emplace_back("output.weight/token_embd.weight"); }
         build_lm_head_t(model);
+    }
+
+    if (!missing_required.empty()) {
+        std::cerr << "[Loader] GGUF: refusing to load " << gguf_path << " — "
+                  << missing_required.size() << " required tensor(s) missing or unreadable";
+        const size_t show = std::min<size_t>(missing_required.size(), 8);
+        for (size_t i = 0; i < show; ++i) {
+            std::cerr << (i == 0 ? ": " : ", ") << missing_required[i];
+        }
+        if (missing_required.size() > show) {
+            std::cerr << ", ... (" << (missing_required.size() - show) << " more)";
+        }
+        std::cerr << "\n";
+        return false;
     }
 
     // Populate packed-quantized weights for the fast M==1 decode path.
@@ -531,22 +563,38 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
         };
         block->qkv_w     = fuse_rows(block->q_w, block->k_w, block->v_w);
         block->gate_up_w = fuse_rows2(block->gate_w, block->up_w);
+        if (l == 0) {
+            std::cerr << "[Loader] quant: q=" << static_cast<int>(block->q_w.type)
+                      << " k=" << static_cast<int>(block->k_w.type)
+                      << " v=" << static_cast<int>(block->v_w.type)
+                      << " o=" << static_cast<int>(block->o_w.type)
+                      << " gate=" << static_cast<int>(block->gate_w.type)
+                      << " up=" << static_cast<int>(block->up_w.type)
+                      << " down=" << static_cast<int>(block->down_w.type) << "\n";
+        }
         // Mixed-type fusion fallback: Q4_K q/k can't fuse with a Q4_1 v
         // (Q6_K-derived). Expand Q4_K members to Q4_1 and retry — the fused
         // GEMV needs one kind per launch.
         if (!block->qkv_w.valid()) {
             auto as_q41 = [](const quant::QuantWeight &w) -> quant::QuantWeight {
-                return (w.type == quant::QuantType::Q4_K)
-                    ? quant_weight_q4k_to_q41(w) : w;
+                if (w.type == quant::QuantType::Q4_K) { return io::quant_weight_q4k_to_q41(w); }
+                if (w.type == quant::QuantType::Q8_0) { return io::quant_weight_q80_to_q41(w); }
+                return w;
             };
             block->qkv_w = fuse_rows(as_q41(block->q_w), as_q41(block->k_w), as_q41(block->v_w));
         }
         if (!block->gate_up_w.valid()) {
             auto as_q41 = [](const quant::QuantWeight &w) -> quant::QuantWeight {
-                return (w.type == quant::QuantType::Q4_K)
-                    ? quant_weight_q4k_to_q41(w) : w;
+                if (w.type == quant::QuantType::Q4_K) { return io::quant_weight_q4k_to_q41(w); }
+                if (w.type == quant::QuantType::Q8_0) { return io::quant_weight_q80_to_q41(w); }
+                return w;
             };
             block->gate_up_w = fuse_rows2(as_q41(block->gate_w), as_q41(block->up_w));
+        }
+        if (l == 0) {
+            std::cerr << "[Loader] fused: qkv=" << block->qkv_w.valid()
+                      << " gate_up=" << block->gate_up_w.valid()
+                      << " o=" << block->o_w.valid() << " down=" << block->down_w.valid() << "\n";
         }
     }
     if (model->lm_head() != nullptr) {

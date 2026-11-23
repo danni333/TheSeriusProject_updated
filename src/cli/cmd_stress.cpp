@@ -17,6 +17,7 @@ int cmd_stress(int argc, char **argv)
 
     parser.add_flag({"type", "t", "Test type (ramp, soak, spike, chaos)", true, "ramp"});
     parser.add_flag({"server", "s", "Server URL", true, defaults::kServerUrl});
+    parser.add_flag({"health-url", "", "Dedicated ops URL for /health sampling (empty = server URL)", true, ""});
     parser.add_flag({"model", "m", "Model name sent in requests", true, defaults::kModelName});
     parser.add_flag({"users", "u", "Concurrent users", true, "8"});
     parser.add_flag({"duration", "d", "Test duration in seconds", true, "60"});
@@ -59,6 +60,7 @@ int cmd_stress(int argc, char **argv)
 
     stress::StressConfig config;
     config.server_url = server_url;
+    config.health_url = parser.get("health-url", "");
     config.concurrent_users = users;
     config.duration_seconds = duration;
     config.ramp_max_users = max_users;

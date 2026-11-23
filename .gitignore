@@ -83,3 +83,6 @@ models_metadata.json*
 # MCP audit logs
 mcp_audit.log
 mcp_e2e_audit.log
+
+# Stress test output
+stress_results/

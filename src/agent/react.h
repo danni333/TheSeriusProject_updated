@@ -5,6 +5,8 @@
 #include <string>
 
 namespace serius {
+namespace tools { class ToolRegistry; }
+
 namespace agent {
 
 /// Minimal tool result: name + JSON output.
@@ -34,11 +36,15 @@ class ReActEngine
     ReActEngine &operator=(const ReActEngine &) = delete;
 
     /// Run the ReAct loop for a user query.
-    /// tool_results: optional map of tool name -> precomputed output (mock).
+    /// tool_results: optional map of tool name -> precomputed output (mock),
+    /// used only when no registry is provided or the tool is not registered.
+    /// tool_registry: optional real ToolRegistry; registered tools are
+    /// executed for real and their JSON result becomes the observation.
     std::string run(const std::string &user_query,
                     const std::string &system_prompt,
                     const ToolResult *tool_results = nullptr,
-                    size_t n_tool_results = 0);
+                    size_t n_tool_results = 0,
+                    const tools::ToolRegistry *tool_registry = nullptr);
 
     int max_steps() const { return max_steps_; }
 

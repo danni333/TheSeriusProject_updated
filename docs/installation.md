@@ -13,8 +13,9 @@ Detailed installation instructions for Serius LLM Engine.
 ### Optional Dependencies
 
 - **CUDA**: 12.0+ for GPU acceleration (NVIDIA)
-- **ROCm**: For AMD GPU support
-- **Metal**: For Apple Silicon GPU support
+
+> **Note**: Vulkan, Metal, and ROCm backends are **not implemented**. GPU
+> acceleration is CUDA-only (`SERIUS_USE_CUDA`).
 
 ### Build Steps
 
@@ -41,7 +42,6 @@ cmake --install .
 | Option | Description | Default |
 |--------|-------------|---------|
 | `SERIUS_USE_CUDA` | Enable CUDA support | OFF |
-| `SERIUS_USE_METAL` | Enable Metal support (macOS) | OFF |
 | `SERIUS_USE_NCCL` | Enable NCCL for distributed training | OFF |
 | `SERIUS_USE_MPI` | Enable MPI for distributed training | OFF |
 
@@ -103,14 +103,10 @@ Download the installer from [GitHub Releases](https://github.com/your-org/serius
 2. Install cuDNN 8.9+: https://developer.nvidia.com/cudnn
 3. Build with `SERIUS_USE_CUDA=ON`
 
-### AMD (ROCm)
+### AMD (ROCm) / Apple Silicon (Metal)
 
-1. Install ROCm: https://rocm.docs.amd.com/
-2. Build with `SERIUS_USE_ROCM=ON` (when available)
-
-### Apple Silicon (Metal)
-
-No additional setup needed on macOS with Apple Silicon. Build with `SERIUS_USE_METAL=ON`.
+Not supported — no ROCm or Metal backend is implemented. On non-NVIDIA
+hardware the engine runs on CPU only.
 
 ## Verification
 

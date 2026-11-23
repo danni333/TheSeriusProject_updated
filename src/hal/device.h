@@ -51,7 +51,8 @@ class IBackend
 // Global accessor to get backends by specific type
 IBackend *get_backend(DeviceType type);
 
-// Helper to get the best available GPU backend (CUDA > Metal > Vulkan), or nullptr if none
+// Helper to get the best available GPU backend (CUDA only — Vulkan/Metal
+// are not implemented), or nullptr if none
 IBackend *get_gpu_backend();
 
 // CPU stream helpers: allow callers holding an opaque void* stream to check

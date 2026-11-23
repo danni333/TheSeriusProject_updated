@@ -3,12 +3,17 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <sstream>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -209,6 +214,56 @@ std::string http_get(const std::string &url, const std::string &token)
     return response;
 }
 
+std::string http_head(const std::string &url, const std::string &token)
+{
+    if (!is_valid_token(token)) return "";
+    auto args = curl_args(token);
+    args.insert(args.end(), {"-sIL", "--url", url});
+    std::string response;
+    if (run_process(args, &response) != 0) return "";
+    return response;
+}
+
+std::string trim(const std::string &s)
+{
+    size_t b = s.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return "";
+    size_t e = s.find_last_not_of(" \t\r\n");
+    return s.substr(b, e - b + 1);
+}
+
+bool iequals(const std::string &a, const std::string &b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i])) return false;
+    }
+    return true;
+}
+
+// Best-effort total size from response headers (last content-length wins,
+// since -L follows redirects). Returns 0 when unknown (chunked encoding).
+size_t content_length_of(const std::string &headers)
+{
+    size_t total = 0;
+    std::istringstream hs(headers);
+    std::string line;
+    while (std::getline(hs, line)) {
+        const size_t colon = line.find(':');
+        if (colon == std::string::npos) continue;
+        if (iequals(trim(line.substr(0, colon)), "content-length")) {
+            total = std::strtoull(trim(line.substr(colon + 1)).c_str(), nullptr, 10);
+        }
+    }
+    return total;
+}
+
+size_t file_size_of(const std::string &path)
+{
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) ? (size_t)std::filesystem::file_size(path, ec) : 0;
+}
+
 }  // namespace
 
 bool ModelDownloader::is_valid_repo_id(const std::string &repo_id)
@@ -265,21 +320,23 @@ bool ModelDownloader::download_file(const std::string &url, const std::string &p
     auto args = curl_args(token);
     args.insert(args.end(), {"-sSL", "--retry", "3", "-C", "-", "-o", path, "--url", url});
 
+    // Best-effort total size via HEAD (HF resolve redirects to the CDN).
+    const size_t total = content_length_of(http_head(url, token));
+
+    // Run curl asynchronously so the progress callback can report the real
+    // number of bytes written so far instead of a fake 0/0.
+    auto fut = std::async(std::launch::async, [&args]() { return run_process(args, nullptr); });
+
     if (progress) {
-        // Without libcurl, we can't get real-time progress easily
-        // For now, just call the callback with 0/0
-        progress(0, 0);
+        while (fut.wait_for(std::chrono::milliseconds(100)) != std::future_status::ready) {
+            progress(file_size_of(path), total);
+        }
     }
 
-    const int result = run_process(args, nullptr);
+    const int result = fut.get();
 
     if (progress) {
-        // Call completion callback
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (file) {
-            size_t size = file.tellg();
-            progress(size, size);
-        }
+        progress(file_size_of(path), total);
     }
 
     return (result == 0);
@@ -292,33 +349,57 @@ bool ModelDownloader::download_hf(const std::string &repo_id,
 {
     if (!is_valid_repo_id(repo_id)) return false;
 
-    // Fetch model info to get file list
-    std::string info = fetch_model_info(repo_id, token);
-    if (info.empty()) {
-        return false;
-    }
-
-    // For now, we'll try to download common files
-    // In a full implementation, we'd parse the JSON response to get the file list
-    std::vector<std::string> common_files = {
-        "config.json",
-        "tokenizer.json",
-        "model.safetensors",
-        "vocab.json"
-    };
-
-    bool all_success = true;
-    for (const auto &filename : common_files) {
-        std::string url = build_hf_url(repo_id, filename);
-        std::string output_path = output_dir + "/" + filename;
-
-        if (!download_file(url, output_path, progress)) {
-            // Some files might not exist, that's okay
-            // But if essential files fail, we should report it
+    // Get the real file list from the HF tree API and keep the files needed
+    // to load a model: configs, tokenizer assets and safetensors shards.
+    // GGUF/optimizer/training files are skipped (use resolve_hf_gguf for
+    // quantized downloads).
+    std::vector<std::string> wanted;
+    const auto remote = list_hf_files(repo_id, token);
+    if (remote.empty()) {
+        // API unreachable or empty repo: fall back to the common names so a
+        // transient listing failure doesn't break imports entirely.
+        wanted = {"config.json", "tokenizer.json", "model.safetensors", "vocab.json"};
+    } else {
+        auto wanted_name = [](const std::string &p) {
+            const size_t slash = p.find_last_of('/');
+            const std::string base = slash == std::string::npos ? p : p.substr(slash + 1);
+            static const char *kExact[] = {
+                "config.json", "generation_config.json", "tokenizer.json",
+                "tokenizer_config.json", "vocab.json", "merges.txt",
+                "special_tokens_map.json", "added_tokens.json",
+                "sentencepiece.model", "tokenizer.model"};
+            for (const char *k : kExact) {
+                if (base == k) return true;
+            }
+            const size_t dot = base.find_last_of('.');
+            if (dot == std::string::npos) return false;
+            const std::string ext = base.substr(dot);
+            return ext == ".safetensors" ||
+                   (ext == ".json" && base.find("model.safetensors.index") != std::string::npos);
+        };
+        for (const auto &f : remote) {
+            if (wanted_name(f.path)) wanted.push_back(f.path);
         }
     }
 
-    return all_success;
+    bool downloaded_any = false;
+    for (const auto &filename : wanted) {
+        std::string url = build_hf_url(repo_id, filename);
+        std::string rel = filename;
+        // Keep the repo's directory layout for nested files.
+        for (char &c : rel) { if (c == '\\') c = '/'; }
+        std::string output_path = output_dir + "/" + rel;
+        if (std::filesystem::path(output_path).has_parent_path()) {
+            std::filesystem::create_directories(std::filesystem::path(output_path).parent_path());
+        }
+        // Individual missing files are tolerated; success requires at least
+        // one file to actually land on disk.
+        if (download_file(url, output_path, progress, token)) {
+            downloaded_any = true;
+        }
+    }
+
+    return downloaded_any;
 }
 
 std::vector<HubFile> ModelDownloader::list_hf_files(const std::string &repo_id,

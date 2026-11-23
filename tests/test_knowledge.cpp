@@ -307,3 +307,71 @@ TEST(FactExtractor, TestCleanFact) {
 
     EXPECT_EQ(cleaned, "This is a fact with extra spaces.");
 }
+
+// ---- KnowledgeBase: end-to-end pipeline ----
+
+#include "knowledge/knowledge_base.h"
+
+namespace {
+
+// Deterministic topic embedder: dim 4, one-hot on topic keywords.
+KnowledgeBase::EmbedFn topic_embedder()
+{
+    return [](const std::string &text) {
+        std::vector<float> v(4, 0.0f);
+        auto has = [&](const char *kw) { return text.find(kw) != std::string::npos; };
+        if (has("paris") || has("france")) { v[0] = 1.0f; }
+        if (has("london") || has("england")) { v[1] = 1.0f; }
+        if (has("python") || has("code")) { v[2] = 1.0f; }
+        if (v[0] == 0.0f && v[1] == 0.0f && v[2] == 0.0f) { v[3] = 1.0f; }
+        return v;
+    };
+}
+
+}  // namespace
+
+TEST(KnowledgeBase, AddDocumentAndQuery) {
+    KnowledgeBase kb(4, 32, 42);
+    kb.set_embedder(topic_embedder());
+
+    const size_t n = kb.add_document(
+        "Paris is the capital of France. London is the capital of England.", "geo");
+    ASSERT_GT(n, 0u);
+
+    auto hit = kb.query("capital of France", 0);
+    ASSERT_TRUE(hit.found);
+    ASSERT_FALSE(hit.fact_texts.empty());
+    EXPECT_NE(hit.fact_texts[0].find("Paris"), std::string::npos);
+}
+
+TEST(KnowledgeBase, NoEmbedderFailsCleanly) {
+    KnowledgeBase kb(4);
+    EXPECT_EQ(kb.add_document("Some fact here."), 0u);
+    auto hit = kb.query("anything");
+    EXPECT_FALSE(hit.found);
+}
+
+TEST(KnowledgeBase, WrongDimEmbedderRejected) {
+    KnowledgeBase kb(4);
+    kb.set_embedder([](const std::string &) { return std::vector<float>(8, 0.5f); });
+    EXPECT_EQ(kb.add_document("Some fact here."), 0u);
+}
+
+TEST(KnowledgeBase, UnrelatedQueryMisses) {
+    KnowledgeBase kb(4, 32, 42);
+    kb.set_embedder(topic_embedder());
+    ASSERT_GT(kb.add_document("Paris is the capital of France."), 0u);
+
+    auto hit = kb.query("python code tutorial", 0);
+    EXPECT_FALSE(hit.found);
+}
+
+TEST(KnowledgeBase, StatsReflectIndexedFacts) {
+    KnowledgeBase kb(4, 32, 42);
+    kb.set_embedder(topic_embedder());
+    kb.add_document("Paris is the capital of France.", "geo");
+    kb.add_document("London is the capital of England.", "geo");
+
+    auto s = kb.stats();
+    EXPECT_GE(s.total_facts, 2u);
+}

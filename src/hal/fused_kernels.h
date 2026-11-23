@@ -118,6 +118,15 @@ void gemv_quant_vec_f16io(const void *x_f16, const void *sx16, const void *w, in
 /// block_sums16_f32.
 void block_sums16_f16(const void *x_f16, void *sx16, int n16, cudaStream_t stream = nullptr);
 
+/// Dequantize a packed QuantWeight (dev_bytes repacked layout) into a dense
+/// FP16 [out, in] row-major matrix, for batched (M>1) prefill GEMMs.
+/// kind/stride/qs/d_off/m_off come from the QuantWeight dev_* fields.
+/// kind: 3=Q4_0, 4=Q4_1, 5=Q8_0, 6=Q4_K (native superblock layout).
+/// `w` may point at any row offset (e.g. gpu_data + v0*dev_stride) to
+/// dequantize a row range; `out` is the number of rows written.
+void dequant_qw_f16(const void *w, int kind, size_t in, size_t out, int stride, int qs,
+                    int d_off, int m_off, void *out_f16, cudaStream_t stream = nullptr);
+
 /// GPU top-k preselection over a FP32 logits row [vocab]. Returns up to `cap`
 /// candidate (index, logit) pairs whose logit exceeds max_logit - window,
 /// widening the window until at least `need` candidates are found (or `cap`

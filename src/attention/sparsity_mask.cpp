@@ -1,5 +1,6 @@
 #include "sparsity_mask.h"
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 
@@ -30,10 +31,16 @@ Tensor generate_block_mask(size_t seq_len, size_t block_size,
         case SparsityPattern::LONGFORMER:
             block_mask = longformer_block_mask(num_blocks, window_size / block_size, {0});
             break;
-        case SparsityPattern::BIGBIRD:
-            // Combination of random + global + local
-            block_mask = causal_block_mask(num_blocks);  // Simplified: use causal
+        case SparsityPattern::BIGBIRD: {
+            // Union of local window + global + random edges. Defaults scale
+            // with sequence length; window_size overrides the local window.
+            const size_t win = window_size != 0 ? window_size / block_size
+                                                : std::max<size_t>(1, num_blocks / 8);
+            block_mask = bigbird_block_mask(num_blocks, win,
+                                            std::max<size_t>(1, num_blocks / 16), 0.1f,
+                                            static_cast<uint32_t>(num_blocks * 2654435761u));
             break;
+        }
         default:
             block_mask = causal_block_mask(num_blocks);
             break;
@@ -122,6 +129,43 @@ Tensor longformer_block_mask(size_t num_blocks, size_t window_blocks,
                            (j >= (i >= window_blocks - 1 ? i - window_blocks + 1 : 0) && j <= i);
 
             if (allowed) {
+                mask.at({i, j}) = 1.0f;
+            }
+        }
+    }
+
+    return mask;
+}
+
+Tensor bigbird_block_mask(size_t num_blocks, size_t window_blocks,
+                          size_t num_global_blocks, float random_keep_prob,
+                          uint32_t seed)
+{
+    Tensor mask({num_blocks, num_blocks});
+    mask.fill(0.0f);
+    if (num_blocks == 0) { return mask; }
+
+    window_blocks = std::min(window_blocks == 0 ? num_blocks : window_blocks, num_blocks);
+    num_global_blocks = std::min(num_global_blocks, num_blocks);
+    random_keep_prob = std::clamp(random_keep_prob, 0.0f, 1.0f);
+
+    std::vector<bool> is_global(num_blocks, false);
+    for (size_t g = 0; g < num_global_blocks; ++g) { is_global[g] = true; }
+
+    std::mt19937 gen(seed);
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+
+    for (size_t i = 0; i < num_blocks; ++i) {
+        for (size_t j = 0; j < num_blocks; ++j) {
+            // Local: causal sliding window (same convention as
+            // sliding_window_block_mask).
+            const bool local = j <= i && (i - j) < window_blocks;
+            // Global: global rows attend everywhere, global columns are
+            // visible to every row (same semantics as longformer_block_mask).
+            const bool global_edge = is_global[i] || is_global[j];
+            // Random: extra long-range edges sampled uniformly over all pairs.
+            const bool random_edge = dist(gen) < random_keep_prob;
+            if (local || global_edge || random_edge) {
                 mask.at({i, j}) = 1.0f;
             }
         }

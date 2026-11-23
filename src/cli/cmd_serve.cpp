@@ -86,7 +86,9 @@ int cmd_serve(int argc, char **argv)
     parser.add_flag({"top-k", "", "Default top-k sampling (0 = disabled)", true, "40"});
     parser.add_flag({"top-p", "", "Default top-p (nucleus) sampling", true, "0.9"});
     parser.add_flag({"gpu", "", "GPU backend (auto/cpu/cuda)", true, "auto"});
+    parser.add_flag({"gpu-layers", "", "Partial GPU offload: layers on GPU, rest CPU (-1 = auto)", true, "-1"});
     parser.add_flag({"ui", "", "Web UI directory (default 'ui')", true, ""});
+    parser.add_flag({"health-port", "", "Dedicated port for /health and /metrics (0 = disabled)", true, "0"});
 
     if (!parser.parse(argc, argv)) {
         std::cerr << "Error: " << parser.error() << "\n";
@@ -100,13 +102,13 @@ int cmd_serve(int argc, char **argv)
     }
 
     std::string model_path = parser.get("model");
-    const std::string model_type = parser.get("type", "llama");
+    std::string model_type = parser.get("type", "llama");
     const std::string gpu = parser.get("gpu", "auto");
 
+    // Qwen2-family models run through the LLaMA path (arch details come
+    // from config/metadata, not the flag).
     if (model_type == "qwen") {
-        std::cerr << "Error: model type 'qwen' is not supported by 'serius serve' yet "
-                     "(use 'llama' or 'transformer').\n";
-        return 1;
+        model_type = "llama";
     }
 
     // hf://repo_id → resolve the best GGUF on HuggingFace Hub and download it
@@ -152,12 +154,19 @@ int cmd_serve(int argc, char **argv)
     config.default_top_k = parser.get_int("top-k", defaults::kTopK);
     config.default_top_p = parser.get_float("top-p", defaults::kTopP);
     config.ui_dir = resolve_ui_dir(parser.get("ui"));
+    config.health_port = static_cast<uint16_t>(
+        parser.get_int("health-port", 0));
     if (gpu == "cpu") {
         config.gpu_mode = server::ServerConfig::GpuMode::kCpu;
         std::cout << "[Serius] CPU inference (--gpu cpu)\n";
     } else if (gpu == "cuda") {
         config.gpu_mode = server::ServerConfig::GpuMode::kCuda;
         std::cout << "[Serius] GPU inference forced (--gpu cuda)\n";
+    }
+    config.gpu_layers = parser.get_int("gpu-layers", -1);
+    if (config.gpu_layers > 0) {
+        std::cout << "[Serius] Partial GPU offload: " << config.gpu_layers
+                  << " layers on GPU (--gpu-layers)\n";
     }
 
     std::cout << "[Serius] Starting server on " << config.host << ":" << config.port;

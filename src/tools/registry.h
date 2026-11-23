@@ -43,7 +43,7 @@ public:
     /// @param name Tool name
     /// @param arguments Tool arguments (JSON)
     /// @return Tool result (JSON)
-    json execute(const std::string& name, const json& arguments);
+    json execute(const std::string& name, const json& arguments) const;
 
     /// Get tool definition by name.
     /// @param name Tool name

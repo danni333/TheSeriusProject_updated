@@ -35,12 +35,20 @@ RefactorReport AutoRefactorer::optimize_hotspot(const std::string &kernel_name,
         return report;
     }
 
+    // Step 2 & 3: Verification and benchmark, then swap/commit on success.
+    return evaluate_candidate(kernel_name, candidate_kernel, test_inputs, std::move(report));
+}
+
+RefactorReport AutoRefactorer::evaluate_candidate(const std::string &kernel_name,
+                                                  const KernelFn &candidate_kernel,
+                                                  const std::vector<core::Tensor> &test_inputs,
+                                                  RefactorReport report)
+{
     // Capture current reference
     KernelFn reference = [this, kernel_name](const core::Tensor &in) {
         return hot_swap_.execute(kernel_name, in);
     };
 
-    // Step 2 & 3: Verification and Benchmark
     VerificationResult bench = sandbox_.benchmark(reference, candidate_kernel, test_inputs);
 
     report.old_latency_ms = bench.reference_time_ms;
@@ -52,17 +60,13 @@ RefactorReport AutoRefactorer::optimize_hotspot(const std::string &kernel_name,
         return report;
     }
 
-    // Step 4: Speedup evaluation
     if (bench.speedup < min_speedup_) {
         report.reason = "Insufficient speedup (" + std::to_string(bench.speedup) + "x < " +
                         std::to_string(min_speedup_) + "x threshold)";
         return report;
     }
 
-    // Step 5: Hot-swap into live registry
     hot_swap_.hot_swap(kernel_name, candidate_kernel);
-
-    // Step 6: Git commit optimization
     git_mgr_.commit_optimization(kernel_name, report.old_latency_ms, report.new_latency_ms, /*dry_run=*/true);
 
     report.optimized = true;
@@ -75,8 +79,6 @@ RefactorReport AutoRefactorer::optimize_with_llm(const std::string &kernel_name,
                                                 const std::string &performance_info,
                                                 const std::vector<core::Tensor> &test_inputs)
 {
-    (void)test_inputs;  // Suppress unused parameter warning (used in full implementation)
-
     RefactorReport report;
     report.kernel_name = kernel_name;
     report.optimized = false;
@@ -95,29 +97,30 @@ RefactorReport AutoRefactorer::optimize_with_llm(const std::string &kernel_name,
 
     report.generated_code = generated_code;
 
-    // Step 2: Sandbox compile check (with real compiler if enabled)
+    // Step 2: Sandbox compile — produces a real shared library when the
+    // sandbox was configured with use_real_compiler.
     CompilationResult comp = sandbox_.compile(generated_code, kernel_name + "_v2");
     if (!comp.success) {
         report.reason = "Compilation failed: " + comp.error_message;
         return report;
     }
 
-    // If compilation produced a library, try to load it
-    if (!comp.library_path.empty()) {
-        // The library should contain a 'kernel_entry' function
-        // For now, we'll skip this since we need the actual function signature
-        // In production, we'd need to parse the code to extract the function
-        report.reason = "Library compilation not yet integrated with function extraction";
+    // Step 3: Load the compiled kernel through the C ABI and run it through
+    // the same verify/benchmark/hot-swap pipeline as optimize_hotspot.
+    if (comp.library_path.empty()) {
+        report.reason = "Sandbox compiled without a loadable library "
+                        "(use_real_compiler is disabled)";
         return report;
     }
 
-    // Step 3: For now, we can't execute the generated code without parsing it
-    // In a full implementation, we would:
-    // - Parse the generated code to extract the function
-    // - Wrap it in a KernelFn
-    // - Verify and benchmark it
-    report.reason = "Code parsing and execution not yet implemented";
-    return report;
+    KernelFn candidate = Sandbox::load_kernel(comp.library_path);
+    if (!candidate) {
+        report.reason = "Compiled library does not export 'kernel_entry' "
+                        "with the expected C ABI signature";
+        return report;
+    }
+
+    return evaluate_candidate(kernel_name, candidate, test_inputs, std::move(report));
 }
 
 }  // namespace autoopt

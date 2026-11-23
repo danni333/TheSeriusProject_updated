@@ -24,18 +24,25 @@ ThroughputResult bench_throughput(const std::string &model_path,
     std::atomic<int> total_tokens{0};
     std::vector<float> latencies;
     std::mutex lat_mutex;
-    std::mutex cout_mutex;
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < concurrent_users; i++) {
         workers.emplace_back([&, i]() {
+            // One model instance per worker, loaded once: reloading weights
+            // per request made this benchmark measure disk I/O, not inference.
+            // GPU offload is disabled here — N concurrent GPU copies would
+            // need N x VRAM; use `serius bench --latency-only` for GPU numbers.
+            auto bm = load_bench_model(model_path, /*allow_gpu=*/false);
+            if (!bm) {
+                return;
+            }
             for (int j = 0; j < requests_per_user; j++) {
                 // Select prompt cyclically
                 size_t prompt_idx = (i * requests_per_user + j) % prompts.size();
                 const std::string &prompt = prompts[prompt_idx];
 
-                auto lat_result = bench_single(model_path, prompt, max_tokens);
+                auto lat_result = bench_decode(*bm, prompt, max_tokens);
                 total_tokens += lat_result.generated_tokens;
 
                 {

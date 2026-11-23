@@ -222,6 +222,88 @@ TEST(SparsityMask, GenerateBlockMaskCausal)
     EXPECT_EQ(mask.shape()[1], seq_len / block_size);
 }
 
+TEST(SparsityMask, BigBirdBlockMask)
+{
+    size_t num_blocks = 8;
+    // keep_prob = 0 isolates the deterministic local+global structure.
+    Tensor mask = bigbird_block_mask(num_blocks, /*window_blocks=*/2,
+                                     /*num_global_blocks=*/1, /*keep=*/0.0f, /*seed=*/42);
+
+    EXPECT_EQ(mask.shape()[0], num_blocks);
+    EXPECT_EQ(mask.shape()[1], num_blocks);
+
+    // Global block 0: its row attends every block, every row attends it.
+    for (size_t j = 0; j < num_blocks; ++j) {
+        EXPECT_FLOAT_EQ(mask.at({0, j}), 1.0f);
+        EXPECT_FLOAT_EQ(mask.at({j, 0}), 1.0f);
+    }
+
+    // Local causal window of 2: block 5 attends blocks 4 and 5 only
+    // (block 0 is global and already covered).
+    EXPECT_FLOAT_EQ(mask.at({5, 5}), 1.0f);
+    EXPECT_FLOAT_EQ(mask.at({5, 4}), 1.0f);
+    EXPECT_FLOAT_EQ(mask.at({5, 3}), 0.0f);
+    EXPECT_FLOAT_EQ(mask.at({5, 2}), 0.0f);
+
+    // Future non-global pair stays masked with keep_prob = 0.
+    EXPECT_FLOAT_EQ(mask.at({1, 7}), 0.0f);
+}
+
+TEST(SparsityMask, BigBirdBlockMaskDeterministic)
+{
+    size_t num_blocks = 16;
+    Tensor a = bigbird_block_mask(num_blocks, 4, 2, 0.2f, 1234);
+    Tensor b = bigbird_block_mask(num_blocks, 4, 2, 0.2f, 1234);
+    Tensor c = bigbird_block_mask(num_blocks, 4, 2, 0.2f, 5678);
+
+    for (size_t i = 0; i < num_blocks; ++i) {
+        for (size_t j = 0; j < num_blocks; ++j) {
+            EXPECT_FLOAT_EQ(a.at({i, j}), b.at({i, j}));
+        }
+    }
+    // Different seeds should (overwhelmingly likely) differ somewhere.
+    bool differs = false;
+    for (size_t i = 0; i < num_blocks && !differs; ++i) {
+        for (size_t j = 0; j < num_blocks; ++j) {
+            if (a.at({i, j}) != c.at({i, j})) { differs = true; break; }
+        }
+    }
+    EXPECT_TRUE(differs);
+}
+
+TEST(SparsityMask, BigBirdBlockMaskFullKeep)
+{
+    size_t num_blocks = 4;
+    Tensor mask = bigbird_block_mask(num_blocks, 1, 0, 1.0f, 0);
+    for (size_t i = 0; i < num_blocks; ++i) {
+        for (size_t j = 0; j < num_blocks; ++j) {
+            EXPECT_FLOAT_EQ(mask.at({i, j}), 1.0f);
+        }
+    }
+}
+
+TEST(SparsityMask, GenerateBlockMaskBigBird)
+{
+    size_t seq_len = 16;
+    size_t block_size = 2;
+    Tensor mask = generate_block_mask(seq_len, block_size, SparsityPattern::BIGBIRD);
+
+    EXPECT_EQ(mask.shape()[0], seq_len / block_size);
+    EXPECT_EQ(mask.shape()[1], seq_len / block_size);
+
+    // BIGBIRD should be sparser than a full causal mask but denser than a
+    // purely causal one only via global/random edges — just verify it is not
+    // identical to the causal mask.
+    Tensor causal = causal_block_mask(seq_len / block_size);
+    bool differs = false;
+    for (size_t i = 0; i < mask.shape()[0] && !differs; ++i) {
+        for (size_t j = 0; j < mask.shape()[1]; ++j) {
+            if (mask.at({i, j}) != causal.at({i, j})) { differs = true; break; }
+        }
+    }
+    EXPECT_TRUE(differs);
+}
+
 TEST(SparsityMask, GenerateBlockMaskSlidingWindow)
 {
     size_t seq_len = 8;

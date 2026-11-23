@@ -1,4 +1,5 @@
 #include "llama_inference.h"
+#include "activation_hook.h"
 
 #include <algorithm>
 #include <chrono>
@@ -700,19 +701,21 @@ struct HeadAttentionArgs {
     KVCacheLayer *cache_layer;
     float attention_scale;
     float *attention_out_ptr;
+    int layer_idx = -1;  // -1 disables the attention_row observability hook
 };
 
 /**
  * @brief Computes attention scores and output for a single head.
  */
 static void compute_head_attention(const HeadAttentionArgs &args) {
+    const ActivationHooks &ahooks = activation_hooks();
+    const bool want_attn_hook = (ahooks.attention_row != nullptr && args.layer_idx >= 0);
     const size_t kv_head_idx = static_cast<size_t>(args.head_idx) / args.num_rep;
     constexpr size_t STACK_SCORES_CAP = 1024;
     float stack_scores[STACK_SCORES_CAP];
     std::vector<float> heap_scores;
 
     for (size_t qi = 0; qi < args.seq_len; ++qi) {
-        const size_t abs_qi = args.pos_offset + qi;
         float *scores = stack_scores;
         if (args.total_len > STACK_SCORES_CAP) {
             heap_scores.resize(args.total_len);
@@ -720,7 +723,12 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
         }
 
         const float *q_ptr = args.query_buf.data() + (qi * args.local_hidden_dim) + (static_cast<size_t>(args.head_idx) * args.head_dim);
-        const size_t npos = abs_qi + 1;
+        // With a KV cache, positions are absolute (pos_offset + qi). Without
+        // one, key_buf/value_buf only hold the seq_len rows being processed —
+        // attending to pos_offset + qi + 1 positions would read out of bounds.
+        const size_t npos = (args.cache_layer != nullptr)
+            ? (args.pos_offset + qi + 1)
+            : (qi + 1);
         const size_t koff = kv_head_idx * args.head_dim;
         // FP16 KV cache when available (halves attention DRAM traffic).
         // SERIUS_KV_FP32=1 forces the fp32 path for max precision.
@@ -779,6 +787,12 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
 
         softmax_rows_inplace({scores, 1, args.total_len});
 
+        // Observability hook (interpret): attention distribution of this
+        // query row. `scores` is reused across qi — consumers must copy.
+        if (want_attn_hook) {
+            ahooks.attention_row(args.layer_idx, args.head_idx, qi, scores, npos);
+        }
+
         float *out_ptr = args.attention_out_ptr + (qi * args.local_hidden_dim) + (static_cast<size_t>(args.head_idx) * args.head_dim);
         if (simd_ok) {
             // Weighted-V sum with the output kept in registers across all positions.
@@ -801,7 +815,7 @@ static void compute_head_attention(const HeadAttentionArgs &args) {
             std::memset(out_ptr, 0, args.head_dim * sizeof(float));
             std::vector<float> vrow;
             if (kv16) { vrow.resize(args.head_dim); }
-            for (size_t kj = 0; kj <= abs_qi; ++kj) {
+            for (size_t kj = 0; kj < npos; ++kj) {
                 const size_t vo = kj * args.local_kv_dim + (kv_head_idx * args.head_dim);
                 const float *v_ptr;
                 if (kv16) {
@@ -856,7 +870,8 @@ static void llama_attention_layer_cpu(
     size_t pos_offset,
     const model::LLamaConfig &cfg,
     const distributed::DistributedTopology &topology,
-    KVCacheLayer *cache_layer) {
+    KVCacheLayer *cache_layer,
+    int layer_idx = -1) {
 
     const size_t hidden_dim = cfg.hidden_size;
     const size_t head_dim = hidden_dim / cfg.num_attention_heads;
@@ -900,7 +915,8 @@ static void llama_attention_layer_cpu(
         compute_head_attention({
             h_idx, seq_len, pos_offset, total_len,
             local_hidden_dim, local_kv_dim, head_dim, num_rep,
-            query_buf, key_buf, value_buf, cache_layer, attention_scale, attention_out.data()
+            query_buf, key_buf, value_buf, cache_layer, attention_scale, attention_out.data(),
+            layer_idx
         });
     }
     if (prof) { prof::acc().attn_hd += prof::now() - t_hd0; }
@@ -1020,6 +1036,9 @@ static void llama_mlp_layer_cpu(
 Tensor llama_forward_cuda(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache);
 Tensor llama_forward_cuda_last(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache);
 Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache);
+Tensor llama_forward_single_token_cuda_prefix(const model::LLaMAModel &model, int token_id, size_t pos,
+                                              KVCache *cache, size_t n_gpu_layers,
+                                              float *hidden_out, size_t hidden_size);
 Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos,
                                              KVCache *cache);
 #endif
@@ -1059,7 +1078,8 @@ static void compute_logits(const model::LLaMAModel &model, const Tensor &final_n
 Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache) {
     enable_ftz_daz_once();
 #ifdef SERIUS_USE_CUDA
-    if (prefill_batch_enabled() && model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
+    if (prefill_batch_enabled() && partial_gpu_layers(model) == 0 &&
+        model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
         return llama_forward_cuda(model, token_ids, cache);
     }
 #endif
@@ -1074,7 +1094,10 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
     // correct, but GGUF decode uses lossy-requantized packed weights while the
     // batched path uses dense FP32 weights, so outputs can differ slightly.
     const bool has_quant = !model.layers().empty() && model.layers()[0]->qkv_w.valid();
-    if (!prefill_batch_enabled() || (has_quant && seq_len <= 8)) {
+    // Partial offload always takes the per-token path: batched prefill would
+    // write every layer's KV on CPU while decode reads the GPU prefix KV.
+    if (!prefill_batch_enabled() || partial_gpu_layers(model) > 0 ||
+        (has_quant && seq_len <= 8)) {
         core::Tensor last_logits({0});
         for (size_t i = 0; i < seq_len; ++i) {
             const int tid = static_cast<int>(token_ids[i]);
@@ -1104,10 +1127,14 @@ Tensor llama_forward_inference(const model::LLaMAModel &model, const Tensor &tok
 
         Tensor normed_states_tensor({seq_len, hidden_dim});
         const auto &layer_blocks = model.layers();
+        const ActivationHooks &hooks = activation_hooks();
         for (size_t layer_idx = 0; layer_idx < layer_blocks.size(); ++layer_idx) {
             KVCacheLayer *cache_layer = (cache != nullptr) ? &cache->layers[layer_idx] : nullptr;
-            llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), seq_len, 0, cfg, model.topology(), cache_layer);
+            llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), seq_len, 0, cfg, model.topology(), cache_layer, static_cast<int>(layer_idx));
             llama_mlp_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), seq_len, cfg, model.topology());
+            if (hooks.layer_hidden != nullptr) {
+                hooks.layer_hidden(static_cast<int>(layer_idx), hidden_states.data(), seq_len, hidden_dim);
+            }
         }
         std::memcpy(output_act, hidden_states.data(), seq_len * hidden_dim * sizeof(float));
     };
@@ -1163,7 +1190,8 @@ Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor
         return last_logits;
     }
 #ifdef SERIUS_USE_CUDA
-    if (model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
+    if (partial_gpu_layers(model) == 0 && model.embed_tokens() &&
+        model.embed_tokens()->data.is_gpu()) {
         return llama_forward_cuda_last(model, token_ids, cache);
     }
 #endif
@@ -1176,9 +1204,60 @@ Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor
     return out;
 }
 
+/// CPU suffix for partial GPU offload: continues the residual stream at
+/// `layer_begin` through the final norm + lm_head. `hidden` is a {1,hidden}
+/// FP32 buffer updated in place; KV for these layers lives in `cache` as CPU
+/// tensors grown on demand by update_kv_cache.
+static Tensor llama_forward_suffix_cpu(const model::LLaMAModel &model, float *hidden,
+                                       size_t pos, KVCache *cache, size_t layer_begin) {
+    const auto &cfg = model.config();
+    const size_t hidden_dim = cfg.hidden_size;
+
+    Tensor normed({1, hidden_dim});
+    const auto &layer_blocks = model.layers();
+    for (size_t i = layer_begin; i < layer_blocks.size(); ++i) {
+        KVCacheLayer *cl = (cache != nullptr && i < cache->layers.size()) ? &cache->layers[i] : nullptr;
+        llama_attention_layer_cpu(layer_blocks[i].get(), hidden, normed.data(), 1, pos,
+                                  cfg, model.topology(), cl, static_cast<int>(i));
+        llama_mlp_layer_cpu(layer_blocks[i].get(), hidden, normed.data(), 1, cfg, model.topology());
+    }
+    Tensor final_normed({1, hidden_dim});
+    rms_norm({hidden, model.norm_weight()->data.data(), final_normed.data(), 1, hidden_dim, cfg.rms_norm_eps});
+    Tensor logits({1, cfg.vocab_size});
+    compute_logits(model, final_normed, logits, 1, cfg);
+    return logits;
+}
+
+/// One decode/prefill-token step under partial offload: GPU prefix (layers
+/// [0, n_gpu)) produces the residual stream, D2H once, CPU suffix finishes.
+/// Every token goes through this path so each layer's KV cache is written by
+/// the device that owns it — batched prefill is deliberately bypassed.
+static Tensor llama_forward_single_token_partial(const model::LLaMAModel &model, int token_id,
+                                                 size_t pos, KVCache *cache, size_t n_gpu) {
+#ifdef SERIUS_USE_CUDA
+    const size_t hidden_dim = model.config().hidden_size;
+    std::vector<float> hbuf(hidden_dim, 0.0f);
+    // Returns an empty tensor by design: it emits the hidden state via hbuf.
+    // CUDA errors throw — there is no silent wrong-result path.
+    llama_forward_single_token_cuda_prefix(model, token_id, pos, cache, n_gpu,
+                                           hbuf.data(), hidden_dim);
+    return llama_forward_suffix_cpu(model, hbuf.data(), pos, cache, n_gpu);
+#else
+    Tensor t_ids({1});
+    t_ids[0] = static_cast<float>(token_id);
+    Tensor h({1, model.config().hidden_size});
+    preprocess_embeddings(model, t_ids, h);
+    return llama_forward_suffix_cpu(model, h.data(), pos, cache, 0);
+#endif
+}
+
 Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache) {
     enable_ftz_daz_once();
 #ifdef SERIUS_USE_CUDA
+    const size_t ngpu = partial_gpu_layers(model);
+    if (ngpu > 0) {
+        return llama_forward_single_token_partial(model, token_id, pos, cache, ngpu);
+    }
     if (model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
         Tensor graph_logits = llama_forward_single_token_cuda_graph(model, token_id, pos, cache);
         if (graph_logits.size() > 0) {
@@ -1210,10 +1289,14 @@ Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, 
 
         Tensor normed_states_tensor({1, hidden_dim});
         const auto &layer_blocks = model.layers();
+        const ActivationHooks &hooks = activation_hooks();
         for (size_t layer_idx = 0; layer_idx < layer_blocks.size(); ++layer_idx) {
             KVCacheLayer *cache_layer = (cache != nullptr) ? &cache->layers[layer_idx] : nullptr;
-            llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), 1, pos, cfg, model.topology(), cache_layer);
+            llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), 1, pos, cfg, model.topology(), cache_layer, static_cast<int>(layer_idx));
             llama_mlp_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(), 1, cfg, model.topology());
+            if (hooks.layer_hidden != nullptr) {
+                hooks.layer_hidden(static_cast<int>(layer_idx), hidden_states.data(), 1, hidden_dim);
+            }
         }
         std::memcpy(output_act, hidden_states.data(), hidden_dim * sizeof(float));
     };

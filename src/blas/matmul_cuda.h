@@ -17,6 +17,14 @@ void batched_matmul_cuda(const void *A, const void *B, void *C, size_t batch_siz
 void logits_gemv_mixed_cublas(const void *x, const void *w, void *out, size_t seq, size_t vocab, size_t hidden,
                               void *stream = nullptr);
 
+/// Tiled variant of logits_gemv_mixed_cublas: computes vocab rows
+/// [v0, v0+n) of out[seq, vocab_total], where `w` is the FP16 [n, hidden]
+/// tile holding exactly those rows (e.g. a dequantized slice of the packed
+/// lm_head). Tiles cover disjoint columns of an uninitialized `out`, so
+/// `beta` should be 0.
+void logits_gemm_mixed_cublas(const void *x, const void *w, void *out, size_t seq, size_t vocab_total,
+                              size_t v0, size_t n, size_t hidden, float beta, void *stream = nullptr);
+
 }  // namespace blas
 }  // namespace core
 }  // namespace serius

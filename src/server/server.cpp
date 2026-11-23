@@ -193,6 +193,14 @@ void Server::maybe_offload_to_gpu(model::LLaMAModel &model)
     if (config_.gpu_mode == ServerConfig::GpuMode::kCpu) {
         return;
     }
+    // --gpu-layers N: partial offload (GPU prefix + CPU suffix). Returns
+    // false for N >= layer count, which falls through to the full offload.
+    if (config_.gpu_layers > 0 &&
+        infer::offload_llama_model_partial(model, static_cast<size_t>(config_.gpu_layers))) {
+        spdlog::info("LLaMA model partial offload: {} layers on GPU, rest CPU",
+                     config_.gpu_layers);
+        return;
+    }
     const auto mode = (config_.gpu_mode == ServerConfig::GpuMode::kCuda)
         ? infer::LlamaGpuMode::kCuda : infer::LlamaGpuMode::kAuto;
     const auto dec = infer::resolve_llama_gpu(model, mode);
@@ -555,28 +563,12 @@ void Server::setup_routes()
     // Setup static file serving for web UI
     setup_static_routes(server_, config_.ui_dir);
 
-    server_.Get("/health", [this](const httplib::Request &, httplib::Response &res) {
-        nlohmann::json j;
-        j["status"] = "ok";
-        j["model_loaded"] = has_model();
-        j["model_name"] = model_name();
-        j["ram_bytes"] = process_ram_bytes();
-        j["vram_bytes"] = process_vram_bytes();
-        res.set_content(j.dump(), "application/json");
+    server_.Get("/health", [this](const httplib::Request &req, httplib::Response &res) {
+        handle_health(req, res);
     });
 
     server_.Get("/metrics", [this](const httplib::Request &req, httplib::Response &res) {
-        const std::string accept = req.get_header_value("Accept");
-        if (accept.find("application/json") != std::string::npos) {
-            const auto now = std::chrono::steady_clock::now();
-            const auto uptime_sec = std::chrono::duration<double>(now - g_start_time).count();
-            nlohmann::json j;
-            j["uptime_seconds"] = uptime_sec;
-            j["model_loaded"] = has_model();
-            res.set_content(j.dump(), "application/json");
-        } else {
-            res.set_content(metrics_->prometheus_text(), "text/plain; version=0.0.4; charset=utf-8");
-        }
+        handle_metrics(req, res);
     });
 
     server_.Get("/v1/models", [this](const httplib::Request &, httplib::Response &res) {
@@ -684,6 +676,11 @@ void Server::setup_routes()
             type = "llama";  // GGUF files only load through the llama path
         }
 
+        // Qwen2-family models run through the LLaMA path (arch details come
+        // from config/metadata, not the flag).
+        if (type == "qwen") {
+            type = "llama";
+        }
         if (type != "llama" && type != "transformer") {
             res.status = 400;
             res.set_content(
@@ -1159,21 +1156,93 @@ void Server::setup_routes()
     });
 }
 
+void Server::handle_health(const httplib::Request &, httplib::Response &res)
+{
+    nlohmann::json j;
+    j["status"] = "ok";
+    j["model_loaded"] = has_model();
+    j["model_name"] = model_name();
+    j["ram_bytes"] = process_ram_bytes();
+    j["vram_bytes"] = process_vram_bytes();
+    res.set_content(j.dump(), "application/json");
+}
+
+void Server::handle_metrics(const httplib::Request &req, httplib::Response &res)
+{
+    const std::string accept = req.get_header_value("Accept");
+    if (accept.find("application/json") != std::string::npos) {
+        const auto now = std::chrono::steady_clock::now();
+        const auto uptime_sec = std::chrono::duration<double>(now - g_start_time).count();
+        nlohmann::json j;
+        j["uptime_seconds"] = uptime_sec;
+        j["model_loaded"] = has_model();
+        res.set_content(j.dump(), "application/json");
+    } else {
+        res.set_content(metrics_->prometheus_text(), "text/plain; version=0.0.4; charset=utf-8");
+    }
+}
+
 int Server::run()
 {
     setup_routes();
+
+    // Dedicated ops listener: /health and /metrics are lock-free and cheap,
+    // but on the main port each connection occupies a httplib pool slot for
+    // the whole request — under load they can starve behind generations.
+    // health_port gives monitoring its own listener that never queues.
+    if (config_.health_port != 0 && config_.health_port != config_.port) {
+        ops_server_ = std::make_unique<httplib::Server>();
+        ops_server_->Get("/health", [this](const httplib::Request &req, httplib::Response &res) {
+            handle_health(req, res);
+        });
+        ops_server_->Get("/metrics", [this](const httplib::Request &req, httplib::Response &res) {
+            handle_metrics(req, res);
+        });
+        ops_thread_ = std::thread([this] {
+            // Same resilience as the main listener: a fatal accept() error
+            // closes the socket, so re-bind and retry until stop().
+            while (!stop_requested_.load()) {
+                ops_server_->listen(host_.c_str(), static_cast<int>(config_.health_port));
+                if (stop_requested_.load()) { break; }
+                spdlog::warn("Ops listener failed; re-binding in 1s");
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        });
+        ops_thread_.detach();
+        spdlog::info("Ops endpoints (/health, /metrics) also listening on {}:{}",
+                     host_, config_.health_port);
+    }
+
     spdlog::info("Serius server listening on {}:{}", host_, port_);
-    const bool ok = server_.listen(host_.c_str(), static_cast<int>(port_));
-    if (!ok) {
-        spdlog::error("Failed to listen on {}:{}", host_, port_);
+
+    // httplib treats any accept() error other than EMFILE/EINTR/EAGAIN as
+    // fatal: it closes the listen socket and listen() returns false. Under
+    // connection churn (stress ramp, client aborts) that used to kill the
+    // whole process silently. Re-bind and retry until stop() is requested;
+    // a genuine bind failure at startup still fails fast on the first try.
+    if (!server_.bind_to_port(host_.c_str(), static_cast<int>(port_))) {
+        spdlog::error("Failed to bind {}:{}", host_, port_);
         return 1;
+    }
+    while (!stop_requested_.load()) {
+        if (server_.listen_after_bind()) { return 0; }
+        if (stop_requested_.load()) { return 0; }
+        spdlog::warn("Listener socket error on {}:{}; re-binding in 1s",
+                     host_, port_);
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (!server_.bind_to_port(host_.c_str(), static_cast<int>(port_))) {
+            spdlog::warn("Re-bind of {}:{} failed; retrying", host_, port_);
+        }
     }
     return 0;
 }
 
 void Server::stop()
 {
+    stop_requested_.store(true);
     server_.stop();
+    if (ops_server_) { ops_server_->stop(); }
+    if (ops_thread_.joinable()) { ops_thread_.join(); }
 }
 
 std::string extract_last_user_message(const std::string &json_body)

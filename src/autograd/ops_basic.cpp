@@ -64,6 +64,9 @@ Node *matmul(Node *input_a, Node *input_b)
     Node *out = new Node(std::move(res));
     out->children = {input_a, input_b};
     out->name = "matmul";
+    out->forward_fn = [](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward([](const std::vector<Node *> &a) { return matmul(a[0], a[1]); }, in);
+    };
 
     // Backward pass
     out->backward_fn = [input_a, input_b, out, complex_reshape]() {
@@ -157,6 +160,9 @@ Node *add(Node *input_a, Node *input_b)
     Node *out = new Node(std::move(res));
     out->children = {input_a, input_b};
     out->name = "add";
+    out->forward_fn = [](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward([](const std::vector<Node *> &a) { return add(a[0], a[1]); }, in);
+    };
 
     // Backward pass
     out->backward_fn = [input_a, input_b, out]() {
@@ -196,6 +202,9 @@ Node *relu(Node *input_node)
     Node *out = new Node(std::move(res));
     out->children = {input_node};
     out->name = "relu";
+    out->forward_fn = [](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward([](const std::vector<Node *> &a) { return relu(a[0]); }, in);
+    };
 
     // Backward pass
     out->backward_fn = [input_node, out]() {
@@ -232,6 +241,9 @@ Node *gelu(Node *input_node)
     Node *out = new Node(std::move(res));
     out->children = {input_node};
     out->name = "gelu";
+    out->forward_fn = [](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward([](const std::vector<Node *> &a) { return gelu(a[0]); }, in);
+    };
 
     // Backward pass (simplified approximation)
     out->backward_fn = [input_node, out, SQRT_2_PI]() {
@@ -271,6 +283,9 @@ Node *silu(Node *input_node)
     Node *out = new Node(std::move(res));
     out->children = {input_node};
     out->name = "silu";
+    out->forward_fn = [](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward([](const std::vector<Node *> &a) { return silu(a[0]); }, in);
+    };
     out->backward_fn = [input_node, out]() {
         if (input_node->requires_grad) {
             for (size_t i = 0; i < input_node->data.size(); ++i) {
@@ -322,6 +337,10 @@ Node *softmax(Node *input_node, int dimension)
     Node *out = new Node(std::move(res));
     out->children = {input_node};
     out->name = "softmax";
+    out->forward_fn = [dimension](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward(
+            [dimension](const std::vector<Node *> &a) { return softmax(a[0], dimension); }, in);
+    };
 
     // Backward pass: dL/dx_i = s_i * (dL/ds_i - sum_j(s_j * dL/ds_j))
     out->backward_fn = [input_node, out, n_dim, k_dim]() {
@@ -366,7 +385,11 @@ Node *cross_entropy(Node *input_logits, Node *input_targets)
     }
 
     size_t total_elements = batch_size * seq_len;
-    Tensor prob_tensor(input_logits->data.shape());
+    // prob_tensor is only consumed by backward_fn — skip its (large)
+    // allocation and fill entirely during plan replay.
+    const bool keep_probs = !detail::in_replay();
+    Tensor prob_tensor;
+    if (keep_probs) { prob_tensor = Tensor(input_logits->data.shape()); }
     float total_loss = 0.0F;
 
     const float OFFSET_EPS = 1e-12F;
@@ -375,11 +398,11 @@ Node *cross_entropy(Node *input_logits, Node *input_targets)
     // Let's rewrite with better flat loops for performance and 3D support
     const float *logits_raw = input_logits->data.data();
     const float *targets_raw = input_targets->data.data();
-    float *probs_raw = prob_tensor.data();
+    float *probs_raw = keep_probs ? prob_tensor.data() : nullptr;
 
     for (size_t i = 0; i < total_elements; ++i) {
         const float *logits_slice = logits_raw + (i * vocab_size);
-        float *probs_slice = probs_raw + (i * vocab_size);
+        float *probs_slice = probs_raw != nullptr ? probs_raw + (i * vocab_size) : nullptr;
 
         float max_l = M_INF;
         for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
@@ -389,24 +412,40 @@ Node *cross_entropy(Node *input_logits, Node *input_targets)
         float sum_e = 0.0F;
         for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
             float e_val = std::exp(logits_slice[v_idx] - max_l);
-            probs_slice[v_idx] = e_val;
+            if (probs_slice != nullptr) { probs_slice[v_idx] = e_val; }
             sum_e += e_val;
         }
 
-        for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
-            probs_slice[v_idx] /= sum_e;
-        }
-
         size_t target_idx = static_cast<size_t>(targets_raw[i]);
-        total_loss += -std::log(std::max(probs_slice[target_idx], OFFSET_EPS));
+        // p_target = exp(logit_t - max) / sum_e — identical to the normalized
+        // probs_slice[target_idx] but computable without storing all probs.
+        float p_target;
+        if (keep_probs) {
+            for (size_t v_idx = 0; v_idx < vocab_size; ++v_idx) {
+                probs_slice[v_idx] /= sum_e;
+            }
+            p_target = probs_slice[target_idx];
+        } else {
+            p_target = std::exp(logits_slice[target_idx] - max_l) / sum_e;
+        }
+        total_loss += -std::log(std::max(p_target, OFFSET_EPS));
     }
 
     Node *out = new Node(Tensor({1}));
     out->data[0] = total_loss / static_cast<float>(total_elements);
     out->children = {input_logits};
     out->name = "cross_entropy";
+    // Targets are not graph children; bake them into the replay as a constant.
+    if (!detail::in_replay()) {
+        out->forward_fn = [targets = input_targets->data](const std::vector<const Tensor *> &in) -> Tensor {
+            Node targets_node(targets, false);
+            return detail::replay_forward(
+                [&targets_node](const std::vector<Node *> &a) { return cross_entropy(a[0], &targets_node); }, in);
+        };
+    }
 
-    out->backward_fn = [input_logits, input_targets, out, prob_tensor, total_elements, vocab_size]() {
+    if (!detail::in_replay()) {
+        out->backward_fn = [input_logits, input_targets, out, prob_tensor, total_elements, vocab_size]() {
         if (input_logits->requires_grad) {
             float scale_val = out->grad[0] / static_cast<float>(total_elements);
             const float *targets_raw = input_targets->data.data();
@@ -424,7 +463,8 @@ Node *cross_entropy(Node *input_logits, Node *input_targets)
                 }
             }
         }
-    };
+        };
+    }
     return out;
 }
 
@@ -448,11 +488,15 @@ Node *masked_cross_entropy(Node *input_logits, Node *input_targets, const core::
         throw std::invalid_argument("masked_cross_entropy: target and mask shapes must match the logits rows.");
     }
 
-    Tensor probabilities(logits.shape());
+    // probabilities is only consumed by backward_fn — skip its allocation
+    // and fill entirely during plan replay.
+    const bool keep_probs = !detail::in_replay();
+    Tensor probabilities;
+    if (keep_probs) { probabilities = Tensor(logits.shape()); }
     const float *logits_data = logits.data();
     const float *targets_data = targets.data();
     const float *mask_data = loss_mask.data();
-    float *probabilities_data = probabilities.data();
+    float *probabilities_data = keep_probs ? probabilities.data() : nullptr;
     float total_loss = 0.0F;
     size_t active_rows = 0;
 
@@ -470,7 +514,7 @@ Node *masked_cross_entropy(Node *input_logits, Node *input_targets, const core::
         }
 
         const float *row_logits = logits_data + row * vocab_size;
-        float *row_probabilities = probabilities_data + row * vocab_size;
+        float *row_probabilities = probabilities_data != nullptr ? probabilities_data + row * vocab_size : nullptr;
         float max_logit = -std::numeric_limits<float>::infinity();
         for (size_t token = 0; token < vocab_size; ++token) {
             if (!std::isfinite(row_logits[token])) {
@@ -481,14 +525,17 @@ Node *masked_cross_entropy(Node *input_logits, Node *input_targets, const core::
 
         float exp_sum = 0.0F;
         for (size_t token = 0; token < vocab_size; ++token) {
-            row_probabilities[token] = std::exp(row_logits[token] - max_logit);
-            exp_sum += row_probabilities[token];
+            const float e_val = std::exp(row_logits[token] - max_logit);
+            if (row_probabilities != nullptr) { row_probabilities[token] = e_val; }
+            exp_sum += e_val;
         }
 
         const float log_partition = max_logit + std::log(exp_sum);
         total_loss += log_partition - row_logits[static_cast<size_t>(target_value)];
-        for (size_t token = 0; token < vocab_size; ++token) {
-            row_probabilities[token] /= exp_sum;
+        if (row_probabilities != nullptr) {
+            for (size_t token = 0; token < vocab_size; ++token) {
+                row_probabilities[token] /= exp_sum;
+            }
         }
         ++active_rows;
     }
@@ -501,9 +548,22 @@ Node *masked_cross_entropy(Node *input_logits, Node *input_targets, const core::
     out->data[0] = total_loss / static_cast<float>(active_rows);
     out->children = {input_logits};
     out->name = "masked_cross_entropy";
-    const Tensor mask_copy = loss_mask.copy();
-    out->backward_fn = [input_logits, input_targets, out, probabilities, mask_copy, row_count, vocab_size,
-                        active_rows]() {
+    // Targets and mask are not graph children; bake them into the replay.
+    if (!detail::in_replay()) {
+        out->forward_fn = [targets = input_targets->data,
+                           loss_mask](const std::vector<const Tensor *> &in) -> Tensor {
+            Node targets_node(targets, false);
+            return detail::replay_forward(
+                [&targets_node, &loss_mask](const std::vector<Node *> &a) {
+                    return masked_cross_entropy(a[0], &targets_node, loss_mask);
+                },
+                in);
+        };
+    }
+    if (!detail::in_replay()) {
+        const Tensor mask_copy = loss_mask.copy();
+        out->backward_fn = [input_logits, input_targets, out, probabilities, mask_copy, row_count, vocab_size,
+                            active_rows]() {
         if (!input_logits->requires_grad) return;
 
         const float scale = out->grad[0] / static_cast<float>(active_rows);
@@ -521,7 +581,8 @@ Node *masked_cross_entropy(Node *input_logits, Node *input_targets, const core::
                 row_gradient[token] += scale * (row_probabilities[token] - (token == target ? 1.0F : 0.0F));
             }
         }
-    };
+        };
+    }
     return out;
 }
 
@@ -531,6 +592,10 @@ Node *reshape(Node *input_node, const std::vector<size_t> &new_shape)
     Node *out = new Node(std::move(res));
     out->children = {input_node};
     out->name = "reshape";
+    out->forward_fn = [new_shape](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward(
+            [&new_shape](const std::vector<Node *> &a) { return reshape(a[0], new_shape); }, in);
+    };
 
     std::vector<size_t> old_shape = input_node->data.shape();
     out->backward_fn = [input_node, out, old_shape]() {
@@ -551,6 +616,11 @@ Node *transpose(Node *input_node, size_t dim0, size_t dim1)
     Node *out = new Node(std::move(res));
     out->children = {input_node};
     out->name = "transpose";
+    out->forward_fn = [dim0_idx, dim1_idx](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward(
+            [dim0_idx, dim1_idx](const std::vector<Node *> &a) { return transpose(a[0], dim0_idx, dim1_idx); },
+            in);
+    };
 
     out->backward_fn = [input_node, out, dim0_idx, dim1_idx]() {
         if (input_node->requires_grad) {
@@ -574,6 +644,15 @@ Node *masked_fill(Node *input_node, const Tensor &mask_tensor, float fill_value)
     Node *out = new Node(std::move(res));
     out->children = {input_node};
     out->name = "masked_fill";
+    if (!detail::in_replay()) {
+        out->forward_fn = [mask_tensor, fill_value](const std::vector<const Tensor *> &in) -> Tensor {
+            return detail::replay_forward(
+                [&mask_tensor, fill_value](const std::vector<Node *> &a) {
+                    return masked_fill(a[0], mask_tensor, fill_value);
+                },
+                in);
+        };
+    }
 
     out->backward_fn = [input_node, out, mask_tensor]() {
         if (input_node->requires_grad) {
@@ -598,6 +677,10 @@ Node *mul_scalar(Node *input_node, float scalar_value)
     Node *out = new Node(std::move(res));
     out->children = {input_node};
     out->name = "mul_scalar";
+    out->forward_fn = [scalar_value](const std::vector<const Tensor *> &in) -> Tensor {
+        return detail::replay_forward(
+            [scalar_value](const std::vector<Node *> &a) { return mul_scalar(a[0], scalar_value); }, in);
+    };
 
     out->backward_fn = [input_node, out, scalar_value]() {
         if (input_node->requires_grad) {

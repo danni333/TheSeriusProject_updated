@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../common/text_embed.h"
 #include "../tensor/tensor.h"
 
 #include <memory>
@@ -58,6 +59,12 @@ class NomicBertEmbedder
     /// Full embedding pipeline: tokenize -> forward -> mean pool -> L2 norm.
     /// Returns a `dim()`-sized vector; empty on failure.
     std::vector<float> embed(const std::string &text) const;
+
+    /// Returns a `common::TextEmbedFn` bound to this embedder, ready to plug
+    /// into scorers that accept an embedder (SupportScorer, ToxicityClassifier,
+    /// EmbeddingVerifier, ...). The callable holds a pointer to `this`:
+    /// the NomicBertEmbedder must outlive it.
+    common::TextEmbedFn embed_fn() const;
 
     /// Forward pass on pre-tokenized ids (with CLS/SEP already applied is
     /// fine — they are ordinary positions for the encoder).

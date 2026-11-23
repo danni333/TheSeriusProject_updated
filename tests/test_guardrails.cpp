@@ -26,11 +26,11 @@ TEST(Guardrails, CheckResponse)
 
 TEST(ToxicityClassifier, ScoreRange)
 {
-    serius::safety::ToxicityClassifier::Config cfg;
+    serius::safety::TokenToxicityClassifier::Config cfg;
     cfg.vocab_size = 1000;
     cfg.embedding_dim = 64;
     cfg.hidden_dim = 32;
-    serius::safety::ToxicityClassifier classifier(cfg);
+    serius::safety::TokenToxicityClassifier classifier(cfg);
 
     std::vector<int> tokens = {1, 2, 3, 4, 5};
     float score = classifier.score(tokens);
@@ -42,7 +42,7 @@ TEST(ToxicityClassifier, ScoreRange)
 
 TEST(ToxicityClassifier, EmptyTokens)
 {
-    serius::safety::ToxicityClassifier classifier;
+    serius::safety::TokenToxicityClassifier classifier;
     std::vector<int> empty_tokens;
     float score = classifier.score(empty_tokens);
     EXPECT_FLOAT_EQ(score, 0.0f);
@@ -50,11 +50,11 @@ TEST(ToxicityClassifier, EmptyTokens)
 
 TEST(ToxicityClassifier, Threshold)
 {
-    serius::safety::ToxicityClassifier::Config cfg;
+    serius::safety::TokenToxicityClassifier::Config cfg;
     cfg.vocab_size = 1000;
     cfg.embedding_dim = 64;
     cfg.hidden_dim = 32;
-    serius::safety::ToxicityClassifier classifier(cfg);
+    serius::safety::TokenToxicityClassifier classifier(cfg);
     classifier.set_threshold(0.5f);
 
     std::vector<int> tokens = {1, 2, 3};

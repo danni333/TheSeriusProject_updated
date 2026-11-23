@@ -19,6 +19,11 @@ struct StressConfig {
     std::string prompt = "Explain quantum computing in detail...";
     int max_tokens = defaults::kMaxNewTokens;
     std::string server_url = defaults::kServerUrl;
+    /// Optional dedicated ops endpoint for /health memory sampling
+    /// (e.g. http://host:health_port). Empty = derive from server_url.
+    /// Under heavy load /health on the main port can starve behind
+    /// generation jobs; pointing this at the ops port keeps sampling alive.
+    std::string health_url;
     std::string model_name = defaults::kModelName;
     std::string endpoint = "/v1/chat/completions";
     int http_timeout_seconds = defaults::kStressTimeoutSec;

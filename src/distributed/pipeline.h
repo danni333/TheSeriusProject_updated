@@ -56,14 +56,30 @@ class PipelineExecutor
     ///                     Shape: [num_micro_batches * micro_batch_size]
     /// @param output_data  Output from the last stage (ignored on other stages)
     /// @param loss_gradients  dL/d(output) for the last stage, shape
-    ///                     [num_micro_batches * hidden_size]. If nullptr, the
-    ///                     last stage uses a unit gradient (placeholder).
+    ///                     [num_micro_batches * hidden_size]. Required on the
+    ///                     last stage — throws std::invalid_argument if null.
+    ///                     Ignored on other stages.
     void execute(ForwardFn forward_fn, BackwardFn backward_fn,
                  const float *input_data, float *output_data,
                  const float *loss_gradients = nullptr);
 
     /// Execute only the forward pass (for inference).
     void execute_forward(ForwardFn forward_fn, const float *input_data, float *output_data);
+
+    /// Execute one full pipeline step with the 1F1B (one-forward-one-backward)
+    /// schedule instead of GPipe's all-forward-then-all-backward.
+    ///
+    /// Each stage performs `warmup = (num_stages - 1) - stage` forwards before
+    /// its first backward, then alternates 1F/1B until the micro-batches are
+    /// exhausted (Megatron-LM scheduling). Same arguments and contract as
+    /// execute(); the last stage still requires `loss_gradients`.
+    ///
+    /// Compared to execute(), 1F1B starts backwards earlier, which reduces the
+    /// effective bubble when stages are compute-bound and keeps peak pending
+    /// work lower; total communication volume is identical.
+    void execute_1f1b(ForwardFn forward_fn, BackwardFn backward_fn,
+                      const float *input_data, float *output_data,
+                      const float *loss_gradients = nullptr);
 
     /// Get the pipeline stage index for this rank
     int stage() const { return comm_->rank(); }

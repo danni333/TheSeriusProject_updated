@@ -25,7 +25,11 @@ int cmd_generate(int argc, char **argv)
     parser.add_flag({"seed", "", "Random seed for sampling (0 = random)", true, "0"});
     parser.add_flag({"type", "", "Model type: 'llama', 'qwen', or 'transformer'", true, "llama"});
     parser.add_flag({"gpu", "", "GPU backend (auto/cpu/cuda)", true, "auto"});
+    parser.add_flag({"gpu-layers", "", "Partial GPU offload: layers on GPU, rest CPU (-1 = auto)", true, "-1"});
     parser.add_flag({"raw", "", "Do not format prompt with ChatML template", false, ""});
+    parser.add_flag({"embed-model", "", "Embedding model (GGUF/safetensors dir) enabling semantic scorers (--toxicity)", true, ""});
+    parser.add_flag({"toxicity", "", "Score the response for toxicity (0-1); warns above --toxicity-threshold", false, ""});
+    parser.add_flag({"toxicity-threshold", "", "Toxicity warning threshold", true, "0.7"});
 
     if (!parser.parse(argc, argv)) {
         std::cerr << "Error: " << parser.error() << "\n";
@@ -58,7 +62,18 @@ int cmd_generate(int argc, char **argv)
         "--seed", parser.get("seed"),
         "--type", parser.get("type"),
         "--gpu", parser.get("gpu"),
+        "--gpu-layers", parser.get("gpu-layers"),
     };
+    const std::string embed_model = parser.get("embed-model");
+    if (!embed_model.empty()) {
+        args.push_back("--embed-model");
+        args.push_back(embed_model);
+    }
+    if (parser.has("toxicity")) {
+        args.push_back("--toxicity");
+        args.push_back("--toxicity-threshold");
+        args.push_back(parser.get("toxicity-threshold"));
+    }
     if (parser.has("raw")) {
         args.push_back("--raw");
     }

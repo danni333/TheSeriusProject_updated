@@ -1,3 +1,5 @@
+// EXPERIMENTAL: modulo didattico/sperimentale — vedi docs/experimental.md
+
 #pragma once
 
 #include <map>

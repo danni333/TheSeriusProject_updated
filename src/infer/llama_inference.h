@@ -145,5 +145,17 @@ struct LlamaGpuDecision {
 /// - kAuto  → offload iff the estimated footprint fits in free VRAM.
 LlamaGpuDecision resolve_llama_gpu(const model::LLaMAModel &model, LlamaGpuMode mode);
 
+/// Partial GPU offload (--gpu-layers N, llama.cpp --n-gpu-layers style):
+/// upload the first `n_layers` transformer blocks (+ embeddings) to the GPU
+/// as dual-resident FP32 copies — host weights stay intact for the CPU
+/// suffix. Decode runs a GPU prefix then a CPU suffix per token; prefill
+/// stays on the per-token path so KV cache stays consistent.
+/// Returns false when CUDA is unavailable or n_layers is out of range.
+bool offload_llama_model_partial(model::LLaMAModel &model, size_t n_layers);
+
+/// Number of leading layers offloaded by offload_llama_model_partial
+/// (0 = no partial offload). Consulted by the inference dispatch.
+size_t partial_gpu_layers(const model::LLaMAModel &model);
+
 }  // namespace infer
 }  // namespace serius

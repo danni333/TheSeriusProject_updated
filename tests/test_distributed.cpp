@@ -464,8 +464,9 @@ TEST(PipelineTest, TwoStagePipeline)
             // Input data: 2 micro-batches of 4 elements each
             std::vector<float> input(2 * 4, 1.0f);
             std::vector<float> output(2 * 4, 0.0f);
+            std::vector<float> loss(2 * 4, 1.0f);
 
-            pipeline.execute(fwd, bwd, input.data(), output.data());
+            pipeline.execute(fwd, bwd, input.data(), output.data(), loss.data());
         });
     }
 
@@ -525,6 +526,147 @@ TEST(PipelineTest, LossGradientPropagatesToFirstStage)
     ASSERT_EQ(seen[0].size(), 2u);
     EXPECT_EQ(seen[0][0], std::vector<float>({15, 18, 21, 24}));
     EXPECT_EQ(seen[0][1], std::vector<float>({3, 6, 9, 12}));
+}
+
+TEST(PipelineTest, OneF1BPropagatesLossGradient)
+{
+    const int world_size = 2;
+    auto comms = create_local_group(world_size);
+
+    PipelineConfig config;
+    config.num_stages = 2;
+    config.num_micro_batches = 4;
+    config.hidden_size = 4;
+
+    // Recorded (op, micro-batch) sequence per stage to verify 1F1B ordering.
+    std::vector<std::vector<std::pair<char, int>>> trace(world_size);
+    std::mutex trace_mtx;
+
+    std::vector<std::vector<std::vector<float>>> seen(world_size);
+    std::mutex seen_mtx;
+    std::vector<std::thread> threads;
+    for (int r = 0; r < world_size; ++r) {
+        threads.emplace_back([&, r]() {
+            PipelineExecutor pipeline(comms[static_cast<size_t>(r)].get(), config);
+            // Identity forward keeps in[0] == mb+1 at every stage, so the
+            // micro-batch index stays identifiable along the pipeline.
+            auto fwd = [&trace, &trace_mtx, r](const float *in, float *out,
+                                             size_t count) {
+                int mb = static_cast<int>(in[0]) - 1;
+                {
+                    std::lock_guard<std::mutex> lk(trace_mtx);
+                    trace[static_cast<size_t>(r)].emplace_back('F', mb);
+                }
+                for (size_t i = 0; i < count; ++i) out[i] = in[i];
+            };
+            const float scale = r == 0 ? 2.0f : 3.0f;
+            auto bwd = [scale, &seen, &seen_mtx, &trace, &trace_mtx, r](
+                           const float *grad_out, float *grad_in, size_t count) {
+                // Identify the micro-batch by grad_out[0] (loss = mb index + 1 scaled).
+                {
+                    std::lock_guard<std::mutex> lk(seen_mtx);
+                    seen[static_cast<size_t>(r)].emplace_back(grad_out, grad_out + count);
+                }
+                {
+                    std::lock_guard<std::mutex> lk(trace_mtx);
+                    // mb index recovered from the gradient magnitude is fragile;
+                    // record order only via a counter on first element instead.
+                    trace[static_cast<size_t>(r)].emplace_back('B', -1);
+                }
+                for (size_t i = 0; i < count; ++i) grad_in[i] = grad_out[i] * scale;
+            };
+
+            // input[mb*hs + i] = mb + 1 for all i (identifies the micro-batch)
+            std::vector<float> input(4 * 4);
+            for (int mb = 0; mb < 4; ++mb)
+                for (int i = 0; i < 4; ++i) input[mb * 4 + i] = static_cast<float>(mb + 1);
+            std::vector<float> output(4 * 4, 0.0f);
+            std::vector<float> loss(4 * 4);
+            for (int mb = 0; mb < 4; ++mb)
+                for (int i = 0; i < 4; ++i) loss[mb * 4 + i] = static_cast<float>(mb + 1);
+
+            pipeline.execute_1f1b(fwd, bwd, input.data(), output.data(), loss.data());
+        });
+    }
+    for (auto &t : threads) t.join();
+
+    // Both stages must see all 4 micro-batch gradients, last stage first in
+    // reverse micro-batch order is NOT required by 1F1B — order depends on
+    // schedule, but every micro-batch gradient must arrive exactly once.
+    ASSERT_EQ(seen[1].size(), 4u);
+    ASSERT_EQ(seen[0].size(), 4u);
+
+    // Collect the multiset of loss-gradient first-elements seen by last stage.
+    std::vector<float> last_first;
+    for (const auto &g : seen[1]) last_first.push_back(g[0]);
+    std::sort(last_first.begin(), last_first.end());
+    EXPECT_EQ(last_first, std::vector<float>({1, 2, 3, 4}));
+
+    // Stage 0 sees stage1's backward output: loss * stage1_scale(3).
+    std::vector<float> first_first;
+    for (const auto &g : seen[0]) first_first.push_back(g[0]);
+    std::sort(first_first.begin(), first_first.end());
+    EXPECT_EQ(first_first, std::vector<float>({3, 6, 9, 12}));
+
+    // 1F1B ordering on the last stage (warmup = 0): strictly alternating
+    // F,B,F,B,... with micro-batches in order.
+    const auto &t1 = trace[1];
+    ASSERT_EQ(t1.size(), 8u);
+    for (size_t i = 0; i < t1.size(); ++i) {
+        EXPECT_EQ(t1[i].first, (i % 2 == 0) ? 'F' : 'B');
+    }
+    for (size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(t1[2 * i].second, static_cast<int>(i));  // F0,F1,F2,F3 in order
+    }
+}
+
+TEST(PipelineTest, OneF1BThreeStages)
+{
+    const int world_size = 3;
+    auto comms = create_local_group(world_size);
+
+    PipelineConfig config;
+    config.num_stages = 3;
+    config.num_micro_batches = 4;
+    config.hidden_size = 2;
+
+    std::vector<int> fwd_count(world_size, 0), bwd_count(world_size, 0);
+    std::mutex cnt_mtx;
+
+    std::vector<std::thread> threads;
+    for (int r = 0; r < world_size; ++r) {
+        threads.emplace_back([&, r]() {
+            PipelineExecutor pipeline(comms[static_cast<size_t>(r)].get(), config);
+            auto fwd = [](const float *in, float *out, size_t count) {
+                for (size_t i = 0; i < count; ++i) out[i] = in[i] + 1.0f;
+            };
+            auto bwd = [](const float *grad_out, float *grad_in, size_t count) {
+                for (size_t i = 0; i < count; ++i) grad_in[i] = grad_out[i];
+            };
+
+            std::vector<float> input(4 * 2, 1.0f);
+            std::vector<float> output(4 * 2, 0.0f);
+            std::vector<float> loss(4 * 2, 0.5f);
+
+            auto counting_fwd = [&](const float *in, float *out, size_t count) {
+                { std::lock_guard<std::mutex> lk(cnt_mtx); ++fwd_count[static_cast<size_t>(r)]; }
+                fwd(in, out, count);
+            };
+            auto counting_bwd = [&](const float *go, float *gi, size_t count) {
+                { std::lock_guard<std::mutex> lk(cnt_mtx); ++bwd_count[static_cast<size_t>(r)]; }
+                bwd(go, gi, count);
+            };
+
+            pipeline.execute_1f1b(counting_fwd, counting_bwd, input.data(), output.data(), loss.data());
+        });
+    }
+    for (auto &t : threads) t.join();
+
+    // Every stage must run exactly n_mb forwards and n_mb backwards.
+    for (int r = 0; r < world_size; ++r) {
+        EXPECT_EQ(fwd_count[static_cast<size_t>(r)], 4);
+        EXPECT_EQ(bwd_count[static_cast<size_t>(r)], 4);
+    }
 }
 
 TEST(PipelineTest, BubbleRatio)
