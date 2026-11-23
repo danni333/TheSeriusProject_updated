@@ -42,6 +42,7 @@ param(
     [string]$SignThumbprint,
     [string]$SignPfx,
     [string]$SignPassword,
+    [string]$WiXDir = "",
     [switch]$SkipMsi
 )
 
@@ -149,8 +150,18 @@ Write-Host ("ZIP : {0} ({1:N1} MB)" -f $ZipPath, ((Get-Item $ZipPath).Length / 1
 
 # ---------------------------------------------------------------------- msi ---
 if (-not $SkipMsi) {
-    if (-not (Get-Command wix -ErrorAction SilentlyContinue)) {
-        Write-Warning "'wix' not found - skipping MSI. Install with: dotnet tool install --global wix"
+    # Locate WiX: prefer `wix` CLI (v4/v5) on PATH, else candle/light (v3 binaries)
+    $wixExe   = (Get-Command wix -ErrorAction SilentlyContinue).Source
+    if (-not $WiXDir) {
+        foreach ($cand in @($env:SERIUS_WIX_DIR, "$env:USERPROFILE\tools\wix314", "C:\tools\wix314")) {
+            if ($cand -and (Test-Path (Join-Path $cand "candle.exe"))) { $WiXDir = $cand; break }
+        }
+    }
+    $candle = if ($WiXDir) { Join-Path $WiXDir "candle.exe" } else { $null }
+    $light  = if ($WiXDir) { Join-Path $WiXDir "light.exe" }  else { $null }
+
+    if (-not $wixExe -and -not ($candle -and (Test-Path $candle))) {
+        Write-Warning "WiX not found - skipping MSI. Options: 'dotnet tool install --global wix', or WiX 3.14 binaries in ~/tools/wix314 (or -WiXDir)."
     } else {
         $wxsPath = Join-Path $OutDir "serius.wxs"
         $sb = New-Object System.Text.StringBuilder
@@ -159,7 +170,7 @@ if (-not $SkipMsi) {
         [void]$sb.AppendLine('<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">')
         [void]$sb.AppendLine("  <Product Id=`"*`" Name=`"Serius`" Language=`"1033`" Version=`"$Version`" Manufacturer=`"Serius`" UpgradeCode=`"7D2E5C41-9A3B-4E6F-8C1D-2B5A9F0E3D7C`">")
         [void]$sb.AppendLine('    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" />')
-        [void]$sb.AppendLine('    <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="no" />')
+        [void]$sb.AppendLine('    <MajorUpgrade Schedule="afterInstallInitialize" AllowDowngrades="no" DowngradeErrorMessage="A newer version of Serius is already installed." />')
         [void]$sb.AppendLine('    <Media Id="1" Cabinet="serius.cab" EmbedCab="yes" />')
         [void]$sb.AppendLine('    <Directory Id="TARGETDIR" Name="SourceDir">')
         [void]$sb.AppendLine('      <Directory Id="ProgramFiles64Folder">')
@@ -192,6 +203,12 @@ if (-not $SkipMsi) {
         $script:Sb = $sb
         Write-StageTree -Dir (Get-Item $StageDir) -DirId "INSTALLFOLDER" -Depth 2
 
+        # PATH component: registry keypath + append install dir to system PATH
+        [void]$sb.AppendLine('          <Component Id="C_SeriusPath" Guid="*">')
+        [void]$sb.AppendLine('            <RegistryValue Root="HKLM" Key="SOFTWARE\Serius" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />')
+        [void]$sb.AppendLine('            <Environment Id="SeriusPath" Name="Path" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="yes" />')
+        [void]$sb.AppendLine('          </Component>')
+
         [void]$sb.AppendLine('        </Directory>')
         [void]$sb.AppendLine('      </Directory>')
         [void]$sb.AppendLine('    </Directory>')
@@ -199,16 +216,26 @@ if (-not $SkipMsi) {
         foreach ($c in $script:CompRefs) {
             [void]$sb.AppendLine("      <ComponentRef Id=`"$c`" />")
         }
+        [void]$sb.AppendLine('      <ComponentRef Id="C_SeriusPath" />')
         [void]$sb.AppendLine('    </Feature>')
-        [void]$sb.AppendLine('    <Environment Id="SeriusPath" Name="Path" Value="[INSTALLFOLDER]" Permanent="no" Part="last" Action="set" System="yes" />')
         [void]$sb.AppendLine('  </Product>')
         [void]$sb.AppendLine('</Wix>')
 
         Set-Content $wxsPath $sb.ToString() -Encoding UTF8
 
         if (Test-Path $MsiPath) { Remove-Item $MsiPath -Force }
-        & wix build -arch x64 -out $MsiPath $wxsPath
-        if ($LASTEXITCODE -ne 0) { throw "wix build failed ($LASTEXITCODE)" }
+        if ($wixExe) {
+            & $wixExe build -arch x64 -out $MsiPath $wxsPath
+        } else {
+            $wixObj = Join-Path $OutDir "serius.wixobj"
+            $wxsAbs = (Resolve-Path $wxsPath).Path
+            $wixObjAbs = Join-Path (Get-Location) $wixObj
+            & $candle -arch x64 -nologo -out $wixObjAbs $wxsAbs
+            if ($LASTEXITCODE -ne 0) { throw "candle failed ($LASTEXITCODE)" }
+            & $light -nologo -out $MsiPath $wixObjAbs -cultures:1033
+            if ($LASTEXITCODE -ne 0) { throw "light failed ($LASTEXITCODE)" }
+        }
+        if ($LASTEXITCODE -ne 0) { throw "MSI build failed ($LASTEXITCODE)" }
 
         if ($DoSign) {
             & (Join-Path $PSScriptRoot "sign.ps1") -Path $MsiPath `

@@ -57,8 +57,8 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ## Report Part 1: Placeholder Codice Incompleto (27+)
 
 ### Critici (Backend Hardware)
-1. **Vulkan Backend** - 4 TODO + availability stub
-2. **Metal Backend** - 2 TODO + availability stub
+1. ~~Vulkan Backend~~ ⏸️ FUTURO — backend **rimosso** in `e88759f` (mai implementato, non compilava se attivato); CMake ora espone solo CUDA/NCCL/MPI. Riesaminare solo se serve un backend GPU alternativo
+2. ~~Metal Backend~~ ⏸️ FUTURO — stessa sorte di Vulkan (rimosso; rilevante solo su macOS)
 3. ~~Hub Search Engine~~ ✅ riscritto: full-text + filtri, ranking, similarità, trending, analytics (v. tabella)
 4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ path primario: encoder `nomic-bert` reale (GGUF, `src/hub/nomic_bert.cpp`) — dim 768, ~0.84s/embedding CPU (GEMM BLAS, ~4.5x), task prefix retrieval. Fallback: mean-pool `token_embd.weight` o hash n-gram deterministico
 5. **Hub Metadata Manager** - ~~SQLite disabled~~ ✅ backend SQLite reale + migrazione JSON automatica
@@ -200,7 +200,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 
 ### Memory Management (19)
 - Pattern corretto con backend abstraction
-- Vulkan/Metal stub (già documentati)
+- Backend non-CUDA rimossi (Vulkan/Metal → lavoro futuro, vedi Part 1)
 
 ### Threading (64)
 - std::lock_guard pattern corretto
@@ -220,8 +220,8 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 
 1. **Implementare Hub Search Engine** - 13 metodi stub
 2. **~~Implementare Hub Embedding Manager~~** ✅ encoder nomic-bert reale da GGUF + fallback token_embd/hash
-3. **Implementare Vulkan Backend** - 4 TODO
-4. **Implementare Metal Backend** - 2 TODO
+3. ~~Implementare Vulkan Backend~~ ⏸️ rimossa — lavoro futuro
+4. ~~Implementare Metal Backend~~ ⏸️ rimossa — lavoro futuro
 5. **~~Integrare SQLite in Hub Metadata Manager~~** ✅ backend SQLite + migrazione JSON
 
 ### ALTE (Importante)

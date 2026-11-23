@@ -1,4 +1,5 @@
 #include "cli/cli.h"
+#include "../blas/blas.h"
 #include "cli/cmd_bench.h"
 #include "cli/cmd_chat.h"
 #include "cli/cmd_convert.h"
@@ -25,6 +26,11 @@ namespace cli {
 
 int main_cli(int argc, char **argv)
 {
+    // Default the OpenMP team to physical cores: decode GEMVs are
+    // memory-bound and SMT siblings only add barrier overhead. An explicit
+    // OMP_NUM_THREADS still takes precedence (see configure_omp_threads).
+    core::blas::configure_omp_threads();
+
     CLI cli;
 
     cli.register_command({"chat", "Interactive chat with the model", cmd_chat});

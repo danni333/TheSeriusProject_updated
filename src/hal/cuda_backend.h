@@ -6,6 +6,7 @@
 
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace serius {
@@ -54,6 +55,10 @@ class CudaBackend : public IBackend
     std::mutex cache_mutex_;
     std::unordered_map<size_t, std::vector<void *>> free_lists_;
     std::unordered_map<void *, size_t> alloc_sizes_;
+    // Pointers from malloc_pinned: they must be released with cudaFreeHost,
+    // never cudaFree or the device free-list. (cudaMallocManaged memory is
+    // correctly released by cudaFree.)
+    std::unordered_set<void *> pinned_ptrs_;
     size_t cached_bytes_ = 0;
 };
 

@@ -451,34 +451,66 @@ bool offload_llama_model_partial(model::LLaMAModel &model, size_t n_layers)
         return false;  // 0 or "all" is handled by the full-offload path
     }
 
-    // Dual residency: set_device(CUDA) uploads an FP32 copy while the host
-    // FP32 weights stay intact — the CPU suffix keeps reading them.
-    auto gpu_copy = [](core::autograd::Node *p) {
+    // Packed-quant prefix (v2): upload the fused QuantWeights for the GPU
+    // layers — ~0.55 B/param vs ~4 B/param FP32, so many more layers fit and
+    // the prefix runs the same fast GEMV kernels as full offload. Layers
+    // whose packed weights can't be repacked/uploaded fall back to dense
+    // FP16 copies (still much faster than the old FP32 path).
+    auto upload_qw = [be](quant::QuantWeight &qw) {
+        if (!qw.valid() || qw.gpu_data != nullptr) {
+            return;
+        }
+        quant::repack_quant_for_gpu(qw);
+        if (qw.dev_stride == 0) {
+            return;
+        }
+        qw.gpu_data = be->malloc(qw.dev_bytes.size());
+        be->memcpy_h2d(qw.gpu_data, qw.dev_bytes.data(), qw.dev_bytes.size());
+    };
+    auto qw_ready = [](const quant::QuantWeight &qw) { return qw.gpu_data != nullptr && qw.dev_stride != 0; };
+    // FP16 param copies for the GPU prefix. cast() replaces the tensor, so
+    // the host side becomes FP16 too — fine: prefix params are never read
+    // by the CPU suffix (which only touches layers [n_layers, total)).
+    auto move_param_f16 = [](core::autograd::Node *p) {
         if (p != nullptr) {
+            p->data = p->data.cast(hal::DType::Float16);
             p->data.set_device(hal::DeviceType::CUDA);
         }
     };
 
-    gpu_copy(model.embed_tokens_raw());
+    move_param_f16(model.embed_tokens_raw());
+    size_t quant_layers = 0, dense_layers = 0;
     for (size_t i = 0; i < n_layers; ++i) {
-        const auto &blk = model.layers()[i];
-        gpu_copy(blk->input_layernorm_weight.get());
-        gpu_copy(blk->q_bias.get());
-        gpu_copy(blk->k_bias.get());
-        gpu_copy(blk->v_bias.get());
-        gpu_copy(blk->post_attention_layernorm_weight.get());
-        gpu_copy(blk->q_proj.get());
-        gpu_copy(blk->k_proj.get());
-        gpu_copy(blk->v_proj.get());
-        gpu_copy(blk->o_proj.get());
-        gpu_copy(blk->gate_proj.get());
-        gpu_copy(blk->up_proj.get());
-        gpu_copy(blk->down_proj.get());
+        auto &blk = model.layers()[i];
+        move_param_f16(blk->input_layernorm_weight.get());
+        move_param_f16(blk->q_bias.get());
+        move_param_f16(blk->k_bias.get());
+        move_param_f16(blk->v_bias.get());
+        move_param_f16(blk->post_attention_layernorm_weight.get());
+        upload_qw(blk->qkv_w);
+        upload_qw(blk->gate_up_w);
+        upload_qw(blk->o_w);
+        upload_qw(blk->down_w);
+        if (qw_ready(blk->qkv_w) && qw_ready(blk->gate_up_w) && qw_ready(blk->o_w) && qw_ready(blk->down_w)) {
+            ++quant_layers;
+        } else {
+            ++dense_layers;
+            move_param_f16(blk->q_proj.get());
+            move_param_f16(blk->k_proj.get());
+            move_param_f16(blk->v_proj.get());
+            move_param_f16(blk->o_proj.get());
+            move_param_f16(blk->gate_proj.get());
+            move_param_f16(blk->up_proj.get());
+            move_param_f16(blk->down_proj.get());
+        }
     }
     // norm_weight and lm_head stay CPU-only: the suffix computes them there.
 
     partial_layers_registry()[&model] = n_layers;
-    std::fprintf(stderr, "[offload] partial: %zu/%zu layers on GPU (FP32 dual-resident)\n", n_layers, total);
+    std::fprintf(stderr,
+                 "[offload] partial: %zu/%zu layers on GPU (%zu packed-quant, %zu dense-FP16; CPU suffix keeps FP32 "
+                 "host weights)\n",
+                 n_layers, total, quant_layers, dense_layers);
     return true;
 #else
     (void)model;

@@ -1339,7 +1339,28 @@ Tensor llama_forward_single_token(const model::LLaMAModel &model, int token_id, 
         Tensor normed_states_tensor({1, hidden_dim});
         const auto &layer_blocks = model.layers();
         const ActivationHooks &hooks = activation_hooks();
+        // Decode is DRAM-latency bound on packed GEMVs; stream the next
+        // layer's weights into L3 while this layer computes. Opt-in via
+        // SERIUS_PREFETCH=1 — measured neutral-to-negative on i9-11900H
+        // (prefetch issue cost + thermal variance), keep for re-test on
+        // other uarchs.
+        static const bool do_prefetch = [] {
+#if defined(_MSC_VER)
+            char buf[8];
+            size_t len = 0;
+            return getenv_s(&len, buf, sizeof(buf), "SERIUS_PREFETCH") == 0 && len > 0;
+#else
+            return std::getenv("SERIUS_PREFETCH") != nullptr;
+#endif
+        }();
         for (size_t layer_idx = 0; layer_idx < layer_blocks.size(); ++layer_idx) {
+            if (do_prefetch && layer_idx + 1 < layer_blocks.size()) {
+                const model::LLaMABlock *next = layer_blocks[layer_idx + 1].get();
+                core::blas::prefetch_quant_weight(next->qkv_w);
+                core::blas::prefetch_quant_weight(next->o_w);
+                core::blas::prefetch_quant_weight(next->gate_up_w);
+                core::blas::prefetch_quant_weight(next->down_w);
+            }
             KVCacheLayer *cache_layer = (cache != nullptr) ? &cache->layers[layer_idx] : nullptr;
             llama_attention_layer_cpu(layer_blocks[layer_idx].get(), hidden_states.data(), normed_states_tensor.data(),
                                       1, pos, cfg, model.topology(), cache_layer, static_cast<int>(layer_idx));

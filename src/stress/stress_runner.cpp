@@ -187,7 +187,11 @@ ChaosResult StressRunner::run_chaos(const StressConfig &cfg)
     auto probe = [&](const char *name, const std::string &body, bool expect_client_error) {
         auto res = cli.Post(cfg.endpoint, body, "application/json");
         const bool got_response = static_cast<bool>(res);
-        const bool ok = got_response && (!expect_client_error || (res->status >= 400 && res->status < 500));
+        // expect_client_error: require a 4xx. Otherwise any HTTP response
+        // below 500 counts as graceful handling — a 500 is a server failure,
+        // not a pass.
+        const bool ok = got_response && (expect_client_error ? (res->status >= 400 && res->status < 500)
+                                                            : (res->status < 500));
         if (ok) {
             ++result.checks_passed;
         } else {

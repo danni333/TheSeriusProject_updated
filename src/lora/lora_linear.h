@@ -55,6 +55,9 @@ class LoRALinear
     int rank_;
     float alpha_;
     bool merged_ = false;
+    // Exact delta applied to W by merge(); unmerge() subtracts this stored
+    // tensor instead of recomputing B*A (which may have changed since).
+    core::Tensor merged_delta_;
 };
 
 }  // namespace lora

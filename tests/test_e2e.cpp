@@ -100,8 +100,10 @@ DWORD run_capture(const std::string &cmd, std::string &out)
     }
     CloseHandle(write_pipe);
 
-    // Wait first so a hung child cannot block the pipe read forever.
-    if (WaitForSingleObject(pi.hProcess, 180000) == WAIT_TIMEOUT) {
+    // Wait first so a hung child cannot block the pipe read forever. The
+    // budget must cover the slowest pipeline step (GGUF->safetensors convert
+    // + CPU generate) on a loaded CI machine — 180s was hit under -j4.
+    if (WaitForSingleObject(pi.hProcess, 600000) == WAIT_TIMEOUT) {
         TerminateProcess(pi.hProcess, 1);
     }
 
@@ -280,6 +282,12 @@ TEST_F(E2EServer, StreamingSSE)
         {"model", "smollm2-q4"},
         {"messages", {{{"role", "user"}, {"content", "Count to three."}}}},
         {"max_tokens", 12},
+        // temperature 0 + fixed seed: like the other tests in this fixture the
+        // run must be deterministic — at the default temp 0.7 the sampler can
+        // legitimately pick a stop token first, producing a valid but empty
+        // stream and a flaky failure.
+        {"temperature", 0.0},
+        {"seed", 7},
         {"stream", true},
     };
     auto res = client_->Post("/v1/chat/completions", body.dump(), "application/json");
@@ -316,7 +324,10 @@ TEST_F(E2EServer, StreamingSSE)
     }
     EXPECT_GT(data_events, 0);
     EXPECT_TRUE(saw_done);
-    EXPECT_FALSE(accumulated.empty());
+    if (accumulated.empty()) {
+        ADD_FAILURE() << "stream produced no content; raw SSE body:\n"
+                      << res->body;
+    }
 }
 
 // Error handling: malformed JSON -> 400, unknown route -> 404.
@@ -333,6 +344,38 @@ TEST_F(E2EServer, ErrorHandling)
     auto nf = client_->Get("/v1/nonexistent");
     ASSERT_TRUE(nf);
     EXPECT_EQ(nf->status, 404);
+}
+
+// Wrong JSON scalar types must produce a clean 400, never a 500 from a
+// nlohmann::json::type_error escaping the handlers.
+TEST_F(E2EServer, WrongScalarTypesReturn400)
+{
+    const std::vector<std::pair<std::string, std::string>> bad_bodies = {
+        {"temperature string", R"({"model":"smollm2-q4","messages":[{"role":"user","content":"hi"}],"max_tokens":4,"temperature":"hot"})"},
+        {"top_p object", R"({"model":"smollm2-q4","messages":[{"role":"user","content":"hi"}],"max_tokens":4,"top_p":{"x":1}})"},
+        {"max_tokens string", R"({"model":"smollm2-q4","messages":[{"role":"user","content":"hi"}],"max_tokens":"many"})"},
+        {"max_new_tokens bool", R"({"model":"smollm2-q4","messages":[{"role":"user","content":"hi"}],"max_new_tokens":true})"},
+        {"stream number", R"({"model":"smollm2-q4","messages":[{"role":"user","content":"hi"}],"max_tokens":4,"stream":7})"},
+        {"model number", R"({"model":42,"messages":[{"role":"user","content":"hi"}],"max_tokens":4})"},
+        {"seed string", R"({"model":"smollm2-q4","messages":[{"role":"user","content":"hi"}],"max_tokens":4,"seed":"abc"})"},
+        {"messages object", R"({"model":"smollm2-q4","messages":{"role":"user"},"max_tokens":4})"},
+        {"completions prompt number", R"({"model":"smollm2-q4","prompt":123,"max_tokens":4})"},
+        {"completions temperature array", R"({"model":"smollm2-q4","prompt":"hi","max_tokens":4,"temperature":[0.5]})"},
+    };
+    for (const auto &[name, body] : bad_bodies) {
+        const std::string path = name.rfind("completions", 0) == 0 ? "/v1/completions" : "/v1/chat/completions";
+        auto res = client_->Post(path, body, "application/json");
+        ASSERT_TRUE(res) << name;
+        EXPECT_EQ(res->status, 400) << name << " body=" << res->body;
+    }
+
+    // A non-string message role is tolerated (treated as unknown role),
+    // not a 500 — prompt builders must degrade gracefully.
+    auto res = client_->Post("/v1/chat/completions",
+                             R"({"model":"smollm2-q4","messages":[{"role":42,"content":"hi"}],"max_tokens":4})",
+                             "application/json");
+    ASSERT_TRUE(res);
+    EXPECT_NE(res->status, 500);
 }
 
 // 1.3 CLI lifecycle: spawn the real `serius serve` binary, wait for health,

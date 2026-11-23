@@ -154,13 +154,18 @@ CPU-only).
 6. ~~**Verificare il CUDA illegal memory access**~~ — **FATTO E RISOLTO**: era
    un bug di ownership in `Tensor::free_data()` (vedi sezione 5), non un
    problema di `matmul_cuda.cu`. Sanitizer pulito, test verdi.
-7. **Benchmark vs llama.cpp** (token/s, Q4_K_M, stesso hardware) per avere un
-   numero onesto di competitività.
+7. ~~**Benchmark vs llama.cpp**~~ — **FATTO 2026-11-23**: `BENCHMARKS.md`
+   contiene il confronto diretto (`llama-bench` b12642 vs `serius bench`,
+   stessi GGUF, RTX 3060 Laptop). Decode GPU pari o superiore (0.5B Q4_K_M:
+   469.7 vs 368.7 tok/s); prefill 0.27-0.37x; CPU decode 0.26x — gap
+   residuo documentato in `todo/roadmap_prodotto_2026-11-23.md`.
 8. ~~**Pulire codice morto**~~ — **FATTO parziale**: rimossi `src/core/`,
    `src/app/`, `model/moe.cpp`, `inference/speculative.cpp`, `test_dummy.cpp`.
-   Restano i log `.txt` di build committati nella root (decidere se ripulire).
-9. **Decidere Vulkan/Metal**: implementare o rimuovere i backend (oggi non
-   compilano se attivati — trappola per chi abilita il flag).
+   Verificato 2026-11-23: i log (`build_log*.txt`, `*_soak.log`) **non sono
+   mai stati committati** — sono solo file locali non tracciati, alcuni
+   ancora scritti dal soak attivo. Niente da ripulire nel repo.
+9. ~~**Decidere Vulkan/Metal**~~ — **FATTO**: backend rimossi in `e88759f`
+   (mai implementati); CMake espone solo `SERIUS_USE_CUDA/NCCL/MPI`.
 10. ~~**RAG con embedding reale**~~ — **FATTO 2026-11-22**: `RAGRetriever::set_embedder`
     accetta `hub::EmbeddingManager`/NomicBert/endpoint remoto; hash = fallback.
 11. ~~**Aree "ricerca" da etichettare onestamente**~~ — **FATTO 2026-11-22**:

@@ -128,26 +128,59 @@ void LoRAAdapter::load(const std::string &path)
     // Read header
     uint64_t header_len = 0;
     in.read(reinterpret_cast<char *>(&header_len), sizeof(uint64_t));
+    if (!in || header_len > (64ull << 20)) {
+        throw std::runtime_error("LoRAAdapter::load: invalid header length in " + path);
+    }
 
     std::string header_str(header_len, '\0');
     in.read(header_str.data(), static_cast<std::streamsize>(header_len));
+    if (!in) throw std::runtime_error("LoRAAdapter::load: truncated header in " + path);
 
     auto meta = nlohmann::json::parse(header_str);
+    if (!meta.contains("layers") || !meta["layers"].is_array()) {
+        throw std::runtime_error("LoRAAdapter::load: missing layers array in " + path);
+    }
+
+    // Tensor data starts right after the header; offsets in the metadata are
+    // relative to this position.
+    const std::streampos data_start = in.tellg();
 
     // Read tensor data for each layer
-    auto &layer_info = meta["layers"];
-    for (const auto &entry : layer_info) {
-        std::string name = entry["name"];
+    for (const auto &entry : meta["layers"]) {
+        std::string name = entry.value("name", "");
         auto it = layers_.find(name);
         if (it == layers_.end()) continue;
 
         auto &layer = it->second;
 
-        size_t a_bytes = entry["A_bytes"];
-        size_t b_bytes = entry["B_bytes"];
+        const size_t a_expected = layer->A().data.size() * sizeof(float);
+        const size_t b_expected = layer->B().data.size() * sizeof(float);
+        const size_t a_bytes = entry.value("A_bytes", size_t(0));
+        const size_t b_bytes = entry.value("B_bytes", size_t(0));
+        if (a_bytes != a_expected || b_bytes != b_expected) {
+            throw std::runtime_error("LoRAAdapter::load: size mismatch for layer '" + name + "' in " + path);
+        }
 
+        const uint64_t a_off = entry.value("A_offset", uint64_t(0));
+        const uint64_t b_off = entry.value("B_offset", uint64_t(0));
+
+        layer->A().data.syncToHost();
+        in.seekg(data_start + static_cast<std::streamoff>(a_off));
+        if (!in) throw std::runtime_error("LoRAAdapter::load: bad A offset for '" + name + "'");
         in.read(reinterpret_cast<char *>(layer->A().data.data()), static_cast<std::streamsize>(a_bytes));
+        if (!in) throw std::runtime_error("LoRAAdapter::load: truncated A data for '" + name + "'");
+        if (layer->A().data.is_gpu()) {
+            layer->A().data.mark_dirty(core::Tensor::DataLocation::CPU);
+        }
+
+        layer->B().data.syncToHost();
+        in.seekg(data_start + static_cast<std::streamoff>(b_off));
+        if (!in) throw std::runtime_error("LoRAAdapter::load: bad B offset for '" + name + "'");
         in.read(reinterpret_cast<char *>(layer->B().data.data()), static_cast<std::streamsize>(b_bytes));
+        if (!in) throw std::runtime_error("LoRAAdapter::load: truncated B data for '" + name + "'");
+        if (layer->B().data.is_gpu()) {
+            layer->B().data.mark_dirty(core::Tensor::DataLocation::CPU);
+        }
     }
 }
 

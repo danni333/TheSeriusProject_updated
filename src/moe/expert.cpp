@@ -1,11 +1,31 @@
 #include "expert.h"
 
 #include <stdexcept>
+#include <unordered_set>
 
+#include "../autograd/engine.h"
 #include "../autograd/node.h"
 
 namespace serius {
 namespace model {
+
+namespace {
+
+// Deletes every node of the temporary autograd graph produced by FFN::forward,
+// except the FFN parameters (owned by the FFN) and the caller-owned input node.
+void cleanup_ffn_graph(const FFN &ffn, core::autograd::Node *out, core::autograd::Node *input)
+{
+    auto params = ffn.parameters();
+    std::unordered_set<core::autograd::Node *> keep(params.begin(), params.end());
+    keep.insert(input);
+    for (auto *n : core::autograd::topological_sort(out)) {
+        if (n != nullptr && !keep.count(n)) {
+            delete n;
+        }
+    }
+}
+
+}  // namespace
 
 Expert::Expert(size_t d_model, size_t d_ff, unsigned seed)
     : d_model_(d_model), d_ff_(d_ff), ffn_(std::make_unique<FFN>(d_model, d_ff, seed))
@@ -25,7 +45,7 @@ core::Tensor Expert::forward(const core::Tensor &input) const
         core::autograd::Node in(row, false);
         core::autograd::Node *out = ffn_->forward(&in);
         core::Tensor result = out->data.reshape({d_model_}).copy();
-        delete out;
+        cleanup_ffn_graph(*ffn_, out, &in);
         return result;
     }
 
@@ -33,7 +53,7 @@ core::Tensor Expert::forward(const core::Tensor &input) const
         core::autograd::Node in(input, false);
         core::autograd::Node *out = ffn_->forward(&in);
         core::Tensor result = out->data.copy();
-        delete out;
+        cleanup_ffn_graph(*ffn_, out, &in);
         return result;
     }
 

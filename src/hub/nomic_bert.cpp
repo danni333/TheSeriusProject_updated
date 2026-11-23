@@ -117,12 +117,17 @@ bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor>
     }
     if (!get_tensor(tensors, "token_types.weight", &type_embd_row0_)) {
         type_embd_row0_.assign(H, 0.0f);
+    } else if (type_embd_row0_.size() < static_cast<size_t>(H)) {
+        return false;  // truncated type-embedding row
     } else if (type_embd_row0_.size() > static_cast<size_t>(H)) {
         // ggml order (H, n_types): row 0 occupies first H floats
         type_embd_row0_.resize(H);
     }
     if (!get_tensor(tensors, "token_embd_norm.weight", &tok_norm_w_)) return false;
     if (!get_tensor(tensors, "token_embd_norm.bias", &tok_norm_b_)) return false;
+    if (tok_norm_w_.size() != static_cast<size_t>(H) || tok_norm_b_.size() != static_cast<size_t>(H)) {
+        return false;
+    }
 
     layers_.assign(cfg_.n_layers, LayerW{});
     for (int l = 0; l < cfg_.n_layers; ++l) {
@@ -142,7 +147,9 @@ bool NomicBertEmbedder::load(const std::unordered_map<std::string, core::Tensor>
         // sanity: expected flat sizes
         if (w.qkv.size() != static_cast<size_t>(3 * H) * H || w.wo.size() != static_cast<size_t>(H) * H ||
             w.up.size() != static_cast<size_t>(F) * H || w.gate.size() != static_cast<size_t>(F) * H ||
-            w.down.size() != static_cast<size_t>(H) * F) {
+            w.down.size() != static_cast<size_t>(H) * F || w.attn_norm_w.size() != static_cast<size_t>(H) ||
+            w.attn_norm_b.size() != static_cast<size_t>(H) || w.out_norm_w.size() != static_cast<size_t>(H) ||
+            w.out_norm_b.size() != static_cast<size_t>(H)) {
             return false;
         }
     }

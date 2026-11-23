@@ -66,9 +66,20 @@ struct CpuInfo
 {
     bool has_avx2;
     bool has_avx512f;
+    bool has_avx512_vnni = false;  // AVX512-VNNI (vpdpbusd) — Ice Lake+/Rocket Lake+
 };
 
 CpuInfo get_cpu_info();
+
+/// Number of physical cores (excludes SMT/hyperthreading siblings).
+/// Falls back to std::thread::hardware_concurrency() when detection fails.
+unsigned physical_core_count();
+
+/// Sets the OpenMP thread count to physical_core_count() unless the
+/// OMP_NUM_THREADS environment variable is already set. Decode GEMVs are
+/// memory-bound; on SMT parts sibling threads add barrier overhead without
+/// adding bandwidth (measured ~+25% decode tok/s on i9-11900H with 8 vs 16).
+void configure_omp_threads();
 
 // --- Convenience Wrappers ---
 Tensor matmul(const Tensor &A, const Tensor &B, void *stream = nullptr);

@@ -163,13 +163,13 @@ Tensor::Tensor(const Tensor &other)
                         indices[d] = remainder / stride_val;
                         remainder %= stride_val;
                     }
-                    this->set_item(i, other.item(indices));
+                    this->set_item(indices, other.item(indices));
                 }
             }
         }
 
         // Copy GPU data if present in 'other'
-        if (other.data_gpu_ != nullptr) {
+        if (other.data_gpu_ != nullptr && other.is_contiguous()) {
             hal::IBackend *gpu_backend = hal::get_gpu_backend();
             if (gpu_backend != nullptr && gpu_backend->is_available()) {
                 bytes = size_ * element_size();
@@ -804,13 +804,30 @@ void Tensor::fill(float value)
     if (location_ == DataLocation::GPU) {
         syncToHost();
     }
+    if (data_ == nullptr) {
+        throw std::runtime_error("Tensor::fill on tensor without host storage");
+    }
 
-    if (dtype_ == hal::DType::Float32) {
+    if (is_contiguous() && dtype_ == hal::DType::Float32) {
         std::fill(static_cast<float *>(data_), static_cast<float *>(data_) + size_, value);
     } else {
-        uint16_t h_val = (dtype_ == hal::DType::Float16) ? quant::float_to_half(value) : quant::float_to_bf16(value);
-        uint16_t *h_ptr = static_cast<uint16_t *>(data_);
-        std::fill(h_ptr, h_ptr + size_, h_val);
+        // Non-contiguous (strided/broadcast view) or quantized dtype:
+        // write through the logical layout so we never touch elements
+        // outside the view.
+        std::vector<size_t> indices(shape_.size(), 0);
+        for (size_t i = 0; i < size_; ++i) {
+            set_item(indices, value);
+            for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < shape_[d]) break;
+                indices[d] = 0;
+            }
+        }
+    }
+
+    // Host copy is now newer than any GPU copy.
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;
     }
 }
 
@@ -892,6 +909,8 @@ size_t Tensor::element_size() const
 
 Tensor &Tensor::operator+=(const Tensor &other)
 {
+    syncToHost();
+    other.syncToHost();
     if (shape_ == other.shape_ && is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
         float *t_ptr = static_cast<float *>(data_);
         float *o_ptr = static_cast<float *>(other.data_);
@@ -920,11 +939,16 @@ Tensor &Tensor::operator+=(const Tensor &other)
     } else {
         throw std::invalid_argument("Shapes must match or be broadcastable for operator+=");
     }
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;  // host copy is now newer
+    }
     return *this;
 }
 
 Tensor Tensor::operator+(const Tensor &other) const
 {
+    syncToHost();
+    other.syncToHost();
     if (shape_ == other.shape_) {
         Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
         if (is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
@@ -969,6 +993,8 @@ Tensor Tensor::operator*(const Tensor &other) const
     if (shape_ != other.shape_) {
         throw std::invalid_argument("Shapes must match for operator*");
     }
+    syncToHost();
+    other.syncToHost();
     Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
     if (is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
         float *r_ptr = static_cast<float *>(result.data_);
@@ -993,6 +1019,8 @@ Tensor Tensor::operator*(const Tensor &other) const
 
 Tensor &Tensor::operator-=(const Tensor &other)
 {
+    syncToHost();
+    other.syncToHost();
     if (shape_ == other.shape_ && is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
         float *t_ptr = static_cast<float *>(data_);
         float *o_ptr = static_cast<float *>(other.data_);
@@ -1020,11 +1048,16 @@ Tensor &Tensor::operator-=(const Tensor &other)
     } else {
         throw std::invalid_argument("Shapes must match or be broadcastable for operator-=");
     }
+    if (data_gpu_ != nullptr) {
+        location_ = DataLocation::CPU;  // host copy is now newer
+    }
     return *this;
 }
 
 Tensor Tensor::operator-(const Tensor &other) const
 {
+    syncToHost();
+    other.syncToHost();
     if (shape_ == other.shape_) {
         Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
         if (is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
@@ -1068,6 +1101,8 @@ Tensor Tensor::operator/(const Tensor &other) const
     if (shape_ != other.shape_) {
         throw std::invalid_argument("Shapes must match for operator/");
     }
+    syncToHost();
+    other.syncToHost();
     Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
     if (is_contiguous() && other.is_contiguous() && dtype_ == hal::DType::Float32) {
         float *r_ptr = static_cast<float *>(result.data_);
@@ -1093,6 +1128,7 @@ Tensor Tensor::operator/(const Tensor &other) const
 
 Tensor Tensor::operator+(float scalar) const
 {
+    syncToHost();
     Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
     if (is_contiguous() && dtype_ == hal::DType::Float32) {
         float *r_ptr = static_cast<float *>(result.data_);
@@ -1116,6 +1152,7 @@ Tensor Tensor::operator+(float scalar) const
 
 Tensor Tensor::operator-(float scalar) const
 {
+    syncToHost();
     Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
     if (is_contiguous() && dtype_ == hal::DType::Float32) {
         float *r_ptr = static_cast<float *>(result.data_);
@@ -1139,6 +1176,7 @@ Tensor Tensor::operator-(float scalar) const
 
 Tensor Tensor::operator*(float scalar) const
 {
+    syncToHost();
     Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
     if (is_contiguous() && dtype_ == hal::DType::Float32) {
         float *r_ptr = static_cast<float *>(result.data_);
@@ -1162,8 +1200,28 @@ Tensor Tensor::operator*(float scalar) const
 
 Tensor Tensor::operator/(float scalar) const
 {
-    float inv_scalar = 1.0f / (scalar == 0.0f ? 1e-7f : scalar);
-    return *this * inv_scalar;
+    // Element-wise division: x * (1/s) differs from x / s in floating point.
+    const float denom = scalar == 0.0f ? 1e-7f : scalar;
+    syncToHost();
+    Tensor result = this->pool_ != nullptr ? Tensor(shape_, pool_, dtype_) : Tensor(shape_, dtype_);
+    if (is_contiguous() && dtype_ == hal::DType::Float32) {
+        float *r_ptr = static_cast<float *>(result.data_);
+        float *t_ptr = static_cast<float *>(data_);
+        for (size_t i = 0; i < size_; ++i) {
+            r_ptr[i] = t_ptr[i] / denom;
+        }
+    } else {
+        std::vector<size_t> indices(shape_.size(), 0);
+        for (size_t i = 0; i < size_; ++i) {
+            result.set_item(indices, this->item(indices) / denom);
+            for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                indices[d]++;
+                if (indices[d] < shape_[d]) break;
+                indices[d] = 0;
+            }
+        }
+    }
+    return result;
 }
 
 // --- Device Synchronization ---
@@ -1185,7 +1243,26 @@ void Tensor::syncToDevice() const
 
     if (location_ == DataLocation::CPU) {
         if (data_ != nullptr && data_gpu_ != nullptr) {
-            backend->memcpy_h2d(data_gpu_, data_, size_ * element_size());
+            if (is_contiguous()) {
+                backend->memcpy_h2d(data_gpu_, data_, size_ * element_size());
+            } else {
+                // Strided/broadcast view: copy element-by-element through
+                // the logical layout. A flat memcpy would read/write
+                // regions outside the view (OOB for expanded tensors).
+                const size_t esz = element_size();
+                char *dst = static_cast<char *>(data_gpu_);
+                const char *src = static_cast<const char *>(data_);
+                std::vector<size_t> indices(shape_.size(), 0);
+                for (size_t i = 0; i < size_; ++i) {
+                    const size_t off = compute_offset(indices) * esz;
+                    std::memcpy(dst + off, src + off, esz);
+                    for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                        indices[d]++;
+                        if (indices[d] < shape_[d]) break;
+                        indices[d] = 0;
+                    }
+                }
+            }
             const_cast<Tensor *>(this)->location_ = DataLocation::SYNCED;
         }
     } else if (location_ == DataLocation::GPU) {
@@ -1235,7 +1312,25 @@ void Tensor::syncToHost() const
     }
 
     if (data_ != nullptr && data_gpu_ != nullptr) {
-        gpu_backend->memcpy_d2h(data_, data_gpu_, size_ * element_size());
+        if (is_contiguous()) {
+            gpu_backend->memcpy_d2h(data_, data_gpu_, size_ * element_size());
+        } else {
+            // Strided/broadcast view: element-by-element through the
+            // logical layout (see syncToDevice).
+            const size_t esz = element_size();
+            char *dst = static_cast<char *>(data_);
+            const char *src = static_cast<const char *>(data_gpu_);
+            std::vector<size_t> indices(shape_.size(), 0);
+            for (size_t i = 0; i < size_; ++i) {
+                const size_t off = compute_offset(indices) * esz;
+                std::memcpy(dst + off, src + off, esz);
+                for (int d = static_cast<int>(shape_.size()) - 1; d >= 0; --d) {
+                    indices[d]++;
+                    if (indices[d] < shape_[d]) break;
+                    indices[d] = 0;
+                }
+            }
+        }
         const_cast<Tensor *>(this)->location_ = DataLocation::SYNCED;
     }
 }

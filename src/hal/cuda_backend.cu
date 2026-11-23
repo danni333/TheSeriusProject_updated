@@ -23,6 +23,8 @@ CudaBackend::~CudaBackend()
     }
     free_lists_.clear();
     alloc_sizes_.clear();
+    for (void *p : pinned_ptrs_) cudaFreeHost(p);
+    pinned_ptrs_.clear();
     cached_bytes_ = 0;
 }
 
@@ -80,6 +82,10 @@ void *CudaBackend::malloc_pinned(size_t size)
     if (size == 0) return nullptr;
     void *ptr = nullptr;
     CHECK_CUDA(cudaMallocHost(&ptr, size));
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        pinned_ptrs_.insert(ptr);
+    }
     return ptr;
 }
 
@@ -87,13 +93,21 @@ void CudaBackend::free(void *ptr)
 {
     if (!ptr) return;
 
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex_);
+        if (pinned_ptrs_.erase(ptr) > 0) {
+            cudaFreeHost(ptr);
+            return;
+        }
+    }
+
     size_t sz = 0;
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
         auto it = alloc_sizes_.find(ptr);
         if (it == alloc_sizes_.end()) {
-            // Not allocated through this backend (or already freed): fall back
-            // to a direct cudaFree is unsafe without the size, so try cudaFree anyway.
+            // Not allocated through this backend (or already freed): a direct
+            // cudaFree is the only remaining possibility.
             cudaFree(ptr);
             return;
         }
@@ -190,14 +204,11 @@ bool CudaBackend::is_available() const
     return count > 0;
 }
 
-static CudaBackend *g_cuda_backend = nullptr;
-
 IBackend *get_cuda_backend()
 {
-    if (!g_cuda_backend) {
-        g_cuda_backend = new CudaBackend();
-    }
-    return g_cuda_backend;
+    // Function-local static: thread-safe initialization (magic statics).
+    static CudaBackend backend;
+    return &backend;
 }
 
 }  // namespace hal

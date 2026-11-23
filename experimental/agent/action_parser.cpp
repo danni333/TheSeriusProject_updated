@@ -45,9 +45,40 @@ ActionCall ActionParser::parse(const std::string &text)
     size_t args_pos = block.find("\"args\"");
     if (args_pos != std::string::npos) {
         size_t brace = block.find('{', args_pos);
-        size_t end_brace = block.find('}', brace);
-        if (brace != std::string::npos && end_brace != std::string::npos) {
-            call.args_json = block.substr(brace, end_brace - brace + 1);
+        if (brace != std::string::npos) {
+            // Balanced-brace scan respecting JSON strings/escapes, so nested
+            // objects inside "args" are not truncated at the first '}'.
+            int depth = 0;
+            bool in_str = false;
+            bool esc = false;
+            size_t end_brace = std::string::npos;
+            for (size_t i = brace; i < block.size(); ++i) {
+                char c = block[i];
+                if (in_str) {
+                    if (esc) {
+                        esc = false;
+                    } else if (c == '\\') {
+                        esc = true;
+                    } else if (c == '"') {
+                        in_str = false;
+                    }
+                    continue;
+                }
+                if (c == '"') {
+                    in_str = true;
+                } else if (c == '{') {
+                    ++depth;
+                } else if (c == '}') {
+                    --depth;
+                    if (depth == 0) {
+                        end_brace = i;
+                        break;
+                    }
+                }
+            }
+            if (end_brace != std::string::npos) {
+                call.args_json = block.substr(brace, end_brace - brace + 1);
+            }
         }
     }
     return call;

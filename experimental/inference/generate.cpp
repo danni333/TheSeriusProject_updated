@@ -4,9 +4,31 @@
 #include <cmath>
 #include <numeric>
 #include <stdexcept>
+#include <unordered_set>
+
+#include "autograd/engine.h"
 
 namespace serius {
 namespace inference {
+
+namespace {
+
+/// Delete every node reachable from \p root except the model's parameter
+/// nodes (owned by the model and shared across calls). forward() builds a
+/// fresh autograd graph per step; without this the whole activation graph
+/// leaks on every generated token.
+void free_graph(core::autograd::Node *root,
+                const std::unordered_set<core::autograd::Node *> &params)
+{
+    if (!root) return;
+    for (core::autograd::Node *n : core::autograd::topological_sort(root)) {
+        if (n && params.find(n) == params.end()) {
+            delete n;
+        }
+    }
+}
+
+}  // namespace
 
 GenerateResult generate(model::TransformerModel &model, const std::vector<int> &prompt_ids,
                         const GenerateConfig &config, StreamCallback callback)
@@ -20,6 +42,12 @@ GenerateResult generate(model::TransformerModel &model, const std::vector<int> &
     result.token_ids = prompt_ids;
     result.prompt_len = static_cast<int>(prompt_ids.size());
 
+    // Parameter nodes are owned by the model and must survive graph cleanup.
+    std::unordered_set<core::autograd::Node *> params;
+    for (core::autograd::Node *p : model.parameters()) {
+        if (p) params.insert(p);
+    }
+
     // Autoregressive generation loop
     for (int step = 0; step < config.max_new_tokens; step++) {
         // Create input tensor from current sequence
@@ -30,11 +58,13 @@ GenerateResult generate(model::TransformerModel &model, const std::vector<int> &
             input_data[i] = static_cast<float>(result.token_ids[i]);
         }
 
-        // Create a Node for input (non-trainable)
-        core::autograd::Node input_node(std::move(input_ids), false);
+        // Heap-allocated: the graph stores this pointer as a child of the
+        // embedding node, so it must outlive forward() and be freed with the
+        // rest of the graph (a stack Node would dangle).
+        auto *input_node = new core::autograd::Node(std::move(input_ids), false);
 
         // Forward pass through the model
-        core::autograd::Node *logits_node = model.forward(&input_node);
+        core::autograd::Node *logits_node = model.forward(input_node);
 
         // Extract logits for the last token position
         // logits_node->data has shape (seq_len, vocab_size)
@@ -48,6 +78,10 @@ GenerateResult generate(model::TransformerModel &model, const std::vector<int> &
         for (size_t i = 0; i < vocab_size; i++) {
             dst[i] = src[i];
         }
+
+        // Free this step's autograd graph (params excluded) before the next
+        // forward builds a fresh one.
+        free_graph(logits_node, params);
 
         // Sample next token
         int next_token = sampler.sample(last_logits, result.token_ids);
@@ -79,6 +113,15 @@ std::vector<Beam> beam_search(model::TransformerModel &model, const std::vector<
     if (prompt_ids.empty()) {
         throw std::invalid_argument("beam_search: prompt_ids cannot be empty");
     }
+    if (beam_width <= 0) {
+        beam_width = 1;
+    }
+
+    // Parameter nodes are owned by the model and must survive graph cleanup.
+    std::unordered_set<core::autograd::Node *> params;
+    for (core::autograd::Node *p : model.parameters()) {
+        if (p) params.insert(p);
+    }
 
     // Initialize with a single beam containing the prompt
     std::vector<Beam> beams;
@@ -101,8 +144,8 @@ std::vector<Beam> beam_search(model::TransformerModel &model, const std::vector<
                 input_data[i] = static_cast<float>(beam.tokens[i]);
             }
 
-            core::autograd::Node input_node(std::move(input_ids), false);
-            core::autograd::Node *logits_node = model.forward(&input_node);
+            auto *input_node = new core::autograd::Node(std::move(input_ids), false);
+            core::autograd::Node *logits_node = model.forward(input_node);
 
             const core::Tensor &logits_tensor = logits_node->data;
             size_t vocab_size = logits_tensor.shape().back();
@@ -114,6 +157,7 @@ std::vector<Beam> beam_search(model::TransformerModel &model, const std::vector<
             for (size_t i = 0; i < vocab_size; i++) {
                 dst[i] = src[i];
             }
+            free_graph(logits_node, params);
 
             // Compute log-softmax
             core::Tensor log_probs = Sampler::softmax(last_logits);
@@ -122,14 +166,15 @@ std::vector<Beam> beam_search(model::TransformerModel &model, const std::vector<
                 lp_data[i] = std::log(lp_data[i] + 1e-10f);
             }
 
-            // Find top beam_width tokens
+            // Find top beam_width tokens (clamped to vocab size)
+            const int k = std::min(beam_width, static_cast<int>(vocab_size));
             std::vector<int> indices(vocab_size);
             std::iota(indices.begin(), indices.end(), 0);
-            std::partial_sort(indices.begin(), indices.begin() + beam_width, indices.end(),
+            std::partial_sort(indices.begin(), indices.begin() + k, indices.end(),
                               [lp_data](int a, int b) { return lp_data[a] > lp_data[b]; });
 
-            for (int k = 0; k < beam_width; k++) {
-                int idx = indices[k];
+            for (int j = 0; j < k; j++) {
+                int idx = indices[j];
                 Beam new_beam;
                 new_beam.tokens = beam.tokens;
                 new_beam.tokens.push_back(idx);

@@ -72,6 +72,7 @@ void LoRALinear::merge()
     // B: (d_out, rank), A: (rank, d_in) -> B*A: (d_out, d_in)
     core::Tensor delta = core::blas::matmul(B_->data, A_->data);
     core::Tensor scaled_delta = core::blas::scale(delta, scaling());
+    merged_delta_ = scaled_delta;
 
     float *w = W_.data.data();
     const float *d = scaled_delta.data();
@@ -86,15 +87,17 @@ void LoRALinear::unmerge()
 {
     if (!merged_) return;
 
-    // W = W - (alpha/rank) * B * A
-    core::Tensor delta = core::blas::matmul(B_->data, A_->data);
-    core::Tensor scaled_delta = core::blas::scale(delta, scaling());
-
+    // Subtract the exact delta that merge() applied (stored in merged_delta_);
+    // recomputing B*A here would be wrong if A/B changed while merged.
+    if (merged_delta_.size() != W_.data.size()) {
+        throw std::runtime_error("LoRALinear::unmerge: no stored merge delta");
+    }
     float *w = W_.data.data();
-    const float *d = scaled_delta.data();
+    const float *d = merged_delta_.data();
     for (size_t i = 0; i < W_.data.size(); i++) {
         w[i] -= d[i];
     }
+    merged_delta_ = core::Tensor();
 
     merged_ = false;
 }

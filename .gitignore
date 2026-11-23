@@ -86,3 +86,6 @@ mcp_e2e_audit.log
 
 # Stress test output
 stress_results/
+
+# Packaging artifacts
+dist/

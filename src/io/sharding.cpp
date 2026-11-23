@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <memory>
 #include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
@@ -24,19 +26,39 @@ bool load_sharded_safetensors(const std::string &index_path, std::map<std::strin
 
     try {
         const auto index = nlohmann::json::parse(in);
-        const auto root = index.at("tensors");
         const fs::path base_dir = fs::path(index_path).parent_path();
 
-        for (auto it = root.begin(); it != root.end(); ++it) {
-            const std::string name = it.key();
-            const auto &entry = it.value();
-            const std::string shard_name = entry.at("file").get<std::string>();
-            const fs::path shard_path = base_dir / shard_name;
-            SafetensorsReader reader(shard_path.string());
-            if (!reader.has_tensor(name)) {
+        // Two index layouts are accepted:
+        //  - internal:  {"tensors": {name: {"file": "x.safetensors", "bytes": N}}}
+        //  - HuggingFace: {"metadata": {...}, "weight_map": {name: "x.safetensors"}}
+        std::vector<std::pair<std::string, std::string>> wanted;  // (tensor, shard)
+        if (index.contains("weight_map") && index["weight_map"].is_object()) {
+            for (auto it = index["weight_map"].begin(); it != index["weight_map"].end(); ++it) {
+                if (it.value().is_string()) {
+                    wanted.emplace_back(it.key(), it.value().get<std::string>());
+                }
+            }
+        } else {
+            const auto root = index.at("tensors");
+            for (auto it = root.begin(); it != root.end(); ++it) {
+                const auto &entry = it.value();
+                if (entry.is_object() && entry.contains("file") && entry["file"].is_string()) {
+                    wanted.emplace_back(it.key(), entry["file"].get<std::string>());
+                }
+            }
+        }
+
+        // Cache readers per shard so tensors sharing a file open it once.
+        std::map<std::string, std::unique_ptr<SafetensorsReader>> readers;
+        for (const auto &[name, shard_name] : wanted) {
+            auto &reader = readers[shard_name];
+            if (!reader) {
+                reader = std::make_unique<SafetensorsReader>((base_dir / shard_name).string());
+            }
+            if (!reader->has_tensor(name)) {
                 continue;
             }
-            (*out)[name] = reader.get_tensor(name);
+            (*out)[name] = reader->get_tensor(name);
         }
         return !out->empty();
     }

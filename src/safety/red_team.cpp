@@ -17,11 +17,32 @@ std::string to_lower(std::string s)
     return s;
 }
 
+bool is_word_char(char c)
+{
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// Whole-word (or whole-phrase) match: avoids "kill" matching "skill" or
+// "hate" matching "whatever". Multi-word keywords still match as phrases.
+bool contains_keyword(const std::string &low_text, const std::string &kw)
+{
+    if (kw.empty()) return false;
+    size_t pos = 0;
+    while ((pos = low_text.find(kw, pos)) != std::string::npos) {
+        const bool left_ok = pos == 0 || !is_word_char(low_text[pos - 1]);
+        const size_t end = pos + kw.size();
+        const bool right_ok = end >= low_text.size() || !is_word_char(low_text[end]);
+        if (left_ok && right_ok) return true;
+        ++pos;
+    }
+    return false;
+}
+
 bool contains_any(const std::string &text, const std::vector<std::string> &keywords)
 {
     std::string low = to_lower(text);
     for (const auto &kw : keywords) {
-        if (low.find(kw) != std::string::npos) {
+        if (contains_keyword(low, to_lower(kw))) {
             return true;
         }
     }
@@ -76,7 +97,7 @@ float ToxicityClassifier::lexical_score(const std::string &text) const
     };
     int hits = 0;
     for (const auto &kw : toxic_keywords) {
-        if (low.find(kw) != std::string::npos) {
+        if (contains_keyword(low, kw)) {
             ++hits;
         }
     }

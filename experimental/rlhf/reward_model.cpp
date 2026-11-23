@@ -125,6 +125,9 @@ RewardModel::~RewardModel() = default;
 
 float RewardModel::score(const Tensor &tokens) const
 {
+    if (tokens.size() == 0) {
+        return 0.0f;
+    }
     // tokens: (seq_len,) -> hidden states (seq_len, hidden_size)
     Node *hidden = forward_hidden(impl_->transformer, tokens);
 
@@ -146,6 +149,9 @@ float RewardModel::score(const Tensor &tokens) const
 
 std::vector<float> RewardModel::compute_logprobs(const Tensor &tokens) const
 {
+    if (tokens.size() == 0) {
+        return {};
+    }
     // Hidden states after the final RMSNorm: (seq_len, hidden_size)
     Node *hidden = forward_hidden(impl_->transformer, tokens);
 
@@ -191,6 +197,10 @@ RewardModel::GenerationResult RewardModel::generate_with_logprobs(const Tensor &
     result.log_probs.clear();
 
     const size_t prompt_len = prompt_tokens.shape()[0];
+    if (prompt_len == 0) {
+        result.tokens = Tensor({0});
+        return result;
+    }
     const size_t vocab_size = impl_->config.vocab_size;
 
     std::vector<int> tokens;

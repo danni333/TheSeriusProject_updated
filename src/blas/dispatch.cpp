@@ -1,8 +1,34 @@
+#include <cstdlib>
 #include <stdexcept>
+#include <vector>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <sys/sysctl.h>
+#include <sys/types.h>
+#elif defined(__linux__)
+#include <cstdio>
+#include <dirent.h>
+#include <set>
+#include <string>
+#include <thread>
+#include <utility>
+#endif
 
 #include "../common/thread_pool.h"
 #include "../hal/device.h"
 #include "blas.h"
+
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 
 #ifdef SERIUS_USE_CUDA
 #include "matmul_cuda.h"
@@ -22,7 +48,7 @@ namespace blas {
 using core::Tensor;
 
 // Cache CPU info
-static CpuInfo internal_cpu_info = {false, false};
+static CpuInfo internal_cpu_info = {false, false, false};
 static bool cpu_info_initialized = false;
 
 // Size-based dispatch thresholds (empirically calibrated)
@@ -38,6 +64,7 @@ CpuInfo get_cpu_info()
 
     bool has_avx2 = false;
     bool has_avx512f = false;
+    bool has_avx512_vnni = false;
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
     int cpuInfo[4];
@@ -47,31 +74,131 @@ CpuInfo get_cpu_info()
     const int FEATURE_LEAF = 7;
     const int AVX2_BIT = 5;
     const int AVX512F_BIT = 16;
+    const int AVX512VNNI_BIT = 11;  // ECX bit 11
 
     if (nIds >= FEATURE_LEAF) {
         __cpuidex(cpuInfo, FEATURE_LEAF, 0);
         has_avx2 = (cpuInfo[1] & (1 << AVX2_BIT)) != 0;        // EBX bit 5
         has_avx512f = (cpuInfo[1] & (1 << AVX512F_BIT)) != 0;  // EBX bit 16
+        has_avx512_vnni = (cpuInfo[2] & (1 << AVX512VNNI_BIT)) != 0;  // ECX bit 11
     }
 #elif (defined(__GNUC__) || defined(__clang__)) && (defined(__x86_64__) || defined(__i386__))
     unsigned int eax, ebx, ecx, edx;
     const int FEATURE_LEAF = 7;
     const int AVX2_BIT = 5;
     const int AVX512F_BIT = 16;
+    const int AVX512VNNI_BIT = 11;  // ECX bit 11
     if (__get_cpuid(0, &eax, &ebx, &ecx, &edx)) {
         if (eax >= FEATURE_LEAF) {
             __get_cpuid_count(FEATURE_LEAF, 0, &eax, &ebx, &ecx, &edx);
             has_avx2 = (ebx & (1 << AVX2_BIT)) != 0;
             has_avx512f = (ebx & (1 << AVX512F_BIT)) != 0;
+            has_avx512_vnni = (ecx & (1 << AVX512VNNI_BIT)) != 0;
         }
     }
 #endif
 
     internal_cpu_info.has_avx2 = has_avx2;
     internal_cpu_info.has_avx512f = has_avx512f;
+    internal_cpu_info.has_avx512_vnni = has_avx512_vnni;
     cpu_info_initialized = true;
 
     return internal_cpu_info;
+}
+
+unsigned physical_core_count()
+{
+    unsigned cores = 0;
+
+#if defined(_WIN32)
+    // One SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX per physical core.
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (len > 0) {
+        std::vector<uint8_t> buf(len);
+        if (GetLogicalProcessorInformationEx(RelationProcessorCore,
+                                             reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data()),
+                                             &len)) {
+            auto *info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data());
+            for (DWORD off = 0; off < len;) {
+                if (info->Relationship == RelationProcessorCore) {
+                    ++cores;
+                }
+                off += info->Size;
+                info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
+                    reinterpret_cast<uint8_t *>(info) + info->Size);
+            }
+        }
+    }
+#elif defined(__APPLE__)
+    int value = 0;
+    size_t sz = sizeof(value);
+    if (sysctlbyname("hw.physicalcpu", &value, &sz, nullptr, 0) == 0 && value > 0) {
+        cores = static_cast<unsigned>(value);
+    }
+#elif defined(__linux__)
+    // Unique (package_id, core_id) pairs under /sys topology.
+    std::set<std::pair<int, int>> seen;
+    if (DIR *dir = opendir("/sys/devices/system/cpu")) {
+        while (dirent *ent = readdir(dir)) {
+            const std::string name = ent->d_name;
+            if (name.rfind("cpu", 0) != 0 || name.find_first_not_of("cpu0123456789") != std::string::npos) {
+                continue;
+            }
+            auto read_int = [&](const char *leaf) -> int {
+                const std::string path = "/sys/devices/system/cpu/" + name + "/topology/" + leaf;
+                if (FILE *f = fopen(path.c_str(), "r")) {
+                    int v = -1;
+                    if (fscanf(f, "%d", &v) == 1) {
+                        fclose(f);
+                        return v;
+                    }
+                    fclose(f);
+                }
+                return -1;
+            };
+            const int pkg = read_int("physical_package_id");
+            const int core = read_int("core_id");
+            if (pkg >= 0 && core >= 0) {
+                seen.emplace(pkg, core);
+            }
+        }
+        closedir(dir);
+    }
+    cores = static_cast<unsigned>(seen.size());
+#endif
+
+    if (cores == 0) {
+        cores = std::thread::hardware_concurrency();
+    }
+    if (cores == 0) {
+        cores = 1;
+    }
+    return cores;
+}
+
+void configure_omp_threads()
+{
+#if defined(_OPENMP)
+    static const bool env_set = [] {
+#if defined(_MSC_VER)
+        char buf[16];
+        size_t len = 0;
+        return getenv_s(&len, buf, sizeof(buf), "OMP_NUM_THREADS") == 0 && len > 0;
+#else
+        return std::getenv("OMP_NUM_THREADS") != nullptr;
+#endif
+    }();
+    if (!env_set) {
+        const unsigned cores = physical_core_count();
+        const unsigned hw = std::thread::hardware_concurrency();
+        // Never exceed the logical CPU count OpenMP would pick anyway.
+        const unsigned target = (hw > 0 && hw < cores) ? hw : cores;
+        omp_set_num_threads(static_cast<int>(target));
+    }
+#else
+    (void)physical_core_count;
+#endif
 }
 
 // --- Main Dispatcher ---

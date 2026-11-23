@@ -730,8 +730,16 @@ bool read_string_kv_value(std::ifstream &f, std::string *out)
     return true;
 }
 
-bool skip_gguf_value(std::ifstream &f, uint32_t type)
+// GGUF arrays (type 9) may nest: each level costs >= 12 bytes on disk, so a
+// small crafted file could otherwise recurse until the stack overflows.
+// Legit metadata is flat — cap the depth and treat deeper nesting as corrupt.
+constexpr int kMaxGgufValueDepth = 32;
+
+bool skip_gguf_value(std::ifstream &f, uint32_t type, int depth = 0)
 {
+    if (depth > kMaxGgufValueDepth) {
+        return false;
+    }
     switch (type) {
         case 0:
             return true;
@@ -781,7 +789,7 @@ bool skip_gguf_value(std::ifstream &f, uint32_t type)
             // the remaining file size in a valid file.
             if (elem_type == 0 || n > stream_remaining(f)) return false;
             for (uint64_t i = 0; i < n && f.good(); ++i) {
-                if (!skip_gguf_value(f, elem_type)) return false;
+                if (!skip_gguf_value(f, elem_type, depth + 1)) return false;
             }
             return f.good();
         }
@@ -1597,6 +1605,14 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
             // Unreachable in practice (pre-validation filters unsupported
             // dtypes); kept as a safety net.
             skip_or_fail(info, "uses unsupported dtype " + std::to_string(static_cast<unsigned>(info.dtype)));
+            continue;
+        }
+
+        // Every branch above ends in an f.read() of the declared payload.
+        // Bounds were pre-validated, so a failed read means I/O error or a
+        // file that changed under us — never dequantize a partial buffer.
+        if (!f) {
+            skip_or_fail(info, "payload read failed");
             continue;
         }
 

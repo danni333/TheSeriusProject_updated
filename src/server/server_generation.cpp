@@ -10,6 +10,24 @@
 #include "server_internal.h"
 namespace serius {
 namespace server {
+
+/// j.value(key, "") throws nlohmann::json::type_error when the key holds a
+/// non-string JSON type (e.g. {"role": 42}). Tolerate it as the fallback —
+/// prompt-building helpers must never turn a malformed message into a 500.
+static std::string json_str_or(const nlohmann::json &j, const char *key, const std::string &fallback)
+{
+    const auto it = j.find(key);
+    if (it == j.end() || it->is_null()) {
+        return fallback;
+    }
+    try {
+        return it->get<std::string>();
+    }
+    catch (const nlohmann::json::exception &) {
+        return fallback;
+    }
+}
+
 /// Decode one UTF-8 sequence at p[0..n).
 /// Returns the sequence length (1-4) when valid and complete, 0 when invalid,
 /// and -1 when the sequence is truncated by the end of the buffer but all
@@ -112,7 +130,7 @@ std::string extract_user_prompt(const nlohmann::json &body)
 {
     const auto messages = body.value("messages", nlohmann::json::array());
     if (!messages.is_array()) {
-        return body.value("prompt", "Serius API is running. Load a model to get real completions.");
+        return json_str_or(body, "prompt", "Serius API is running. Load a model to get real completions.");
     }
 
     std::string last_user_text;
@@ -121,7 +139,7 @@ std::string extract_user_prompt(const nlohmann::json &body)
             continue;
         }
 
-        const std::string role = msg.value("role", "");
+        const std::string role = json_str_or(msg, "role", "");
         if (role == "user") {
             const auto content = msg.value("content", nlohmann::json());
             if (content.is_string()) {
@@ -148,7 +166,7 @@ std::string extract_user_prompt(const nlohmann::json &body)
         }
     }
 
-    return body.value("prompt", "Serius API is running. Load a model to get real completions.");
+    return json_str_or(body, "prompt", "Serius API is running. Load a model to get real completions.");
 }
 
 /// Extract plain text from a chat message content field (string or array of
@@ -162,8 +180,8 @@ std::string message_text(const nlohmann::json &msg)
     if (content.is_array()) {
         std::string out;
         for (const auto &part : content) {
-            if (part.is_object() && part.value("type", "") == "text") {
-                out += part.value("text", "");
+            if (part.is_object() && json_str_or(part, "type", "") == "text") {
+                out += json_str_or(part, "text", "");
             }
         }
         return out;
@@ -246,7 +264,7 @@ std::string build_chat_prompt(const nlohmann::json &body, bool chatml)
 {
     const auto messages = body.value("messages", nlohmann::json::array());
     if (!messages.is_array() || messages.empty()) {
-        return body.value("prompt", "Serius API is running. Load a model to get real completions.");
+        return json_str_or(body, "prompt", "Serius API is running. Load a model to get real completions.");
     }
 
     std::string prompt;
@@ -255,7 +273,7 @@ std::string build_chat_prompt(const nlohmann::json &body, bool chatml)
             if (!msg.is_object()) {
                 continue;
             }
-            const std::string role = msg.value("role", "");
+            const std::string role = json_str_or(msg, "role", "");
             if (role != "system" && role != "user" && role != "assistant") {
                 continue;
             }
@@ -273,7 +291,7 @@ std::string build_chat_prompt(const nlohmann::json &body, bool chatml)
             if (!msg.is_object()) {
                 continue;
             }
-            const std::string role = msg.value("role", "");
+            const std::string role = json_str_or(msg, "role", "");
             const std::string text = message_text(msg);
             if (text.empty()) {
                 continue;
@@ -287,7 +305,7 @@ std::string build_chat_prompt(const nlohmann::json &body, bool chatml)
     }
 
     if (prompt.empty()) {
-        return body.value("prompt", "Serius API is running. Load a model to get real completions.");
+        return json_str_or(body, "prompt", "Serius API is running. Load a model to get real completions.");
     }
     return prompt;
 }

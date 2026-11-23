@@ -259,10 +259,81 @@ static QuantPrefillScratch &quant_prefill_scratch()
 
 // Dequantize qw ([out,in] packed) into scratch, transpose to [in,out], and
 // run x[*,in] @ w^T -> out[*,out] through cuBLAS (FP16 in, FP32 compute).
+// Dequantized-FP16 weight cache for batched prefill. quant_prefill_gemm
+// used to re-dequantize + transpose every packed weight on EVERY prefill;
+// on multi-hundred-token prompts that traffic dominates the GEMM itself.
+// Entries are keyed by a fingerprint of dims/type/layout plus sampled
+// packed bytes, store the transposed [in,out] FP16 matrix, and are
+// allocated lazily — on VRAM exhaustion we stop caching and keep the
+// per-call path (correctness preserved).
+namespace {
+struct PrefillDQCache
+{
+    struct Entry
+    {
+        core::Tensor t;  // dense [in,out] in `dtype`
+    };
+    std::unordered_map<uint64_t, Entry> map;
+    std::mutex mu;
+};
+
+PrefillDQCache &prefill_dq_cache()
+{
+    static PrefillDQCache c;
+    return c;
+}
+
+uint64_t qw_cache_key(const quant::QuantWeight &qw, hal::DType dtype)
+{
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](uint64_t v) {
+        h ^= v;
+        h *= 1099511628211ull;
+    };
+    mix(static_cast<uint64_t>(qw.type));
+    mix(qw.in);
+    mix(qw.out);
+    mix(qw.dev_stride);
+    mix(static_cast<uint64_t>(qw.dev_kind));
+    mix(static_cast<uint64_t>(dtype));
+    if (qw.bytes.empty()) {
+        mix(reinterpret_cast<uintptr_t>(qw.gpu_data));  // no host bytes: pointer disambiguates
+    } else {
+        const size_t n = qw.bytes.size();
+        auto sample = [&](size_t off) {
+            if (off + 8 <= n) {
+                uint64_t v = 0;
+                std::memcpy(&v, qw.bytes.data() + off, 8);
+                mix(v);
+            }
+        };
+        sample(0);
+        if (n > 16) {
+            sample(n / 2 - 4);
+            sample(n - 8);
+        }
+    }
+    return h;
+}
+}  // namespace
+
 static void quant_prefill_gemm(const quant::QuantWeight &qw, const core::Tensor &x, core::Tensor &out, hal::DType dtype,
                                QuantPrefillScratch &sc)
 {
     const size_t elems = qw.in * qw.out;
+    const uint64_t key = qw_cache_key(qw, dtype);
+
+    {
+        auto &cache = prefill_dq_cache();
+        std::lock_guard<std::mutex> lk(cache.mu);
+        auto it = cache.map.find(key);
+        if (it != cache.map.end()) {
+            core::Tensor w_t = core::Tensor::gpu_view(it->second.t.raw_data_gpu(), {qw.in, qw.out}, dtype);
+            core::blas::matmul(x, w_t, out);
+            return;
+        }
+    }
+
     if (sc.cap < elems) {
         sc.dq = core::Tensor::gpu_only({elems}, hal::DType::Float16);
         sc.dq_t = core::Tensor::gpu_only({elems}, hal::DType::Float16);
@@ -277,6 +348,19 @@ static void quant_prefill_gemm(const quant::QuantWeight &qw, const core::Tensor 
                      dq_t_view.strides().data(), dq_t_view.ndim(), dtype);
     core::Tensor w_t = core::Tensor::gpu_view(sc.dq_t.raw_data_gpu(), {qw.in, qw.out}, dtype);
     core::blas::matmul(x, w_t, out);
+
+    try {
+        core::Tensor t = core::Tensor::gpu_only({qw.in, qw.out}, dtype);
+        CHECK_CUDA(cudaMemcpy(t.raw_data_gpu(), sc.dq_t.raw_data_gpu(), elems * t.element_size(),
+                              cudaMemcpyDeviceToDevice));
+        t.mark_dirty(Tensor::DataLocation::GPU);
+        auto &cache = prefill_dq_cache();
+        std::lock_guard<std::mutex> lk(cache.mu);
+        cache.map.emplace(key, PrefillDQCache::Entry{std::move(t)});
+    } catch (...) {
+        // VRAM exhausted or CUDA error: subsequent prefills keep the
+        // per-call dequant path for this weight.
+    }
 }
 
 // Split a fused [q | k | v] GEMM output into the three projection buffers.
@@ -1089,6 +1173,20 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
     hal::DType dtype = model.embed_tokens()->data.dtype();
     const hal::DType stream_dtype = hal::DType::Float32;
 
+    {
+        static bool diag_done = false;
+        if (!diag_done) {
+            diag_done = true;
+            const auto &l0 = model.layers()[layer_begin < model.layers().size() ? layer_begin : 0];
+            std::fprintf(stderr,
+                         "[pfxdiag] dtype=%d range=[%zu,%zu) qkv_gpu=%p stride=%zu o_gpu=%p gu_gpu=%p down_gpu=%p "
+                         "qproj_dtype=%d\n",
+                         (int)dtype, layer_begin, layer_end, l0->qkv_w.gpu_data, l0->qkv_w.dev_stride,
+                         l0->o_w.gpu_data, l0->gate_up_w.gpu_data, l0->down_w.gpu_data,
+                         (int)l0->q_proj->data.dtype());
+        }
+    }
+
     Tensor hidden_states_gpu({1, hidden}, stream_dtype);
     hidden_states_gpu.alloc_gpu();
     // Persistent device buffer for the token id: avoids a cudaMalloc +
@@ -1414,6 +1512,15 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
         CHECK_CUDA(cudaMemcpyAsync(hidden_host_out, hidden_states_gpu.raw_data_gpu(), hidden * sizeof(float),
                                    cudaMemcpyDeviceToHost, 0));
         CHECK_CUDA(cudaStreamSynchronize(0));
+        if (gpu_time) {
+            cudaEventRecord(ev1);
+            cudaEventSynchronize(ev1);
+            float ms;
+            cudaEventElapsedTime(&ms, ev0, ev1);
+            std::fprintf(stderr, "[gputime] prefix_fwd_gpu=%.2fms layers=[%zu,%zu)\n", ms, layer_begin, layer_end);
+            cudaEventDestroy(ev0);
+            cudaEventDestroy(ev1);
+        }
         return Tensor();
     }
 

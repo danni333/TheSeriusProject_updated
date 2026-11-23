@@ -45,9 +45,11 @@ void clear_activation_hooks();
 /// Whether any hook is currently installed on this thread.
 bool activation_hooks_enabled();
 
-/// Current hooks (all-null when unset). Cheap to call; check the fields
-/// you need rather than enabled() when hoisting out of hot loops.
-const ActivationHooks &activation_hooks();
+/// Current hooks (all-null when unset). Returns a snapshot by value so the
+/// result stays valid even if hooks are swapped concurrently. Cheap to
+/// call; check the fields you need rather than enabled() when hoisting
+/// out of hot loops.
+ActivationHooks activation_hooks();
 
 }  // namespace infer
 }  // namespace serius

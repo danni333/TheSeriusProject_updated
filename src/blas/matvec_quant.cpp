@@ -696,17 +696,20 @@ void q5k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
 
 #endif  // AVX2
 
-// ---------------- Integer-dot (Q4_x weights x Q8_1 activation) ----------------
+// ---------------- Integer-dot (Q4_x/Q8_0 weights x Q8 activation) ----------------
 // ggml-style: activation quantized per 32-block to int8; weights stay packed.
 // Per block: prod = maddubs(nib_u8[32], xq_i8[32]) -> i16 pairs -> i32 lanes,
 // accumulated lane-wise into a float accumulator scaled by (d_w * d_x).
 // Q4_0 needs -8*sum(x_q) correction per block; Q4_1 needs +m*sum(x_q) term.
+// Q8_0 weights are already signed i8: q80i_* dot them against an i16 copy of
+// the activation (XQuant::q16) via madd_epi16 — exact, no saturation.
 
 struct XQuant
 {
-    std::vector<int8_t> q;  // in bytes, in%32==0
-    std::vector<float> d;   // per-block activation scale
-    std::vector<float> c;   // per-block d * sum(x_q)  (for corrections)
+    std::vector<int8_t> q;    // in bytes, in%32==0
+    std::vector<int16_t> q16; // in int16 lanes (same order) for madd_epi16 kernels
+    std::vector<float> d;     // per-block activation scale
+    std::vector<float> c;     // per-block d * sum(x_q)  (for corrections)
 };
 
 #if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
@@ -726,6 +729,7 @@ void quantize_x_q8_avx2(const float *x, size_t in, XQuant &xq)
 {
     const size_t nb = in / 32;
     xq.q.resize(in);
+    xq.q16.resize(in);
     xq.d.resize(nb);
     xq.c.resize(nb);
     const __m256 sign_mask = _mm256_castsi256_ps(_mm256_set1_epi32(0x80000000));
@@ -765,6 +769,11 @@ void quantize_x_q8_avx2(const float *x, size_t in, XQuant &xq)
         __m128i w1 = _mm_packs_epi16(p2, p3);  // x[16..31]
         _mm_storeu_si128(reinterpret_cast<__m128i *>(xq.q.data() + b * 32), w0);
         _mm_storeu_si128(reinterpret_cast<__m128i *>(xq.q.data() + b * 32 + 16), w1);
+        // i16 copy for madd_epi16-based kernels (Q8_0 weights are signed i8).
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(xq.q16.data() + b * 32),
+                            _mm256_cvtepi8_epi16(w0));
+        _mm256_storeu_si256(reinterpret_cast<__m256i *>(xq.q16.data() + b * 32 + 16),
+                            _mm256_cvtepi8_epi16(w1));
         xq.d[b] = d;
         xq.c[b] = d * xs;
         (void)v127;
@@ -823,6 +832,37 @@ void q41i_row_avx2(const uint8_t *row, size_t in, const XQuant &xq, float &out)
     alignas(32) float buf[8];
     _mm256_store_ps(buf, facc);
     out = buf[0] + buf[1] + buf[2] + buf[3] + buf[4] + buf[5] + buf[6] + buf[7] + msum;
+}
+
+// Q8_0 x Q8: weights are already signed int8, so dot them against the i16
+// activation copy with madd_epi16 — exact integer math, no saturation issues
+// (unlike a maddubs +128 offset trick, which can overflow i16).
+// out = sum_b dw_b * dx_b * sum_e q_e * xq_e
+void q80i_row_avx2(const uint8_t *row, size_t in, const XQuant &xq, float &out)
+{
+    const size_t nb = in / 32;
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+
+    for (size_t b = 0; b < nb; ++b) {
+        const uint8_t *blk = row + b * 34;
+        const float dw = fp16_to_fp32_fast(load_fp16(blk));
+        const __m256i w8 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(blk + 2));
+        const __m256i wlo = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(w8));
+        const __m256i whi = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(w8, 1));
+        const __m256i x0 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(xq.q16.data() + b * 32));
+        const __m256i x1 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(xq.q16.data() + b * 32 + 16));
+        const __m256 sc = _mm256_set1_ps(dw * xq.d[b]);
+        acc0 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_madd_epi16(wlo, x0)), sc, acc0);
+        acc1 = _mm256_fmadd_ps(_mm256_cvtepi32_ps(_mm256_madd_epi16(whi, x1)), sc, acc1);
+    }
+    alignas(32) float buf[16];
+    _mm256_store_ps(buf, acc0);
+    _mm256_store_ps(buf + 8, acc1);
+    out = 0.0F;
+    for (int i = 0; i < 16; ++i) {
+        out += buf[i];
+    }
 }
 
 #endif  // AVX2
@@ -1001,6 +1041,224 @@ void q4ki_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out
     }
     out = acc;
 }
+
+// Q8_0 x Q8 (AVX-512): same madd_epi16 scheme as the AVX2 variant but one
+// zmm covers a whole 32-weight block; four float accumulators break the
+// fmadd dependency chain across blocks.
+void q80i_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out)
+{
+    const size_t nb = in / 32;
+    __m512 acc[4];
+    for (int i = 0; i < 4; ++i) {
+        acc[i] = _mm512_setzero_ps();
+    }
+
+    size_t b = 0;
+    for (; b + 1 < nb; b += 2) {
+        const uint8_t *blk0 = row + b * 34;
+        const uint8_t *blk1 = row + (b + 1) * 34;
+        const __m256i w0 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(blk0 + 2));
+        const __m256i w1 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(blk1 + 2));
+        const __m512i wh0 = _mm512_cvtepi8_epi16(w0);
+        const __m512i wh1 = _mm512_cvtepi8_epi16(w1);
+        const __m512i x0 = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q16.data() + b * 32));
+        const __m512i x1 = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q16.data() + (b + 1) * 32));
+        const int i0 = static_cast<int>(b & 3);
+        const int i1 = static_cast<int>((b + 1) & 3);
+        acc[i0] = _mm512_fmadd_ps(
+            _mm512_cvtepi32_ps(_mm512_madd_epi16(wh0, x0)),
+            _mm512_set1_ps(fp16_to_fp32_fast(load_fp16(blk0)) * xq.d[b]), acc[i0]);
+        acc[i1] = _mm512_fmadd_ps(
+            _mm512_cvtepi32_ps(_mm512_madd_epi16(wh1, x1)),
+            _mm512_set1_ps(fp16_to_fp32_fast(load_fp16(blk1)) * xq.d[b + 1]), acc[i1]);
+    }
+    if (b < nb) {
+        const uint8_t *blk = row + b * 34;
+        const __m256i w = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(blk + 2));
+        const __m512i x = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q16.data() + b * 32));
+        acc[b & 3] = _mm512_fmadd_ps(
+            _mm512_cvtepi32_ps(_mm512_madd_epi16(_mm512_cvtepi8_epi16(w), x)),
+            _mm512_set1_ps(fp16_to_fp32_fast(load_fp16(blk)) * xq.d[b]), acc[b & 3]);
+    }
+    const __m512 s01 = _mm512_add_ps(_mm512_add_ps(acc[0], acc[1]), _mm512_add_ps(acc[2], acc[3]));
+    out = _mm512_reduce_add_ps(s01);
+}
+
+// ---------------- AVX-512 VNNI integer-dot ----------------
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
+// vpdpbusd fuses maddubs+madd: one instruction dots 64 u8 weights x 64 i8
+// activations into 16 i32 lanes (4 weights per lane), vs two instructions
+// for the maddubs path. Weights must be unsigned bytes: Q4_x nibbles are
+// already 0..15; Q8_0 signed int8 uses a +128 offset (safe here — the
+// accumulation is i32, unlike maddubs' saturating i16).
+
+// Odd-block tail helpers (single 32-weight block -> full contribution).
+inline float q40vnni_blk_tail(const uint8_t *blk, const XQuant &xq, size_t b)
+{
+    return q40i_blk_tail_avx2(blk, xq, b);
+}
+
+inline float q41vnni_blk_tail(const uint8_t *blk, const XQuant &xq, size_t b)
+{
+    return q41i_blk_tail_avx2(blk, xq, b);
+}
+
+// Q4_0 x Q8 VNNI: two 32-weight blocks per zmm.
+void q40vnni_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out)
+{
+    const size_t nb = in / 32;
+    const size_t row_b = 18;
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    const __m128i m0F = _mm_set1_epi8(0x0F);
+    float corr = 0.0F;
+    size_t b = 0;
+
+    for (; b + 1 < nb; b += 2) {
+        const uint8_t *r0 = row + b * row_b;
+        const uint8_t *r1 = row + (b + 1) * row_b;
+        const __m128i q0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(r0 + 2));
+        const __m128i q1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(r1 + 2));
+        const __m128i lo0 = _mm_and_si128(q0, m0F);
+        const __m128i hi0 = _mm_and_si128(_mm_srli_epi16(q0, 4), m0F);
+        const __m128i lo1 = _mm_and_si128(q1, m0F);
+        const __m128i hi1 = _mm_and_si128(_mm_srli_epi16(q1, 4), m0F);
+        __m512i w = _mm512_castsi128_si512(lo0);
+        w = _mm512_inserti32x4(w, hi0, 1);
+        w = _mm512_inserti32x4(w, lo1, 2);
+        w = _mm512_inserti32x4(w, hi1, 3);
+        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 64));
+        const __m512i prod = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, xqv);
+        const __m256 plo = _mm256_cvtepi32_ps(_mm512_castsi512_si256(prod));
+        const __m256 phi = _mm256_cvtepi32_ps(_mm512_extracti32x8_epi32(prod, 1));
+        const float dw0 = fp16_to_fp32_fast(load_fp16(r0));
+        const float dw1 = fp16_to_fp32_fast(load_fp16(r1));
+        acc0 = _mm256_fmadd_ps(plo, _mm256_set1_ps(dw0 * xq.d[b]), acc0);
+        acc1 = _mm256_fmadd_ps(phi, _mm256_set1_ps(dw1 * xq.d[b + 1]), acc1);
+        corr += dw0 * xq.c[b] + dw1 * xq.c[b + 1];
+    }
+    alignas(32) float buf[16];
+    _mm256_store_ps(buf, acc0);
+    _mm256_store_ps(buf + 8, acc1);
+    float sum = 0.0F;
+    for (int i = 0; i < 16; ++i) {
+        sum += buf[i];
+    }
+    if (b < nb) {
+        sum += q40vnni_blk_tail(row + b * row_b, xq, b);
+    }
+    out = sum - 8.0F * corr;
+}
+
+// Q4_1 x Q8 VNNI: same layout as Q4_0 plus the fp16 min term.
+void q41vnni_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out)
+{
+    const size_t nb = in / 32;
+    const size_t row_b = 20;
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    const __m128i m0F = _mm_set1_epi8(0x0F);
+    float msum = 0.0F;
+    size_t b = 0;
+
+    for (; b + 1 < nb; b += 2) {
+        const uint8_t *r0 = row + b * row_b;
+        const uint8_t *r1 = row + (b + 1) * row_b;
+        const float dw0 = fp16_to_fp32_fast(load_fp16(r0));
+        const float dw1 = fp16_to_fp32_fast(load_fp16(r1));
+        const float mw0 = fp16_to_fp32_fast(load_fp16(r0 + 2));
+        const float mw1 = fp16_to_fp32_fast(load_fp16(r1 + 2));
+        const __m128i q0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(r0 + 4));
+        const __m128i q1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(r1 + 4));
+        const __m128i lo0 = _mm_and_si128(q0, m0F);
+        const __m128i hi0 = _mm_and_si128(_mm_srli_epi16(q0, 4), m0F);
+        const __m128i lo1 = _mm_and_si128(q1, m0F);
+        const __m128i hi1 = _mm_and_si128(_mm_srli_epi16(q1, 4), m0F);
+        __m512i w = _mm512_castsi128_si512(lo0);
+        w = _mm512_inserti32x4(w, hi0, 1);
+        w = _mm512_inserti32x4(w, lo1, 2);
+        w = _mm512_inserti32x4(w, hi1, 3);
+        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 64));
+        const __m512i prod = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, xqv);
+        const __m256 plo = _mm256_cvtepi32_ps(_mm512_castsi512_si256(prod));
+        const __m256 phi = _mm256_cvtepi32_ps(_mm512_extracti32x8_epi32(prod, 1));
+        acc0 = _mm256_fmadd_ps(plo, _mm256_set1_ps(dw0 * xq.d[b]), acc0);
+        acc1 = _mm256_fmadd_ps(phi, _mm256_set1_ps(dw1 * xq.d[b + 1]), acc1);
+        msum += mw0 * xq.c[b] + mw1 * xq.c[b + 1];
+    }
+    alignas(32) float buf[16];
+    _mm256_store_ps(buf, acc0);
+    _mm256_store_ps(buf + 8, acc1);
+    float sum = 0.0F;
+    for (int i = 0; i < 16; ++i) {
+        sum += buf[i];
+    }
+    if (b < nb) {
+        sum += q41vnni_blk_tail(row + b * row_b, xq, b);
+    }
+    out = sum + msum;
+}
+
+// Q8_0 x Q8 VNNI: weights are packed int8 — flip the sign bit to get the
+// unsigned operand dpbusd needs, and subtract 128*sum(xq) per block.
+void q80vnni_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out)
+{
+    const size_t nb = in / 32;
+    const size_t row_b = 34;
+    __m256 acc0 = _mm256_setzero_ps();
+    __m256 acc1 = _mm256_setzero_ps();
+    const __m512i sign_flip = _mm512_set1_epi8(static_cast<char>(0x80));
+    float corr = 0.0F;
+    size_t b = 0;
+
+    for (; b + 1 < nb; b += 2) {
+        const uint8_t *r0 = row + b * row_b;
+        const uint8_t *r1 = row + (b + 1) * row_b;
+        const __m256i w0 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(r0 + 2));
+        const __m256i w1 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(r1 + 2));
+        __m512i w = _mm512_castsi256_si512(w0);
+        w = _mm512_inserti64x4(w, w1, 1);
+        w = _mm512_xor_si512(w, sign_flip);
+        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 64));
+        const __m512i prod = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, xqv);
+        const __m256 plo = _mm256_cvtepi32_ps(_mm512_castsi512_si256(prod));
+        const __m256 phi = _mm256_cvtepi32_ps(_mm512_extracti32x8_epi32(prod, 1));
+        const float dw0 = fp16_to_fp32_fast(load_fp16(r0));
+        const float dw1 = fp16_to_fp32_fast(load_fp16(r1));
+        acc0 = _mm256_fmadd_ps(plo, _mm256_set1_ps(dw0 * xq.d[b]), acc0);
+        acc1 = _mm256_fmadd_ps(phi, _mm256_set1_ps(dw1 * xq.d[b + 1]), acc1);
+        corr += 128.0F * (dw0 * xq.c[b] + dw1 * xq.c[b + 1]);
+    }
+    alignas(32) float buf[16];
+    _mm256_store_ps(buf, acc0);
+    _mm256_store_ps(buf + 8, acc1);
+    float sum = 0.0F;
+    for (int i = 0; i < 16; ++i) {
+        sum += buf[i];
+    }
+    if (b < nb) {
+        // Odd tail block: zero-extended zmm, dpbusd low lanes only.
+        const uint8_t *blk = row + b * row_b;
+        const __m256i w32 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(blk + 2));
+        __m512i w = _mm512_inserti64x4(_mm512_setzero_si512(), w32, 0);
+        w = _mm512_xor_si512(w, sign_flip);
+        __m256i x32 = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(xq.q.data() + b * 32));
+        const __m512i xqv = _mm512_inserti64x4(_mm512_setzero_si512(), x32, 0);
+        const __m512i prod = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, xqv);
+        const __m256 plo = _mm256_cvtepi32_ps(_mm512_castsi512_si256(prod));
+        alignas(32) float pb[8];
+        _mm256_store_ps(pb, plo);
+        const float dw = fp16_to_fp32_fast(load_fp16(blk));
+        float lane = 0.0F;
+        for (int i = 0; i < 8; ++i) {
+            lane += pb[i];
+        }
+        sum += dw * xq.d[b] * lane - 128.0F * dw * xq.c[b];
+    }
+    out = sum - corr;
+}
+
+#endif  // AVX512-VNNI
 
 #endif  // AVX-512
 
@@ -1352,12 +1610,11 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
     const size_t K = w.in;
     const size_t N = w.out;
 
-    // Integer-dot path (ggml-style): Q4_0/Q4_1 weights x int8-quantized
-    // activation. Fewer uops/byte than the fp dequant path.
+    // Integer-dot path (ggml-style): Q4_0/Q4_1/Q8_0/Q4_K weights x int8-
+    // quantized activation. Fewer uops/byte than the fp dequant path, but
+    // on CPUs without AVX512-VNNI it measured parity-or-worse (DRAM-bound).
+    // Enable with SERIUS_INTDOT=1 to experiment.
 #if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
-    // Integer-dot path (ggml-style) is opt-in: on this CPU it measured
-    // parity with the fp dequant kernels (DRAM-bound), with slightly worse
-    // precision. Enable with SERIUS_INTDOT=1 to experiment.
     static const bool yes_intdot = [] {
 #if defined(_MSC_VER)
         char buf[8];
@@ -1368,7 +1625,7 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
 #endif
     }();
     const bool intdot_type = (w.type == quant::QuantType::Q4_0 || w.type == quant::QuantType::Q4_1 ||
-                              w.type == quant::QuantType::Q4_K);
+                              w.type == quant::QuantType::Q8_0 || w.type == quant::QuantType::Q4_K);
     const bool intdot_ok = intdot_type && (K % 32) == 0 && K >= 32 &&
                            (w.type != quant::QuantType::Q4_K || (K % 256) == 0);
     if (yes_intdot && intdot_ok) {
@@ -1385,13 +1642,42 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
             return std::getenv("SERIUS_NO_AVX512") != nullptr;
 #endif
         }();
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
+        // VNNI kernels measured SLOWER than the maddubs/madd_epi16 path on
+        // Rocket Lake (i9-11900H, 2026-11-24 micro-bench) — keep them behind
+        // an explicit opt-in for re-testing on other uarchs (e.g. SPR+).
+        static const bool yes_vnni = [] {
+#if defined(_MSC_VER)
+            char buf[8];
+            size_t len = 0;
+            return getenv_s(&len, buf, sizeof(buf), "SERIUS_VNNI") == 0 && len > 0;
+#else
+            return std::getenv("SERIUS_VNNI") != nullptr;
+#endif
+        }();
+#endif
         if (info.has_avx512f && !no_avx512) {
-            if (w.type == quant::QuantType::Q4_0) {
-                ifn = q40i_row_avx512;
-            } else if (w.type == quant::QuantType::Q4_1) {
-                ifn = q41i_row_avx512;
-            } else {
-                ifn = q4ki_row_avx512;
+#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
+            if (info.has_avx512_vnni && yes_vnni) {
+                if (w.type == quant::QuantType::Q4_0) {
+                    ifn = q40vnni_row_avx512;
+                } else if (w.type == quant::QuantType::Q4_1) {
+                    ifn = q41vnni_row_avx512;
+                } else if (w.type == quant::QuantType::Q8_0) {
+                    ifn = q80vnni_row_avx512;
+                }
+            }
+#endif
+            if (ifn == nullptr) {
+                if (w.type == quant::QuantType::Q4_0) {
+                    ifn = q40i_row_avx512;
+                } else if (w.type == quant::QuantType::Q4_1) {
+                    ifn = q41i_row_avx512;
+                } else if (w.type == quant::QuantType::Q8_0) {
+                    ifn = q80i_row_avx512;
+                } else {
+                    ifn = q4ki_row_avx512;
+                }
             }
         }
 #endif
@@ -1399,7 +1685,13 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
             if (w.type == quant::QuantType::Q4_K || !info.has_avx2) {
                 goto fp_path;
             }
-            ifn = (w.type == quant::QuantType::Q4_0) ? q40i_row_avx2 : q41i_row_avx2;
+            if (w.type == quant::QuantType::Q4_0) {
+                ifn = q40i_row_avx2;
+            } else if (w.type == quant::QuantType::Q4_1) {
+                ifn = q41i_row_avx2;
+            } else {
+                ifn = q80i_row_avx2;
+            }
         }
         {
             XQuant xq;  // shared read-only across worker threads

@@ -37,5 +37,6 @@
 - [x] Fase 4 — Transformer + inference (32 finding; CUDA+CPU+offload+speculative coperti)
 - [x] Fase 5 — Server + CLI (21 finding)
 - [x] Fase 6 — Tokenizer + IO
-- [ ] Fase 7 — Resto
-- [ ] Fase 8 — Build + test
+- [x] Fase 7 — Resto (hub, distributed, safety, agent, rag, moe, lora, mcp, tools, stress, common; F7.1–F7.96)
+- [x] Fase 7b — experimental/ (71 file compilati; sweep mirato su autoopt/agent/federated/rlhf/quantum/rag/inference/consensus; F7b.1–F7b.32; ~30 file minori — neuro/ssm/liquid/world/audio/vision/multimodal/automl/interpret/eval/knowledge/reasoning/grounding — coperti solo a grep, da approfondire se serve)
+- [x] Fase 8 — Build + test (`ninja` up-to-date; `ctest` 712/712, 6 skip modelli reali)

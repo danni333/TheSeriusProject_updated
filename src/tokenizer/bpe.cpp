@@ -412,6 +412,63 @@ void BPETokenizer::load(const std::string &path_str)
     try_add_special("<unk>");
     try_add_special("<pad>");
 
+    // Resolve bos/eos ids: HF tokenizer.json exposes them as "bos_token" /
+    // "eos_token" (string, null, or {"id":N,"content":"..."}), and
+    // "added_tokens" entries may carry special control tokens. Without this,
+    // models like Qwen keep the LLaMA defaults (1/2) and generation never
+    // stops on the real EOS.
+    auto token_id_of = [&](const nlohmann::json &j) -> int {
+        if (j.is_null()) return -1;
+        if (j.is_number_integer() || j.is_number_unsigned()) return j.get<int>();
+        if (j.is_string()) {
+            auto it = vocab_.token_to_id.find(j.get<std::string>());
+            return it == vocab_.token_to_id.end() ? -1 : static_cast<int>(it->second);
+        }
+        if (j.is_object()) {
+            if (j.contains("id") && j["id"].is_number()) return j["id"].get<int>();
+            if (j.contains("content") && j["content"].is_string()) {
+                auto it = vocab_.token_to_id.find(j["content"].get<std::string>());
+                return it == vocab_.token_to_id.end() ? -1 : static_cast<int>(it->second);
+            }
+        }
+        return -1;
+    };
+    bool bos_resolved = false, eos_resolved = false;
+    if (json_in.contains("bos_token")) {
+        const int id = token_id_of(json_in["bos_token"]);
+        if (id >= 0) {
+            bos_id_ = static_cast<TokenId>(id);
+            bos_resolved = true;
+        }
+    }
+    if (json_in.contains("eos_token")) {
+        const int id = token_id_of(json_in["eos_token"]);
+        if (id >= 0) {
+            eos_id_ = static_cast<TokenId>(id);
+            eos_resolved = true;
+        }
+    }
+    // Fallback: pick well-known EOS strings from added_tokens when the
+    // explicit fields are absent (common in older tokenizer.json exports).
+    if (!eos_resolved) {
+        for (const char *cand : {"<|im_end|>", "<|endoftext|>", "</s>", "<|eot_id|>"}) {
+            auto it = vocab_.token_to_id.find(cand);
+            if (it != vocab_.token_to_id.end()) {
+                eos_id_ = it->second;
+                break;
+            }
+        }
+    }
+    if (!bos_resolved) {
+        for (const char *cand : {"<|im_start|>", "<s>", "<|begin_of_text|>"}) {
+            auto it = vocab_.token_to_id.find(cand);
+            if (it != vocab_.token_to_id.end()) {
+                bos_id_ = it->second;
+                break;
+            }
+        }
+    }
+
     std::sort(special_tokens_.begin(), special_tokens_.end(),
               [](const std::string &a, const std::string &b) { return a.length() > b.length(); });
 }

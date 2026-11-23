@@ -169,7 +169,7 @@ std::vector<SearchResult> SearchEngine::semantic_search(const std::string &query
         r.author = m.author;
         r.score = score;
         r.highlighted_text = m.description;
-        scored.emplace_back(sim, std::move(r));
+        scored.emplace_back(score, std::move(r));
     }
 
     std::sort(scored.begin(), scored.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
@@ -210,7 +210,7 @@ std::vector<SearchResult> SearchEngine::find_similar_models(const std::string &m
         r.author = m.author;
         r.score = score;
         r.highlighted_text = m.description;
-        scored.emplace_back(sim, std::move(r));
+        scored.emplace_back(score, std::move(r));
     }
     std::sort(scored.begin(), scored.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
     std::vector<SearchResult> out;

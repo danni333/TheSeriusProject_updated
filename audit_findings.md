@@ -816,3 +816,341 @@ Legenda severità: **CRITICO** = memory corruption / wrong results silenziosi | 
 **F7.66 — `sample_server_memory` ingoia eccezioni JSON in silenzio** — BASSO
 `stress_runner.cpp:250-257`
 - `catch(...)` vuoto → metriche ram/vram a 0 senza segnalazione; un endpoint /health che ritorna JSON rotto è invisibile.
+
+### Checkpoint + PagedKV + CLI loader
+
+**F7.62 — `load_checkpoint` nessuna validazione di `name_len`/`ndim`/`shape`/`version`; `total_size` dal file non confrontato con `p->data.size()`** — ALTO
+`checkpoint.cpp:79-107`
+- File corrotto o di modello diverso: `name_len` negativo → `std::string(name_len,' ')` con size_t enorme → bad_alloc; `ndim` negativo → `vector<size_t>(neg)` enorme; `total_size *= shape[d]` overflow; `is.read(p->data.data(), total_size*4)` scrive OOB se `total_size > p->data.size()` → heap corruption. `version` letto e ignorato. `is.read` results mai controllati → file troncato = garbage silenzioso.
+
+**F7.63 — `save_checkpoint` scrive `p->data.data()` senza `syncToHost()`** — MEDIO
+`checkpoint.cpp:45`
+- Se i parametri sono GPU-resident, `data()` ritorna ptr host stale/vuoto → checkpoint con pesi garbage. Nessun dtype check (solo float).
+
+**F7.64 — `PagedKVCache::update` non valida shape di `value` vs `key`; `gather_*`/`update` usano `item()`/`set_item` → rottura se pool su GPU** — MEDIO
+`paged_kv_cache.cpp:62-171`
+- `value.item({0,head,i,dim})` con shape diversa da key → OOB read silenzioso. `item`/`set_item` per elemento sono lentissimi (O(n) sync) e non funzionano correttamente se `k_pool_`/`v_pool_` sono su GPU (ctor accetta `location=GPU` e fa syncToDevice, ma gather/update non sincronizzano).
+
+**F7.65 — `BlockManager::free` accetta block_id duplicato/esterno senza check** — MEDIO
+`paged_kv_cache.cpp:38-41`
+- `free_blocks_.push(block_id)` senza validazione: double-free o id mai allocato → stesso physical block dato a due sequence → KV corruption. `reset()` chiama free per ogni entry — se `update` ha lanciato a metà, `block_table_` e `free_blocks_` possono divergere.
+
+**F7.66 — `load_llama_cli_model`: fallimento caricamento pesi = solo warning, prosegue con random init** — MEDIO
+`llama_loader.cpp:176-189`
+- Stessa classe di F5.17/F6.20: `weights_loaded` flag esiste ma il modello viene comunque restituito e usato. `config.vocab_size` fallback a 32000 se tokenizer vuoto → mismatch silenzioso.
+
+**F7.67 — Directory GGUF: primo `.gguf` alfabetico caricato come tokenizer/config, indipendentemente dal modello scelto** — BASSO
+`llama_loader.cpp:94-101, 131-138`
+- Se la directory ha più GGUF (es. modelli quantizzati diversi), tokenizer e config vengono estratti dal primo trovato, pesi da `load_llama_weights_from_dir` — possibili mismatch arch/tokens.
+
+### CUDA attention kernels
+
+**F7.68 — `flash_attn_fwd_kernel`: K/V head_offset usa `gridDim.y` (num_heads) per K/V — niente GQA/MQA** — MEDIO
+`flash_attn_cuda.cu:42-43`, dispatch 292
+- `kv_head_offset = (batch*gridDim.y + head_id)*seq_len_k*HEAD_DIM` assume K/V hanno stesso num_heads di Q. Con grouped/multi-query attention (K/V heads < Q heads) gli offset sono sbagliati → attention su memoria errata. Host non valida `num_kv_heads`.
+
+**F7.69 — `flash_attn` backward: `dS_ij`/`dq`/`dk` scaling duty-cycle da verificare numericamente; `s_LSE` non inizializzato per righe Q fuori range** — MEDIO
+`flash_attn_cuda.cu:174-181, 212-262`
+- `s_LSE[tid]` scritto solo se `q_idx < seq_len_q` ma il thread con `q_idx >= seq_len_q` non lo usa — ok; HOWEVER `s_Q`/`s_dO` per `tid` corrispondono a `q_idx = br*BLOCK_M + tid` — se `seq_len_q` non è multiplo di BLOCK_M, le righe parziali sono gestite. Verificare con test numerico: la formula `dS = p*(dP - D)` standard richiede `D = rowsum(dO*O)` e missing `*softmax_scale` placement — potenziale grad errato.
+
+**F7.70 — `block_sparse_attention_cuda`: `cudaMalloc`/`cudaMemcpy`/`cudaFree` senza error check; `block_mask` mai `syncToHost`** — MEDIO
+`block_sparse.cu:187-237`
+- `cudaMalloc(&d_block_mask,...)` fallito → ptr null → `cudaMemcpy` fallisce silenzioso → kernel legge null → crash. `block_mask.item(i)` assume tensor CPU: se passato GPU tensor, `item()` non sincronizza → garbage mask. `cudaGetLastError` controllato solo DOPO `cudaFree`.
+
+**F7.71 — `max_smem` static cache non tiene conto di cambio device** — BASSO
+`block_sparse.cu:205-212`
+- `static int max_smem` calcolato una volta per il device corrente; in setup multi-GPU con device diversi → limite sbagliato.
+
+### fused_kernels.cu host-side
+
+**F7.72 — `topk_logits_f32`/`gpu_topk_raw_candidates`/`d_meta`: static device buffers non thread-safe, mai liberati** — MEDIO
+`fused_kernels.cu:1356-1376, 1560-1591, 2083-2088`
+- `static unsigned *d_gmax` ecc. controllati da `if (ptr==nullptr)` + realloc `if (d_cap < cap)` senza mutex → due thread concorrenti (o stream diversi) → race su cudaMalloc/cudaFree → double-free o use-after-free. Mitigato se tutti i caller passano da `inference_mutex_`, ma niente lo garantisce. `coop_grid` static calcolato una volta — cambio device → valore stale.
+
+**F7.73 — `gemv_quant_f16`: qtype non 3/4/5 → nessun kernel lanciato, `y_f32` resta non inizializzato** — ALTO
+`fused_kernels.cu:1650-1672`
+- `if (qtype==3)...else if(4)...else if(5)` senza else: tipo quant non supportato ritorna silenziosamente con output garbage. Caller non può distinguere "non supportato" da "computed".
+
+**F7.74 — realloc path `cudaFree` senza CHECK e `d_cap` update dopo leak su eccezione** — BASSO
+`fused_kernels.cu:1366-1376, 1573-1586`
+- `cudaFree(d_idx)` return ignorato; se `cudaMalloc` fallisce dopo il free, `d_cap` non aggiornato ma ptr pendenti persi.
+
+### nomic_bert + quant CUDA + trainer/static/metrics
+
+**F7.75 — `NomicBertEmbedder::tokenize` WordPiece: match che finisce esattamente a fine parola con `start>0` marcato `failed` → UNK spurio** — MEDIO
+`nomic_bert.cpp:206-228`
+- `best` è inizializzato a `word.size()` e usato come sentinel "nessun match", ma un match legittimo può anch'esso finire a `word.size()`. Il check `best == word.size() && vocab_.find(word.substr(start)) == end` cerca la sotto-stringa SENZA prefisso `##` → per `start>0` fallisce sempre → `failed=true` → token UNK al posto degli pezzi corretti.
+
+**F7.76 — `forward_hidden`: `cfg_.unk_id` non validato contro `vocab` → OOB read su `tok_embd_`** — MEDIO
+`nomic_bert.cpp:248-254`
+- `id = (ids[t]>=0 && ids[t]<vocab) ? ids[t] : cfg_.unk_id` — se `unk_id >= vocab` (config errata) → `tok_embd_.data() + id*H` OOB.
+
+**F7.77 — `get_tensor`/`linear_gemm` assumono tensor CPU Float32 senza `syncToHost`/dtype check** — MEDIO
+`nomic_bert.cpp:77-88, 36-46`
+- `memcpy(out->data(), it->second.data(), n*4)` — se il tensor è GPU-resident o non-Float32 → garbage silenzioso. `C.syncToHost()` dopo matmul aiuta solo se C è view host non-owning — comportamento dipendente da Tensor view semantics.
+
+**F7.78 — `dequant_matmul_cuda`: nessun check errori CUDA, nessuna validazione input** — MEDIO
+`dequant_matmul.cu:87-96`
+- `cudaDeviceSynchronize()` return ignorato, `cudaGetLastError` mai chiamato → launch failure silenzioso. K dispari → packing byte errato. M/N/K<=0 o block_size==0 → grid calcolato male.
+
+**F7.79 — `quant_kernels.cu`: subnormal FP8 hand-rolled da verificare numericamente; nessun error check CUDA** — BASSO
+`quant_kernels.cu:18-112, 173-220`
+- `float_to_fp8_e4m3/e5m2_dev` subnormal path (`biased_exp<=0`) usa `mant*8`/`mant*4` — verificare contro spec FP8. `cudaDeviceSynchronize` ignorato in tutte le API.
+
+**F7.80 — `Trainer::train`: eccezioni a metà step leakano grafo + `target_node`** — BASSO
+`trainer.cpp:46-103`
+- Se `forward`/`backward`/`step` lancia, `cleanup_graph`/`delete target_node` mai eseguiti → leak. `loss_node->data[0]` stampa solo primo elemento.
+
+**F7.81 — `static_files` path traversal: protezione ok, ma `read_file` carica asset interi in RAM** — BASSO
+`static_files.cpp:11-93`
+- `weakly_canonical` + prefix check corretto; `contents << file.rdbuf()` ok per asset piccoli.
+
+### SFT + PrefixCache
+
+**F7.82 — `SFTTrainer::train_step`: `loss_mask`/`target`/`input` come float, nessuna upper-bound su token id** — MEDIO
+`sft_trainer.cpp:65-90`, `sft_loader.cpp:24-43`
+- I token id finiscono in `Tensor` float e passano a `model_.forward` → `embedding_lookup` senza validazione (F4.1): un id >= vocab_size dal tokenizer → OOB. `loss_mask[i] = i+1 >= prompt_ids.size()` maschera correttamente il prompt ma include EOS nel loss (probabilmente voluto).
+
+**F7.83 — `PrefixCache::hash_tokens` FNV-1a a 64 bit: collisioni = KV snapshot di prompt sbagliato** — MEDIO
+`prefix_cache.cpp:73-82`
+- Solo hash, nessuna verifica dei tokens: due prefissi diversi con stesso hash → `find_longest_prefix` ritorna snapshot KV di un'altra sequenza → **output silenziosamente errato**. Birthday bound su 2^64 è ok ma adversarial/crafted input può forzare collisioni; almeno verificare `tokens[0..len)` contro una copia.
+
+**F7.84 — `PrefixCache::store`: `memory_usage_` può diventare negativo se entry aggiornata ha size diversa** — BASSO
+`prefix_cache.cpp:37-45`
+- Aggiornamento: sottrae size vecchio snapshot, aggiunge nuovo — ok; ma se `kv.keys.size()` cambia dimensionalità (altro modello/UI) il conto resta coerente. `while` eviction: se `kv` da solo > max_memory_bytes e cache vuota → `break` → inserisce comunque superando il limite.
+
+### Stability + init
+
+**F7.85 — `EMAWeights::update/apply/restore` scrivono/leggono `data.data()` senza `syncToHost`** — ALTO
+`ema.cpp:19-75`
+- Se i parametri sono GPU-resident, `data()` punta al buffer host stale → shadow weights = garbage, `apply()` scrive nel buffer host senza `mark_dirty` → GPU mantiene pesi vecchi → **silenzioso**. `clip_grad_norm`/`loss_scaler` fanno `syncToHost` correttamente — EMA no.
+
+**F7.86 — `DynamicLossScaler::unscale_grads` non azzera i gradienti su overflow** — BASSO
+`loss_scaler.cpp:28-51`
+- Ritorna false ma lascia grad con NaN/Inf scalati; il chiamante deve azzerare manualmente (diverso da `AMP::unscale_and_update` che zeroa). Infatti `update(true)` resetta solo il contatore.
+
+**F7.87 — `weight_init::*` scrivono `w.data()` senza sync/dtype check** — BASSO
+`weight_init.cpp` tutto
+- Chiamato tipicamente prima dell'offload GPU (ok), ma se riusato su tensor GPU/dtype diverso → scrittura su buffer errato. `fan_in+fan_out==0` → division by zero in xavier.
+
+### MoE layer + LoRA adapter + tools
+
+**F7.88 — `MoELayer::forward` backward_fn cattura `token_outputs`/`out` per valore: `out` self-reference grezza** — MEDIO
+`moe_layer.cpp:120-144`
+- `out->backward_fn` cattura `out` (il nodo stesso) e `token_outputs` (Node* grezzi): se il grafo viene cancellato prima di `backward()` o il MoELayer distrutto → dangling. In più `token_node->backward_fn` cattura `token_node` stesso — stesso pattern.
+
+**F7.89 — `MoELayer::forward` scala quadratic in token_count: copia per-token + FFN call per token** — BASSO
+`moe_layer.cpp:71-118`
+- Per ogni token: new Node + router.route + N_expert forward separati → batch [T,d] processato come T forward singoli → lentissimo e T nodes extra nel grafo.
+
+**F7.90 — `LoRAAdapter::load` scrive in `A().data.data()`/`B().data.data()` con `a_bytes`/`b_bytes` dal file senza bound check** — ALTO
+`lora_adapter.cpp:139-151`
+- `a_bytes` da JSON usato direttamente in `in.read` → se > dimensione tensor → heap overflow. `header_len` non validato → alloc enorme. `in.read` return mai controllato. Se `layers_` è vuoto (load prima di add_layer) tutti gli entry sono skip → file "caricato" senza effetto.
+
+**F7.91 — `ToolRegistry::execute`/`validate_schema`: `tools_` non sincronizzato** — MEDIO
+`registry.cpp:140-247`
+- `register`/`unregister`/`execute` senza mutex → race se tool registrati a runtime mentre richieste in volo. `validate_schema` `properties.contains(it.key())` — `it.key()` su json iterator ok.
+
+**F7.92 — `FunctionCallParser::extract_json` regex greedy: JSON nested >2 livelli non matcha** — BASSO
+`parser.cpp:11-19`
+- Pattern `\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}` supporta max 2 livelli di nesting; tool call con args annidati profondi → parse fallisce silenziosamente.
+
+### Hub main + search embedding + bench
+
+**F7.93 — `signal_handler` chiama `exit(0)` da signal handler: leak/destructors saltati, race con worker attivi** — MEDIO
+`hub_main.cpp:28-34`
+- `exit()` in signal handler è async-signal-unsafe; thread httplib attivi vengono killati di netto → potenziali write a metà su `hub_users.json`/`models_metadata.json`.
+
+**F7.94 — `EmbeddingManager::store_embedding_matrix` `dim_major` guess ambiguo** — BASSO
+`search_engine.cpp:~640-680`
+- Se `rows==cols` o shape ambigua, `dim_major`/`vocab` indovinati → embedding matrix trasposta silenziosamente → similarity search su features sbagliate. Hash fallback (FNV) ha collisioni frequenti: `h % kDim` a 10 bit segnati — qualità search bassa ma non crash.
+
+**F7.95 — `bench/memory.cpp`: `new LLaMAModel` + `delete` manuale, eccezioni tra le due → leak** — BASSO
+`bench/memory.cpp:~50-90`
+- Uso di raw new/delete invece di unique_ptr; se un'eccezione viene lanciata tra alloc e delete → leak (processo bench, basso impatto).
+
+**F7.96 — `run_process` (process_utils.h): nessun timeout, `WaitForSingleObject(INFINITE)`/`waitpid` bloccante** — MEDIO
+`process_utils.h:135-217`
+- Usato da `hub::downloader` per curl: un download hanging blocca il chiamante per sempre. Stesso problema di F7.39.
+
+## FASE 7b — experimental/ (71 file compilati, ~7.3k righe)
+
+### autoopt
+
+**F7b.1 — `Sandbox` esegue codice generato da LLM in-process via dlopen, senza sandboxing reale** — ALTO (design)
+`experimental/autoopt/sandbox.cpp:319-356`, `refactorer.cpp:100-123`
+- `compile()` compila C++ generato dall'LLM e `load_kernel` lo `dlopen`a nella stessa processo con `RTLD_NOW` → codice arbitrario generato da un modello esterno gira con tutti i privilegi del server. Il nome "Sandbox" è fuorviante: nessun isolamento (nessun container/seccomp/rlimit). Se l'LLM endpoint è compromesso o prompt-injection, è RCE. Documentare come "solo uso locale/trusted".
+
+**F7b.2 — `create_temp_dir` usa `random_device`+mt19937 con solo 4 cifre → path prevedibile** — MEDIO
+`sandbox.cpp:85-96`
+- `uniform_int_distribution(1000,9999)` → ~9000 possibilità; su sistemi multi-utente o con symlink pre-creati → temp dir squatting. `std::random_device` seed + PRNG non crittografico.
+
+**F7b.3 — `Sandbox::verify`/`benchmark` assumono Tensor CPU Float32, nessun dtype/location check** — MEDIO
+`sandbox.cpp:247-265`, `load_kernel` 348-355
+- `ref_out[i]`/`cand_out[i]` via `operator[]` senza `syncToHost`; `load_kernel`'s KernelFn chiama `fn(in_c.data(), ...)` con `const float*` ma non verifica `in_c.dtype()==Float32` → tensor F16 reinterpretato come float → kernel generato legge/scrive buffer con dtype sbagliato.
+
+**F7b.4 — `HotSwapManager::rollback` non fa `dlclose` della libreria della versione rimossa** — MEDIO
+`hot_swap.cpp:120-130`, `hot_swap_from_library` 89-118
+- `loaded_libraries_` accumula handle per ogni swap; rollback pop la fn ma la .so resta mappata per sempre → leak di memoria + codice non più referenziato ma eseguibile. Chiave `name+"_v"+size` collide dopo rollback+reswap → overwrite → handle perso.
+
+**F7b.5 — `optimize_hotspot` compila `candidate_source` ma benchmarka `candidate_kernel` passato dal caller** — MEDIO
+`refactorer.cpp:31-39`
+- La compilazione è solo un gate; il kernel effettivamente hot-swappato è `candidate_kernel` (funzione C++ del chiamante), non la libreria compilata da `candidate_source` → se i due divergono, si verifica una cosa e si installa un'altra. `optimize_with_llm` usa correttamente `load_kernel`.
+
+**F7b.6 — `commit_optimization` chiamato sempre con `dry_run=true`** — BASSO
+`refactorer.cpp:70`
+- Il commit git reale non avviene mai; `commit_history_` cresce solo in RAM → feature incompleta.
+
+**F7b.7 — `llm_client::split_url` `std::atoi` su port e scarto userinfo silenzioso** — BASSO
+`llm_client.cpp:30-41`
+- `port = atoi(...)`: "abc"→0→reject ok; "80abc"→80 accepted. Userinfo `user:pass@host` viene stripato e le credenziali perse (forse voluto). Nessun timeout su connect=10s/read=120s — ok.
+
+**F7b.8 — `extract_code_from_response` ritorna la response INTERA se non trova code fence** — BASSO
+`llm_client.cpp:82-106`
+- Prosa senza ```cpp → il testo intero va in `compile()` → fallisce la compilazione (wasted cycle) o peggio: se la prosa contiene ``` mascherate, estrae blocco sbagliato.
+
+### agent
+
+**F7b.9 — `ReActEngine::run` esegue tool del registry con args JSON del modello, nessun allowlist/validation oltre schema** — MEDIO
+`react.cpp:53-60`, `action_parser.cpp`
+- L'output del LLM decide quale tool chiamare e con quali argomenti; `tool_registry->execute` valida solo schema JSON, non semantica → prompt injection nel modello = invocazione arbitraria dei tool registrati. `ActionParser::parse` estrae JSON con `find('{')`/`find('}')` → args annidati si rompono (primo `}` chiude presto) → `args_json` troncato → parse fail o args parziali.
+
+**F7b.10 — `Supervisor::plan_tasks` parsing JSON "a mano" con find/quotes** — MEDIO
+`supervisor.cpp:43-76`
+- Estrae "agent"/"prompt" cercando virgolette nel testo grezzo: JSON con escape `\"`, valori con `:`/`;` o nesting → parse errato → task con agent_name errato → "not found" o peggio match su nome sbagliato. `pos = q2` dopo ogni match: se `q2==npos` → loop infinito? No: `pos` avanzato ma `plan.find("\"agent\"", pos)` con pos beyond size → npos → fine. Ma se `q1==npos`, `q2` resta npos e `pos=q2`=npos → fine.
+
+### federated
+
+**F7b.11 — `add_dp_noise` usa `std::mt19937 gen(42)` fisso → rumore DP deterministico e prevedibile** — ALTO
+`dp_noise.cpp:28-35`
+- Seed fisso 42 per OGNI chiamata → lo stesso delta produce lo stesso noise → la "privacy" è zero: un avversario che conosce il delta può sottrarre esattamente il rumore. DP richiede CSPRNG o almeno seed casuale. `normal_distribution` su mt19937 non è crittograficamente sicuro comunque.
+
+**F7b.12 — `compute_epsilon` formula RL accountant semplificata, non verificata** — BASSO
+`dp_noise.cpp:40-54`
+- Implementazione custom di advanced composition: `eps_single = sqrt(2 ln(1.25/δ))/σ` poi composition — plausibile ma non è il bound standard (manca δ composition corretta); solo da trattare come stima euristica.
+
+**F7b.13 — `FederatedAggregator::aggregate` assume tutti i delta stessa shape, `operator+` silenzioso su mismatch** — BASSO
+`aggregator.cpp:19-28`
+- `sum + it->second` con shape diversi → comportamento di Tensor::operator+ non verificato qui (potrebbe throw o broadcast errato).
+
+### quantum
+
+**F7b.14 — `QuantumState` `1<<n_qubits` overflow: n_qubits>=32 → size_t ok su 64-bit ma `size_t(1)<<n` per n>=64 UB; n>26 → >64M amp → OOM** — MEDIO
+`state.cpp:77-82`
+- Nessun bound check su n_qubits: `QuantumState(40)` → `1<<40` amp = ~16TB alloc → crash/OOM. `apply_gate`/`apply_cnot`/`measure` iterano `total_dim` — con n grande hang. Solo euristico.
+
+**F7b.15 — `measure` collapse: `norm_factor` clamp 1e-8 maschera stati non normalizzati** — BASSO
+`state.cpp:168-181`
+- Se `prob_1`≈0 o 1 (stato quasi deterministico), divide per sqrt(1e-8)=1e-4 → amplifica errori FP; outcome `(rand < 1-prob_1)` con prob_1 leggermente >1 (errore numerico) → `1-prob_1` negativo → outcome sempre 1.
+
+**F7b.16 — `apply_gate`/`apply_cnot`/`apply_cz` mutano `amplitudes_` in-place durante iterazione: gate ok (coppie disgiunte), CNOT swap ok; ma nessuna normalizzazione post-gate** — BASSO
+`state.cpp:92-144`
+- Gate unitarie preservano norma in teoria; accumulo FP drift non corretto (nessun renormalize). `apply_cz` con control==target: mask ha bit singolo, `(i&mask)==mask` → flip segno per tutti i basis con quel bit → equivale a Z su quel qubit, non a identità — comportamento ambiguo.
+
+### rlhf
+
+**F7b.17 — `kl_divergence`/`ppo_loss` usano `min(size)` silenzioso su vettori mismatched** — MEDIO
+`ppo.cpp:17,88`
+- Se `log_probs_new.size() != log_probs_old.size()` → troncamento silenzioso → KL/ratio calcolati su subset → reward/gradienti errati senza errore. Stessa classe dei finding "silent truncation" della Fase 7.
+
+**F7b.18 — `ppo_clipped_objective` ritorna `min(ratio*A, clip*A)` ma NON tiene il max con `clip*A` nel caso A<0** — ALTO (correttezza PPO)
+`ppo.cpp:77-81`
+- PPO standard: `min(ratio*A, clip(ratio)*A)` vale solo se si prende poi `-min(...)` come loss; ma la formula corretta del surrogate è `min(ratio*A, clipped_ratio*A)` SOLO quando si massimizza — con `std::fmin` e poi `-total` in `ppo_loss`, per A negativo il `fmin` sceglie il più negativo → incentiva allontanare ratio dal clip → **segno invertito per advantage negativi**. Verificare: con A<0, ratio>1+eps → clipped*A = (1+eps)*A < ratio*A? No: A<0 → (1+eps)*A < ratio*A → fmin sceglie clipped*A = più negativo → loss -negative = positivo... va ricalcolato, ma il punto è che `fmin` non è `min` del PPO standard che usa `std::min(ratio*A, clipped*A)` per massimizzare — in loss negato è `max`. Da verificare con test numerico.
+
+**F7b.19 — `kl_divergence` somma `p*(logp_new - logp_ref)` dove p=exp(logp_new) non normalizzato** — BASSO
+`ppo.cpp:19-20`
+- Se `log_probs_new` non sono log-prob normalizzate (somma p≠1) → KL errato. Assume input già normalizzato, non documentato.
+
+### rag
+
+**F7b.20 — `VectorDBClient` è un finto "client": tutto in-RAM, nessuna persistenza/rete, `Config` inutilizzata** — BASSO (design)
+`vector_client.cpp`
+- `search` O(N) cosine su tutti i documenti, nessun indice; `documents_` mai serializzato → restart = perdita. Il nome "client" implica servizio esterno che non esiste.
+
+**F7b.21 — `VectorDBClient` nessuna thread-safety: `search`/`upsert`/`remove` concorrenti → data race** — MEDIO
+`vector_client.cpp:50-139`
+- `documents_` vettore modificato/letto senza mutex; se usato da più thread (es. server RAG) → crash.
+
+### inference (sperimentale — diverso da src/infer)
+
+**F7b.22 — `generate()`/`beam_search()` leakano `logits_node` a ogni step E peggio: `input_node` è stack-allocated** — ALTO
+`experimental/inference/generate.cpp:34-37,104-105`
+- `model.forward(&input_node)` riceve puntatore a Node su stack: se forward registra `input_node` come child nel grafo, `logits_node` leakato trattiene un puntatore dangling → UAF latente se mai si chiama backward. `logits_node` mai `delete` → leak grafo intero per token (stessa classe di F5.1). `beam_search`: ×beam_width leak per step.
+
+**F7b.23 — `beam_search` `partial_sort(begin, begin+beam_width)` senza verificare `beam_width <= vocab_size`** — ALTO
+`generate.cpp:126-129`
+- Se `beam_width > vocab_size` → iteratore oltre `end()` → UB/crash. `beam_width` è parametro libero, nessun clamp.
+
+**F7b.24 — beam score senza length-normalization: beam finiti (EOS) competono con score cumulativo minore** — MEDIO
+`generate.cpp:131-148`
+- `new_beam.score = beam.score + lp_data[idx]` accumula logprob senza dividere per lunghezza → i beam "finished" vengono penalizzati vs quelli più lunghi → tendenza a scegliere sequenze infinite. Comportamento standard ma da documentare.
+
+**F7b.25 — `generate()` assume logits contigui (seq,vocab) senza check: `data() + (seq_len-1)*vocab_size`** — MEDIO
+`generate.cpp:41-50`
+- Se `logits_tensor` è 1-D o non contiguo o shape diversa → offset errato → logits sbagliati silenziosamente. Nessuna verifica `ndim==2`.
+
+### rlhf (seguito)
+
+**F7b.26 — `RewardModel::score` crasha su `tokens` vuoto: `at(seq_len-1)` con seq_len=0** — MEDIO
+`reward_model.cpp:28,139`
+- `tokens.shape()[0]==0` → `forward_hidden` crea Tensor({0,hidden}) → `hidden->data.at(SIZE_MAX, d)` → OOB. Nessun check early-return.
+
+**F7b.27 — `free_graph` elimina nodi intermedi mentre i param Node possono avere `children` che li referenziano** — ALTO
+`reward_model.cpp:62-70`
+- I param sono esclusi dalla delete, ma se un param Node ha `children`/`backward_fn` che puntano a intermedi eliminati → dangling pointer → UAF al prossimo backward (stessa classe di F4.4). `topological_sort(root)` copre solo i discendenti del root, non i link dai param.
+
+**F7b.28 — `generate_with_logprobs`: `last_row = data + (nrows-1)*vocab_size` assume logits (rows,vocab) contigui** — MEDIO
+`reward_model.cpp:243-244`
+- Se `llama_forward_single_token` ritorna shape {vocab} 1-D → `nrows=vocab_size` → offset `(vocab-1)*vocab` → OOB read massiccio. Verificare shape reale del ritorno.
+
+**F7b.29 — `PPOTrainer::train_step` non fa MAI backward né aggiorna pesi: `all_log_probs_new == all_log_probs_old` → ratio=1, KL=0** — ALTO
+`ppo_trainer.cpp:77-78,105-122`
+- `all_log_probs_old.push_back(gen.log_probs)` copia esattamente new → `ppo_loss` con ratio=exp(0)=1 → loss = -advantage costante, nessun gradiente possibile; e non c'è nemmeno chiamata a backward/optimizer. L'intero "PPO training" è un no-op matematico: ritorna un numero che non aggiorna nulla. `reward_head` è `rand()` e il transformer nel RewardModel ha pesi casuali scollegati dal policy model.
+
+### quantum/circuit
+
+**F7b.30 — `parameter_shift_gradient` `shifted.resize(P)` silenzioso: params più corti → zeri fantasma, più lunghi → param ignorati** — BASSO
+`circuit.cpp:49-52`
+- `num_params()` deve coincidere esattamente con i param consumati da `execute()` (n_layers*n_qubits); se il caller passa un vettore diverso → gradienti calcolati su param che non esistono o param reali saltati. Nessuna validazione `params.size()==P`.
+
+### agent/consensus
+
+**F7b.31 — `DelphiConsensus::cosine_sim` usa `embed_cache_` mutabile in metodo const, cache illimitata** — MEDIO
+`consensus.cpp:70-86`
+- Ogni stringa response vista in eterno nella cache (grow-only, mai invalidata) → leak in debate loop. `embed_fn_` può essere nullptr? Controllato da `if(embed_fn_)` ok.
+
+**F7b.32 — `debate()` nessun null-check su `agents_[i]`** — BASSO
+`consensus.cpp:144`
+- `register` di nullptr o agent distrutto → crash. Anche `majority_vote` clustering greedy order-dependent: similarità non transitiva → cluster arbitrari.
+
+---
+## Aggiornamento remediation (2026-11-24)
+
+Fix applicati: F7b.11 (DP seed), F7b.22+F7b.23 (generate/beam_search graph leak + beam_width clamp), F7b.26 (reward_model empty-tokens guard), F4.1 (embedding_lookup token validation → throw). F7b.18 verificato come non-bug (formula PPO corretta). F7b.29 = limitazione di design del modulo RLHF didattico. Fix manuali utente: downloader path traversal, GGUF nested-KV depth cap, server payload/embeddings cap, CUDA prefill DQ cache. Tracker: `audit_remediation.md`. Verifica: ninja build ok, 717/719 test (2 flaky passati al rerun), 6 skip modelli reali.
+
+## Aggiornamento remediation (2026-11-25)
+
+Fix applicati in questa sessione:
+
+- **F1.1** `Tensor::fill` rispetta il layout (no flat-fill su view strided/broadcast) e marca `location_=CPU` se esiste copia GPU.
+- **F1.2** `syncToHost`/`syncToDevice`: memcpy piatto solo se `is_contiguous()`; altrimenti copia element-wise via `compute_offset` (fixa OOB su `expand`/slice/permute).
+- **F1.3/F1.4** `operator+= -= + - * /` (Tensor e scalar): `syncToHost()` sugli operandi prima del fast path e dirty-marking CPU dopo le scritture in-place.
+- **F1.5** Copy ctor: `memcpy_d2d` solo se `other.is_contiguous()`; fix anche del copy host element-wise che scriveva flat invece che per indici.
+- **F1.16** `operator/(float)` ora fa divisione elemento-e-levamento (non `x*(1/s)`).
+- **F7.1** `load_checkpoint`: validazione magic/version/num_params/name_len/ndim/shape (no overflow, no zero-dim), `total_size` deve coincidere con `p->data.size()`, check `is_contiguous()`, size di `state.m/v`, controlli stream dopo ogni read, dirty-mark CPU su param GPU.
+- **F7.52** `get_cuda_backend`: singleton via function-local static (magic statics, thread-safe).
+- **F7.53** `CudaBackend::free`: i puntatori `malloc_pinned` sono tracciati in `pinned_ptrs_` e liberati con `cudaFreeHost` (la managed memory era già corretta via `cudaFree`).
+- **F7.8** `LoRALinear::unmerge` sottrae il delta esatto salvato in `merged_delta_` da `merge()` (no ricomputo B*A).
+- **F7.9** `LoRAAdapter::load`: header_len bounded, offsets A/B rispettati, size validate vs tensori attesi, controlli stream, dirty-mark CPU.
+- **F7.7** verificato non-bug: `blas::dispatch` materializza già `.contiguous()` sugli operandi (solo costo di copia).
+- **F7.56** `semantic_search`/`find_similar_models`: ordinamento ora per blended score esposto (era cosine grezzo).
+- **F7.57** `red_team`/`bias_scorer`: keyword matching con word-boundary ("kill" non matcha più "skill", "great" non matcha "greater"). Guardrails blocklist lasciato substring di proposito.
+- **F7.59** `ActionParser`: estrazione `args` a brace bilanciate con gestione stringhe/escape (JSON annidato ok).
+- **F7.60** `NomicBertEmbedder::load`: check dimensioni `type_embd_row0_`, norm vettori e norm per layer (no OOB su GGUF compatto).
+- **F7.61** `LocalCommunicator::{all_reduce,broadcast,all_gather}` Tensor overloads: dirty-mark CPU dopo collectives su host.
+- **F7.62** `Expert::forward(Tensor)`: cleanup grafo autograd completo via `topological_sort` (solo params FFN + input conservati) — prima leak di tutti i nodi intermedi.
+- **F7.65** `run_chaos`: probe "long context" non conta più HTTP 500 come PASS.
+- **F7.16** `MPICommunicator`: `mpi_count()` rifiuta count > INT32_MAX prima del cast a `int`.
+- **F7.54** `activation_hooks`: `std::atomic<ActivationHooks>` snapshot (fix race OpenMP writer/reader); `activation_hooks()` ritorna per valore.
+
+Da verificare/fix successivi: F7.46 (upload RAM), F7.49 (registration race), F7.35 (setrlimit), F7.63 (embed cache), F7b residui.

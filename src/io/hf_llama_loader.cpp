@@ -178,7 +178,7 @@ bool copy_into_param_tp(SafetensorsFile &safetensors_file, const std::string &pa
 /**
  * @brief Helper to load a range of layers for the current pipeline stage.
  */
-void load_layers_in_range(SafetensorsFile &safetensors_file, model::LLaMAModel *model, size_t start, size_t end)
+size_t load_layers_in_range(SafetensorsFile &safetensors_file, model::LLaMAModel *model, size_t start, size_t end)
 {
     const model::LLamaConfig &cfg = model->config();
     const auto &topo = model->topology();
@@ -192,36 +192,47 @@ void load_layers_in_range(SafetensorsFile &safetensors_file, model::LLaMAModel *
     const size_t local_kv_dim = (cfg.num_key_value_heads * head_dim) / tp_size_sz;
     const size_t local_inter = cfg.intermediate_size / tp_size_sz;
 
+    size_t copied = 0;
     for (size_t l_idx = start; l_idx < end; ++l_idx) {
         size_t local_idx = l_idx - start;
         model::LLaMABlock *block = model->layers()[local_idx].get();
         std::string layer_prefix = "model.layers." + std::to_string(l_idx) + ".";
 
-        copy_into_param(safetensors_file, layer_prefix + "input_layernorm.weight",
-                        block->input_layernorm_weight->data.data(), hidden, false);
-        copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.q_proj.weight", block->q_proj->data.data(),
-                           hidden * local_q_dim, true, tp_rank, tp_size, true);
-        copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.k_proj.weight", block->k_proj->data.data(),
-                           hidden * local_kv_dim, true, tp_rank, tp_size, true);
-        copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.v_proj.weight", block->v_proj->data.data(),
-                           hidden * local_kv_dim, true, tp_rank, tp_size, true);
+        // Mandatory weights (9/layer) counted for coverage; q/k/v biases are
+        // optional (many HF models ship without them) and not counted.
+        copied += copy_into_param(safetensors_file, layer_prefix + "input_layernorm.weight",
+                                  block->input_layernorm_weight->data.data(), hidden, false) ? 1 : 0;
+        copied += copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.q_proj.weight",
+                                     block->q_proj->data.data(), hidden * local_q_dim, true, tp_rank, tp_size,
+                                     true) ? 1 : 0;
+        copied += copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.k_proj.weight",
+                                     block->k_proj->data.data(), hidden * local_kv_dim, true, tp_rank, tp_size,
+                                     true) ? 1 : 0;
+        copied += copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.v_proj.weight",
+                                     block->v_proj->data.data(), hidden * local_kv_dim, true, tp_rank, tp_size,
+                                     true) ? 1 : 0;
         copy_into_param(safetensors_file, layer_prefix + "self_attn.q_proj.bias", block->q_bias->data.data(),
                         local_q_dim, false);
         copy_into_param(safetensors_file, layer_prefix + "self_attn.k_proj.bias", block->k_bias->data.data(),
                         local_kv_dim, false);
         copy_into_param(safetensors_file, layer_prefix + "self_attn.v_proj.bias", block->v_bias->data.data(),
                         local_kv_dim, false);
-        copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.o_proj.weight", block->o_proj->data.data(),
-                           local_q_dim * hidden, true, tp_rank, tp_size, false);
-        copy_into_param(safetensors_file, layer_prefix + "post_attention_layernorm.weight",
-                        block->post_attention_layernorm_weight->data.data(), hidden, false);
-        copy_into_param_tp(safetensors_file, layer_prefix + "mlp.gate_proj.weight", block->gate_proj->data.data(),
-                           hidden * local_inter, true, tp_rank, tp_size, true);
-        copy_into_param_tp(safetensors_file, layer_prefix + "mlp.up_proj.weight", block->up_proj->data.data(),
-                           hidden * local_inter, true, tp_rank, tp_size, true);
-        copy_into_param_tp(safetensors_file, layer_prefix + "mlp.down_proj.weight", block->down_proj->data.data(),
-                           local_inter * hidden, true, tp_rank, tp_size, false);
+        copied += copy_into_param_tp(safetensors_file, layer_prefix + "self_attn.o_proj.weight",
+                                     block->o_proj->data.data(), local_q_dim * hidden, true, tp_rank, tp_size,
+                                     false) ? 1 : 0;
+        copied += copy_into_param(safetensors_file, layer_prefix + "post_attention_layernorm.weight",
+                                  block->post_attention_layernorm_weight->data.data(), hidden, false) ? 1 : 0;
+        copied += copy_into_param_tp(safetensors_file, layer_prefix + "mlp.gate_proj.weight",
+                                     block->gate_proj->data.data(), hidden * local_inter, true, tp_rank, tp_size,
+                                     true) ? 1 : 0;
+        copied += copy_into_param_tp(safetensors_file, layer_prefix + "mlp.up_proj.weight",
+                                     block->up_proj->data.data(), hidden * local_inter, true, tp_rank, tp_size,
+                                     true) ? 1 : 0;
+        copied += copy_into_param_tp(safetensors_file, layer_prefix + "mlp.down_proj.weight",
+                                     block->down_proj->data.data(), local_inter * hidden, true, tp_rank, tp_size,
+                                     false) ? 1 : 0;
     }
+    return copied;
 }
 
 /**
@@ -318,8 +329,11 @@ quant::QuantWeight quantize_fp32_to_q40(const float *w, size_t N, size_t K)
 /**
  * @brief Loads tensors from a single safetensors file into the model.
  */
-bool load_one_file_into_model(SafetensorsFile &safetensors_file, model::LLaMAModel *model)
+bool load_one_file_into_model(SafetensorsFile &safetensors_file, model::LLaMAModel *model,
+                              size_t *copied_out, size_t *expected_out)
 {
+    size_t copied = 0;
+    size_t expected = 0;
     const model::LLamaConfig &cfg = model->config();
     const auto &topo = model->topology();
     const int pp_rank = topo.pp_rank;
@@ -332,35 +346,40 @@ bool load_one_file_into_model(SafetensorsFile &safetensors_file, model::LLaMAMod
     }
 
     // Emeddings (Stage 0)
-    if (model->embed_tokens() != nullptr && safetensors_file.tensors().count("model.embed_tokens.weight") > 0) {
-        copy_into_param(safetensors_file, "model.embed_tokens.weight", model->embed_tokens()->data.data(),
-                        cfg.vocab_size * cfg.hidden_size, false);
+    if (model->embed_tokens() != nullptr) {
+        expected += 1;
+        copied += copy_into_param(safetensors_file, "model.embed_tokens.weight", model->embed_tokens()->data.data(),
+                                  cfg.vocab_size * cfg.hidden_size, false) ? 1 : 0;
     }
 
     // Layers (Current PP stage)
-    load_layers_in_range(safetensors_file, model, start_layer, end_layer);
+    expected += (end_layer - start_layer) * 9;  // 9 mandatory weight tensors per layer
+    copied += load_layers_in_range(safetensors_file, model, start_layer, end_layer);
 
     // Final Norm & Head (Last stage)
-    if (model->norm_weight() != nullptr && safetensors_file.tensors().count("model.norm.weight") > 0) {
-        copy_into_param(safetensors_file, "model.norm.weight", model->norm_weight()->data.data(), cfg.hidden_size,
-                        false);
+    if (model->norm_weight() != nullptr) {
+        expected += 1;
+        copied += copy_into_param(safetensors_file, "model.norm.weight", model->norm_weight()->data.data(),
+                                  cfg.hidden_size, false) ? 1 : 0;
     }
 
     if (model->lm_head() != nullptr) {
+        expected += 1;
         bool lm_head_filled = false;
         if (safetensors_file.tensors().count("lm_head.weight") > 0) {
-            copy_into_param(safetensors_file, "lm_head.weight", model->lm_head()->data.data(),
-                            cfg.vocab_size * cfg.hidden_size, true);
-            lm_head_filled = true;
+            lm_head_filled = copy_into_param(safetensors_file, "lm_head.weight", model->lm_head()->data.data(),
+                                             cfg.vocab_size * cfg.hidden_size, true);
         } else if (safetensors_file.tensors().count("model.embed_tokens.weight") > 0) {
-            copy_into_param(safetensors_file, "model.embed_tokens.weight", model->lm_head()->data.data(),
-                            cfg.vocab_size * cfg.hidden_size, true);
-            lm_head_filled = true;
+            lm_head_filled = copy_into_param(safetensors_file, "model.embed_tokens.weight",
+                                             model->lm_head()->data.data(), cfg.vocab_size * cfg.hidden_size, true);
         }
         if (lm_head_filled) {
+            copied += 1;
             build_lm_head_t(model);
         }
     }
+    if (copied_out) *copied_out = copied;
+    if (expected_out) *expected_out = expected;
     return true;
 }
 
@@ -394,7 +413,11 @@ bool load_llama_weights_from_file(const std::string &safetensors_path, model::LL
     if (!load_safetensors(safetensors_path, &safetensors_file)) {
         return false;
     }
-    return load_one_file_into_model(safetensors_file, model);
+    size_t copied = 0, expected = 0;
+    load_one_file_into_model(safetensors_file, model, &copied, &expected);
+    // A single-file load must cover (nearly) the whole stage: a file matching
+    // no/few tensors would otherwise publish random weights as "loaded".
+    return copied > 0 && copied * 10 >= expected * 9;  // >=90% coverage
 }
 
 // ---------------------------------------------------------------------------
@@ -718,6 +741,8 @@ bool load_llama_weights_from_dir(const std::string &dir_path, model::LLaMAModel 
     bool any_file_loaded = false;
     size_t files_attempted = 0;
     size_t files_loaded = 0;
+    size_t tensors_copied = 0;
+    size_t tensors_expected = 0;
 
     try {
         // --- Priority 1: load a single GGUF file (quantised, faster) ---
@@ -757,10 +782,18 @@ bool load_llama_weights_from_dir(const std::string &dir_path, model::LLaMAModel 
 
                 SafetensorsFile safetensors_file;
                 if (load_safetensors(path_str, &safetensors_file)) {
-                    any_file_loaded = true;
-                    files_loaded++;
-                    load_one_file_into_model(safetensors_file, model);
-                    std::cout << "[Loader] Successfully loaded: " << path_str << "\n";
+                    size_t c = 0, e = 0;
+                    load_one_file_into_model(safetensors_file, model, &c, &e);
+                    if (c > 0) {
+                        any_file_loaded = true;
+                        files_loaded++;
+                        tensors_copied += c;
+                        tensors_expected += e;
+                        std::cout << "[Loader] Successfully loaded: " << path_str << " (" << c << "/" << e
+                                  << " tensors)\n";
+                    } else {
+                        std::cerr << "[Loader] No matching tensors in: " << path_str << "\n";
+                    }
                 } else {
                     std::cerr << "[Loader] Failed to load safetensors file: " << path_str << "\n";
                 }
@@ -773,7 +806,18 @@ bool load_llama_weights_from_dir(const std::string &dir_path, model::LLaMAModel 
     }
 
     std::cout << "[Loader] Weight loading summary: " << files_loaded << "/" << files_attempted << " files loaded\n";
-    return any_file_loaded;
+    if (!any_file_loaded) {
+        return false;
+    }
+    // Sharded models legitimately split tensors across files, so coverage is
+    // checked in aggregate: missing mandatory tensors mean the directory does
+    // not contain a complete model for this config.
+    if (tensors_expected > 0 && tensors_copied * 10 < tensors_expected * 9) {
+        std::cerr << "[Loader] Incomplete weights: " << tensors_copied << "/" << tensors_expected
+                  << " expected tensors found - refusing to publish a partial model\n";
+        return false;
+    }
+    return true;
 }
 
 }  // namespace io

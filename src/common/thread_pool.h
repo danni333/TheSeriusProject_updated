@@ -144,7 +144,7 @@ void parallel_for(size_t begin, size_t end, Func &&func)
     }
 
     // Split into roughly equal chunks
-    const size_t n_chunks = std::min(total, num_workers);
+    const size_t n_chunks = (std::min)(total, num_workers);
     const size_t chunk_size = (total + n_chunks - 1) / n_chunks;
 
     std::vector<std::future<void>> futures;
@@ -152,7 +152,7 @@ void parallel_for(size_t begin, size_t end, Func &&func)
 
     for (size_t chunk = 0; chunk < n_chunks; ++chunk) {
         size_t chunk_lo = begin + (chunk * chunk_size);
-        size_t chunk_hi = std::min(chunk_lo + chunk_size, end);
+        size_t chunk_hi = (std::min)(chunk_lo + chunk_size, end);
         if (chunk_lo >= chunk_hi) {
             break;
         }
@@ -189,7 +189,7 @@ void parallel_for_chunked(size_t begin, size_t end, Func &&func)
         return;
     }
 
-    const size_t n_chunks = std::min(total, num_workers);
+    const size_t n_chunks = (std::min)(total, num_workers);
     const size_t chunk_size = (total + n_chunks - 1) / n_chunks;
 
     std::vector<std::future<void>> futures;
@@ -197,7 +197,7 @@ void parallel_for_chunked(size_t begin, size_t end, Func &&func)
 
     for (size_t chunk = 0; chunk < n_chunks; ++chunk) {
         size_t chunk_lo = begin + (chunk * chunk_size);
-        size_t chunk_hi = std::min(chunk_lo + chunk_size, end);
+        size_t chunk_hi = (std::min)(chunk_lo + chunk_size, end);
         if (chunk_lo >= chunk_hi) {
             break;
         }

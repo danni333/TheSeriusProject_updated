@@ -16,6 +16,26 @@ std::string to_lower(std::string s)
     return s;
 }
 
+bool is_word_char(char c)
+{
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+}
+
+// Whole-word match: avoids "great" matching "greater" etc.
+bool contains_keyword(const std::string &low_text, const std::string &kw)
+{
+    if (kw.empty()) return false;
+    size_t pos = 0;
+    while ((pos = low_text.find(kw, pos)) != std::string::npos) {
+        const bool left_ok = pos == 0 || !is_word_char(low_text[pos - 1]);
+        const size_t end = pos + kw.size();
+        const bool right_ok = end >= low_text.size() || !is_word_char(low_text[end]);
+        if (left_ok && right_ok) return true;
+        ++pos;
+    }
+    return false;
+}
+
 }  // namespace
 
 float SentimentScorer::score(const std::string &text) const
@@ -27,12 +47,12 @@ float SentimentScorer::score(const std::string &text) const
                                                "hate", "worst",    "negative", "horrible"};
     int pos = 0, neg = 0;
     for (const auto &kw : positive) {
-        if (low.find(kw) != std::string::npos) {
+        if (contains_keyword(low, kw)) {
             ++pos;
         }
     }
     for (const auto &kw : negative) {
-        if (low.find(kw) != std::string::npos) {
+        if (contains_keyword(low, kw)) {
             ++neg;
         }
     }

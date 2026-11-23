@@ -344,6 +344,7 @@ void LocalCommunicator::all_reduce(core::Tensor &tensor, ReduceOp reduce_op)
     // For local simulation, we normally operate on host data
     tensor.syncToHost();
     all_reduce(tensor.data(), tensor.size(), reduce_op);
+    if (tensor.is_gpu()) tensor.mark_dirty(core::Tensor::DataLocation::CPU);
 }
 
 void LocalCommunicator::broadcast(float *buffer, size_t count, int root)
@@ -358,6 +359,7 @@ void LocalCommunicator::broadcast(core::Tensor &tensor, int root)
 {
     tensor.syncToHost();
     broadcast(tensor.data(), tensor.size(), root);
+    if (tensor.is_gpu()) tensor.mark_dirty(core::Tensor::DataLocation::CPU);
 }
 
 void LocalCommunicator::all_gather(const float *send_buf, size_t send_count, float *recv_buf)
@@ -374,6 +376,7 @@ void LocalCommunicator::all_gather(const core::Tensor &send_tensor, core::Tensor
     const_cast<core::Tensor &>(send_tensor).syncToHost();
     recv_tensor.syncToHost();
     all_gather(send_tensor.data(), send_tensor.size(), recv_tensor.data());
+    if (recv_tensor.is_gpu()) recv_tensor.mark_dirty(core::Tensor::DataLocation::CPU);
 }
 
 void LocalCommunicator::reduce_scatter(const float *send_buf, float *recv_buf, size_t recv_count, ReduceOp reduce_op)

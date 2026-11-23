@@ -91,15 +91,34 @@ size_t process_vram_bytes()
 
 static std::chrono::steady_clock::time_point g_start_time = std::chrono::steady_clock::now();
 
-/// Resolve the sampling seed for a request: honor an explicit "seed" field,
+/// Resolve the sampling seed for a request: honor an explicit non-zero seed,
 /// otherwise draw a random one so repeated requests don't replay identically.
-uint64_t resolve_seed(const nlohmann::json &body)
+uint64_t resolve_seed(uint64_t explicit_seed)
 {
-    const uint64_t seed = body.value("seed", 0ULL);
-    if (seed != 0) {
-        return seed;
+    if (explicit_seed != 0) {
+        return explicit_seed;
     }
     return std::random_device{}();
+}
+
+/// body.value() throws nlohmann::json::type_error on a JSON type mismatch
+/// (e.g. "max_tokens": "abc"), which would surface as a 500 via the exception
+/// handler. This variant reports the mismatch through `types_ok` so handlers
+/// can answer a clean 400. Absent/null keys yield the fallback.
+template <typename T>
+T field_or(const nlohmann::json &body, const char *key, const T &fallback, bool &types_ok)
+{
+    const auto it = body.find(key);
+    if (it == body.end() || it->is_null()) {
+        return fallback;
+    }
+    try {
+        return it->get<T>();
+    }
+    catch (const nlohmann::json::exception &) {
+        types_ok = false;
+        return fallback;
+    }
 }
 
 /// Hard cap on client-requested completion length. Without it a single
@@ -108,6 +127,10 @@ uint64_t resolve_seed(const nlohmann::json &body)
 constexpr size_t kMaxNewTokens = 32768;
 /// Cap on the number of inputs accepted by /v1/embeddings per request.
 constexpr size_t kMaxEmbeddingInputs = 256;
+/// Cap on HTTP request bodies. httplib buffers the whole body before the
+/// handler runs; without a limit a single POST can exhaust memory. 32 MiB
+/// is far beyond any context window the context guard would accept.
+constexpr size_t kMaxRequestBodyBytes = 32u * 1024u * 1024u;
 
 /// Bearer token required on model-management routes (POST /v1/models/load,
 /// DELETE /v1/models/{id}) when the SERIUS_ADMIN_TOKEN env var is set.
@@ -605,6 +628,7 @@ InferenceMetrics &Server::metrics()
 void Server::setup_routes()
 {
     g_start_time = std::chrono::steady_clock::now();
+    server_.set_payload_max_length(kMaxRequestBodyBytes);
 
     // Log handler exceptions and return an OpenAI-style error payload instead
     // of httplib's bare 500 + EXCEPTION_WHAT header.
@@ -697,10 +721,19 @@ void Server::setup_routes()
             return;
         }
 
-        std::string path = body.value("path", body.value("model", ""));
-        std::string type = body.value("type", "llama");
-        const std::string name = body.value("name", "");
-        const std::string quant = body.value("quant", "");
+        bool load_types_ok = true;
+        std::string path = field_or(body, "path", std::string(), load_types_ok);
+        if (path.empty()) {
+            path = field_or(body, "model", std::string(), load_types_ok);
+        }
+        std::string type = field_or(body, "type", std::string("llama"), load_types_ok);
+        const std::string name = field_or(body, "name", std::string(), load_types_ok);
+        const std::string quant = field_or(body, "quant", std::string(), load_types_ok);
+        if (!load_types_ok) {
+            res.status = 400;
+            res.set_content("{\"error\":{\"message\":\"request fields have wrong JSON types\"}}", "application/json");
+            return;
+        }
 
         if (path.empty()) {
             res.status = 400;
@@ -855,9 +888,32 @@ void Server::setup_routes()
         // array with at least one usable entry. An empty object would
         // otherwise fall back to the default prompt and burn max_tokens of
         // generation for a meaningless request.
-        const auto messages = body.value("messages", nlohmann::json::array());
+        bool types_ok = true;
+        const auto messages_it = body.find("messages");
+        if (messages_it != body.end() && !messages_it->is_null() && !messages_it->is_array()) {
+            types_ok = false;
+        }
+        const auto messages = field_or(body, "messages", nlohmann::json::array(), types_ok);
         const bool has_messages = messages.is_array() && !messages.empty();
-        const std::string prompt_field = body.value("prompt", "");
+        const std::string prompt_field = field_or(body, "prompt", std::string(), types_ok);
+        std::string requested_model = field_or(body, "model", model_name(), types_ok);
+        const float temp = field_or(body, "temperature", config_.default_temperature, types_ok);
+        const int top_k = field_or(body, "top_k", config_.default_top_k, types_ok);
+        const float top_p = field_or(body, "top_p", config_.default_top_p, types_ok);
+        const size_t max_new_raw =
+            field_or(body, "max_tokens", field_or(body, "max_new_tokens", config_.max_new_tokens, types_ok), types_ok);
+        const bool stream = field_or(body, "stream", false, types_ok);
+        const uint64_t seed_field = field_or(body, "seed", 0ULL, types_ok);
+        if (!types_ok) {
+            res.status = 400;
+            res.set_content("{\"error\":{\"message\":\"request fields have wrong JSON types\"}}", "application/json");
+            return;
+        }
+        size_t max_new_capped = max_new_raw;
+        if (max_new_capped > kMaxNewTokens) {
+            max_new_capped = kMaxNewTokens;
+        }
+
         if (!has_messages && prompt_field.empty()) {
             res.status = 400;
             res.set_content(
@@ -867,8 +923,6 @@ void Server::setup_routes()
                 "application/json");
             return;
         }
-
-        std::string requested_model = body.value("model", model_name());
         if (requested_model.empty()) {
             requested_model = model_name();
         }
@@ -901,19 +955,12 @@ void Server::setup_routes()
         }
 
         const std::string prompt = build_chat_prompt(body, is_chatml);
-        const float temp = body.value("temperature", config_.default_temperature);
-        const int top_k = body.value("top_k", config_.default_top_k);
-        const float top_p = body.value("top_p", config_.default_top_p);
         if (!std::isfinite(temp) || !std::isfinite(top_p)) {
             res.status = 400;
             res.set_content("{\"error\":{\"message\":\"temperature/top_p must be finite\"}}", "application/json");
             return;
         }
-        size_t max_new = body.value("max_tokens", body.value("max_new_tokens", config_.max_new_tokens));
-        if (max_new > kMaxNewTokens) {
-            max_new = kMaxNewTokens;
-        }
-
+        const size_t max_new = max_new_capped;
         // Reject prompts that exceed the model's context window: without this
         // guard a huge prompt grows the KV cache (and prefill time) without
         // bound. The KV cache itself grows on demand, so this is a UX/DoS
@@ -934,11 +981,10 @@ void Server::setup_routes()
             }
         }
 
-        const bool stream = body.value("stream", false);
         const std::string req_id =
             "chatcmpl-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 
-        infer::Sampler sampler(temp, top_k, top_p, resolve_seed(body));
+        infer::Sampler sampler(temp, top_k, top_p, resolve_seed(seed_field));
 
         if (stream) {
             res.status = 200;
@@ -1036,21 +1082,30 @@ void Server::setup_routes()
             return;
         }
 
-        const std::string prompt = body.value("prompt", "");
-        const float temp = body.value("temperature", config_.default_temperature);
-        const int top_k = body.value("top_k", config_.default_top_k);
-        const float top_p = body.value("top_p", config_.default_top_p);
+        bool types_ok = true;
+        const std::string prompt = field_or(body, "prompt", std::string(), types_ok);
+        const float temp = field_or(body, "temperature", config_.default_temperature, types_ok);
+        const int top_k = field_or(body, "top_k", config_.default_top_k, types_ok);
+        const float top_p = field_or(body, "top_p", config_.default_top_p, types_ok);
+        const size_t max_new_raw =
+            field_or(body, "max_tokens", field_or(body, "max_new_tokens", config_.max_new_tokens, types_ok), types_ok);
+        const bool stream = field_or(body, "stream", false, types_ok);
+        std::string requested_model = field_or(body, "model", model_name(), types_ok);
+        const uint64_t seed_field = field_or(body, "seed", 0ULL, types_ok);
+        if (!types_ok) {
+            res.status = 400;
+            res.set_content("{\"error\":{\"message\":\"request fields have wrong JSON types\"}}", "application/json");
+            return;
+        }
         if (!std::isfinite(temp) || !std::isfinite(top_p)) {
             res.status = 400;
             res.set_content("{\"error\":{\"message\":\"temperature/top_p must be finite\"}}", "application/json");
             return;
         }
-        size_t max_new = body.value("max_tokens", body.value("max_new_tokens", config_.max_new_tokens));
+        size_t max_new = max_new_raw;
         if (max_new > kMaxNewTokens) {
             max_new = kMaxNewTokens;
         }
-        const bool stream = body.value("stream", false);
-        std::string requested_model = body.value("model", model_name());
         if (requested_model.empty()) {
             requested_model = model_name();
         }
@@ -1080,7 +1135,7 @@ void Server::setup_routes()
         const std::string req_id =
             "cmpl-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
 
-        infer::Sampler sampler(temp, top_k, top_p, resolve_seed(body));
+        infer::Sampler sampler(temp, top_k, top_p, resolve_seed(seed_field));
 
         if (stream) {
             res.status = 200;
@@ -1174,6 +1229,9 @@ void Server::setup_routes()
                 for (const auto &item : body["input"]) {
                     if (item.is_string()) {
                         inputs.push_back(item.get<std::string>());
+                        if (inputs.size() > kMaxEmbeddingInputs) {
+                            break;
+                        }
                     }
                 }
             }
@@ -1187,7 +1245,13 @@ void Server::setup_routes()
             return;
         }
 
-        const std::string emb_model_name = body.value("model", model_name_);
+        bool emb_types_ok = true;
+        const std::string emb_model_name = field_or(body, "model", model_name_, emb_types_ok);
+        if (!emb_types_ok) {
+            res.status = 400;
+            res.set_content("{\"error\":{\"message\":\"request fields have wrong JSON types\"}}", "application/json");
+            return;
+        }
         std::lock_guard<std::mutex> lock(inference_mutex_);
         metrics_->on_request_start();
 

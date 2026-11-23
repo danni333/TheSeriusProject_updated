@@ -286,6 +286,41 @@ TEST(GGUFDequantTest, Q3KMatchesGgmlReference)
     expect_close(it->second, ref, "Q3_K");
 }
 
+TEST(GGUFDequantTest, DeeplyNestedKvArrayFailsGracefully)
+{
+    // Crafted GGUF: one KV entry whose value is an array nested 40000 deep.
+    // Without a depth cap, skip_gguf_value recurses until the stack
+    // overflows; with the cap the entry is rejected and loading returns
+    // an empty tensor map instead of crashing.
+    const auto path = std::filesystem::temp_directory_path() / "serius_test_nested.gguf";
+    std::filesystem::remove(path);
+
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(f.good());
+    put_u32(f, 0x46554747u);  // "GGUF"
+    put_u32(f, 3);
+    put_u64(f, 0);  // n_tensors
+    put_u64(f, 1);  // n_kv
+
+    // KV entry: key "evil", type 9 (array).
+    put_u64(f, 4);
+    f.write("evil", 4);
+    put_u32(f, 9);
+    // 40000 nested arrays: each level = elem_type(9) + n(1), innermost a uint8.
+    for (int i = 0; i < 40000; ++i) {
+        put_u32(f, 9);   // elem_type = array
+        put_u64(f, 1);   // n = 1
+    }
+    put_u32(f, 0);  // elem_type = uint8
+    put_u64(f, 1);
+    f.put(0);
+    f.close();
+
+    auto loaded = io::load_all_tensors(path.string(), nullptr);
+    std::filesystem::remove(path);
+    EXPECT_TRUE(loaded.empty());
+}
+
 TEST(GGUFDequantTest, MixedQuantFileKeepsTensorOffsets)
 {
     std::mt19937 rng(99);

@@ -286,6 +286,9 @@ bool ModelDownloader::download_hf(const std::string &repo_id, const std::string 
     bool downloaded_any = false;
     for (const auto &w : wanted) {
         const std::string &filename = w.path;
+        // Paths come from the remote tree listing: reject traversal before
+        // joining with output_dir (same rule as download_hf_file).
+        if (!is_safe_repo_path(filename)) continue;
         std::string url = build_hf_url(repo_id, filename);
         std::string rel = filename;
         // Keep the repo's directory layout for nested files.

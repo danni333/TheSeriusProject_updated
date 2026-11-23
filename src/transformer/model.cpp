@@ -1,6 +1,7 @@
 #include "model.h"
 
 #include <stdexcept>
+#include <string>
 
 #include "../autograd/ops.h"
 #include "../init/weight_init.h"
@@ -62,6 +63,20 @@ Node *TransformerModel::embedding_lookup(Node *token_ids) const
 
     Tensor hidden_data(is_batched ? std::vector<size_t>{batch_size, seq_len, config_.d_model}
                                   : std::vector<size_t>{seq_len, config_.d_model});
+
+    // Validate token ids up-front: an out-of-range id would read/write past
+    // the embedding table in both forward and backward (heap corruption).
+    for (size_t batch_idx = 0; batch_idx < batch_size; ++batch_idx) {
+        for (size_t seq_idx = 0; seq_idx < seq_len; ++seq_idx) {
+            const float raw = is_batched ? ids.at(batch_idx, seq_idx) : ids[seq_idx];
+            const auto token_id = static_cast<long long>(raw);
+            if (token_id < 0 || static_cast<size_t>(token_id) >= config_.vocab_size) {
+                throw std::invalid_argument("TransformerModel::embedding_lookup: token id " +
+                                            std::to_string(token_id) + " out of range [0, " +
+                                            std::to_string(config_.vocab_size) + ")");
+            }
+        }
+    }
 
     EmbeddingDims dims{is_batched, batch_size, seq_len};
     do_copy_embedding(ids, dims, hidden_data);

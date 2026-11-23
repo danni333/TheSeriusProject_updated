@@ -25,7 +25,13 @@ core::Tensor add_dp_noise(const core::Tensor &delta, float clip_norm, float sigm
         clipped = delta * scale;
     }
 
-    std::mt19937 gen(42);
+    // Seed must vary per call: a fixed seed makes the "noise" deterministic
+    // and exactly subtractable, which voids the differential-privacy
+    // guarantee. random_device is not CSPRNG-grade but is far better than a
+    // constant; on platforms where it is deterministic this is still only a
+    // heuristic privacy layer.
+    std::random_device rd;
+    std::mt19937 gen(rd());
     std::normal_distribution<float> dist(0.0f, sigma * clip_norm);
 
     core::Tensor noise(delta.shape());
