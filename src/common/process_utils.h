@@ -5,6 +5,7 @@
 // spaces can never be reinterpreted as shell syntax.
 
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _WIN32
@@ -110,17 +111,33 @@ inline int run_process(const std::vector<std::string> &args, std::string *stdout
         if (read_err) CloseHandle(read_err);
         return -1;
     }
-    auto drain = [](HANDLE h, std::string *dst) {
-        char buffer[8192];
-        DWORD n = 0;
-        while (ReadFile(h, buffer, sizeof(buffer), &n, nullptr) && n > 0) {
-            dst->append(buffer, n);
-        }
-        CloseHandle(h);
-    };
-    if (cap_out) { drain(read_out, stdout_out); }
-    if (cap_err) { drain(read_err, stderr_out); }
+    // Drain both pipes concurrently: a child that fills one pipe while we
+    // block reading the other would deadlock (compiler diagnostics on stderr
+    // routinely exceed the pipe buffer).
+    std::thread drain_out, drain_err;
+    if (cap_out) {
+        drain_out = std::thread([read_out, stdout_out]() {
+            char buffer[8192];
+            DWORD n = 0;
+            while (ReadFile(read_out, buffer, sizeof(buffer), &n, nullptr) && n > 0) {
+                stdout_out->append(buffer, n);
+            }
+            CloseHandle(read_out);
+        });
+    }
+    if (cap_err) {
+        drain_err = std::thread([read_err, stderr_out]() {
+            char buffer[8192];
+            DWORD n = 0;
+            while (ReadFile(read_err, buffer, sizeof(buffer), &n, nullptr) && n > 0) {
+                stderr_out->append(buffer, n);
+            }
+            CloseHandle(read_err);
+        });
+    }
     WaitForSingleObject(pi.hProcess, INFINITE);
+    if (drain_out.joinable()) { drain_out.join(); }
+    if (drain_err.joinable()) { drain_err.join(); }
     DWORD code = 1;
     GetExitCodeProcess(pi.hProcess, &code);
     CloseHandle(pi.hThread);
@@ -164,6 +181,8 @@ inline int run_process(const std::vector<std::string> &args, std::string *stdout
         if (stderr_out) close(fds_err[0]);
         return -1;
     }
+    // Drain both pipes concurrently to avoid the child blocking on a full
+    // pipe while we read the other stream.
     auto drain = [](int fd, std::string *dst) {
         char buffer[8192];
         for (;;) {
@@ -178,12 +197,19 @@ inline int run_process(const std::vector<std::string> &args, std::string *stdout
         }
         close(fd);
     };
-    if (stdout_out) { drain(fds_out[0], stdout_out); }
-    if (stderr_out) { drain(fds_err[0], stderr_out); }
+    std::thread drain_out, drain_err;
+    if (stdout_out) { drain_out = std::thread(drain, fds_out[0], stdout_out); }
+    if (stderr_out) { drain_err = std::thread(drain, fds_err[0], stderr_out); }
     int status = 0;
     while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) { return -1; }
+        if (errno != EINTR) {
+            if (drain_out.joinable()) drain_out.join();
+            if (drain_err.joinable()) drain_err.join();
+            return -1;
+        }
     }
+    if (drain_out.joinable()) { drain_out.join(); }
+    if (drain_err.joinable()) { drain_err.join(); }
     return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 #endif
 }

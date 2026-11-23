@@ -1214,12 +1214,22 @@ void Server::setup_routes()
                 emb_vector.assign(hs, 0.0f);
 
                 core::autograd::Node *embed_node = lm->llama->embed_tokens();
-                if (embed_node && embed_node->data.size() > 0) {
+                if (embed_node && embed_node->data.size() > 0 &&
+                    embed_node->data.dtype() == hal::DType::Float32) {
                     const auto &weights = embed_node->data;
-                    size_t vocab = lm->llama->config().vocab_size;
+                    const auto &wshape = weights.shape();
+                    // Tensor::at() does no bounds checking: clamp every index
+                    // to the real tensor dimensions so a config/tensor size
+                    // mismatch can't read out of bounds.
+                    const size_t w_rows = wshape.size() >= 1 ? wshape[0] : 0;
+                    const size_t w_cols = wshape.size() >= 2 ? wshape[1] : 0;
+                    const size_t vocab = lm->llama->config().vocab_size;
+                    const size_t cols = std::min(hs, w_cols);
                     for (auto id : ids) {
+                        if (w_rows == 0) break;
                         size_t tid = static_cast<size_t>(id) % vocab;
-                        for (size_t d = 0; d < hs; ++d) {
+                        tid %= w_rows;
+                        for (size_t d = 0; d < cols; ++d) {
                             emb_vector[d] += weights.at(tid, d);
                         }
                     }

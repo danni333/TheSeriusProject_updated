@@ -53,9 +53,8 @@ void ExecutionPlan::execute(const std::vector<Tensor>& inputs, std::vector<Tenso
     for (const GraphOp& op : ops_) {
         if (!op.executor) {
             throw std::runtime_error("ExecutionPlan::execute: op '" + op.type +
-                                     "' has no replay function (plan built from "
-                                     "synthetic trace(); use trace_graph(Node*) "
-                                     "for executable plans)");
+                                     "' has no replay function (traced node "
+                                     "lacks forward_fn)");
         }
         if (op.outputs.size() != 1 || op.outputs[0] >= slot_count_) {
             throw std::runtime_error("ExecutionPlan::execute: malformed op '" + op.type + "'");
@@ -91,43 +90,6 @@ GraphCompiler::GraphCompiler()
 
 GraphCompiler::~GraphCompiler()
 {
-}
-
-void GraphCompiler::trace(void* model, const std::vector<size_t>& input_shape)
-{
-    (void)model;  // Suppress unused parameter warning
-    // Simplified tracing: create a dummy graph
-    // In a real implementation, this would execute a forward pass
-    // and record all operations
-
-    ops_.clear();
-    input_slots_.clear();
-    output_slots_.clear();
-    slot_count_ = 0;
-    slot_shapes_.clear();
-    peak_workspace_bytes_ = 0;
-
-    // Example: linear layer + gelu + bias
-    GraphOp op1;
-    op1.type = "matmul";
-    op1.inputs = {0};
-    op1.outputs = {1};
-    op1.output_shape = input_shape;
-    ops_.push_back(op1);
-
-    GraphOp op2;
-    op2.type = "bias";
-    op2.inputs = {1};
-    op2.outputs = {2};
-    op2.output_shape = input_shape;
-    ops_.push_back(op2);
-
-    GraphOp op3;
-    op3.type = "gelu";
-    op3.inputs = {2};
-    op3.outputs = {3};
-    op3.output_shape = input_shape;
-    ops_.push_back(op3);
 }
 
 void GraphCompiler::trace_graph(core::autograd::Node *output)
@@ -201,16 +163,95 @@ void GraphCompiler::optimize()
 
 void GraphCompiler::fuse_elementwise_chains()
 {
-    // Fuse bias + gelu into a single operation
-    for (size_t i = 0; i + 1 < ops_.size(); ++i) {
-        if (ops_[i].type == "bias" && ops_[i + 1].type == "gelu") {
-            ops_[i].type = "fused_bias_gelu";
-            ops_[i].fused_kernel = "fused_bias_gelu";
-            ops_[i].outputs = ops_[i + 1].outputs;
-            ops_.erase(ops_.begin() + i + 1);
-            // The fused op can't match "bias" again; ++i moves to the next
-            // candidate pair.
+    // Fuse add(x, bias) -> gelu into a single fused_bias_gelu plan op.
+    // Matches the broadcast-bias pattern of Tensor::operator+
+    // ((..., D) + (D,)): the add's rank-1 operand whose size equals the last
+    // dim of the add output is the bias. The fused executor composes the two
+    // original executors, so op parameters stay captured inside them and no
+    // numeric behavior changes (same math as ops::fused_bias_gelu).
+    //
+    // Safety conditions mirror fuse_layernorm_linear():
+    //  - the add output is consumed exactly once, by the gelu;
+    //  - the add output is not itself a graph output (output_slots_);
+    //  - both ops have executors;
+    //  - slot shapes are available (trace_graph() always fills them).
+    if (slot_shapes_.size() != slot_count_) { return; }
+
+    for (;;) {
+        bool fused_any = false;
+        for (size_t i = 0; i < ops_.size() && !fused_any; ++i) {
+            GraphOp &gelu_op = ops_[i];
+            if (gelu_op.type != "gelu" || gelu_op.inputs.size() != 1 ||
+                gelu_op.outputs.size() != 1 || !gelu_op.executor) {
+                continue;
+            }
+            const size_t add_out = gelu_op.inputs[0];
+            if (add_out >= slot_count_ ||
+                std::find(output_slots_.begin(), output_slots_.end(), add_out) !=
+                    output_slots_.end()) {
+                continue;
+            }
+
+            // Locate the unique producer op of the gelu input and count its
+            // consumers (must be exactly the gelu).
+            size_t add_idx = ops_.size();
+            size_t uses = 0;
+            for (size_t j = 0; j < ops_.size(); ++j) {
+                if (ops_[j].outputs.size() == 1 &&
+                    ops_[j].outputs[0] == add_out) {
+                    add_idx = j;
+                }
+                for (size_t s : ops_[j].inputs) {
+                    if (s == add_out) { ++uses; }
+                }
+            }
+            if (uses != 1 || add_idx == ops_.size() || add_idx == i) { continue; }
+
+            GraphOp &add_op = ops_[add_idx];
+            if (add_op.type != "add" || add_op.inputs.size() != 2 ||
+                !add_op.executor || add_op.output_shape.empty()) {
+                continue;
+            }
+
+            // Exactly one add operand must be a rank-1 bias whose size equals
+            // the last dim of the (broadcast) add output.
+            const size_t last_dim = add_op.output_shape.back();
+            int bias_pos = -1;
+            for (int p = 0; p < 2; ++p) {
+                const size_t s = add_op.inputs[p];
+                if (s >= slot_shapes_.size()) { continue; }
+                const auto &sh = slot_shapes_[s];
+                if (sh.size() == 1 && sh[0] == last_dim) {
+                    if (bias_pos >= 0) { bias_pos = -2; break; }  // ambiguous
+                    bias_pos = p;
+                }
+            }
+            if (bias_pos < 0) { continue; }
+
+            GraphOp fused;
+            fused.type = "fused_bias_gelu";
+            fused.fused_kernel = fused.type;
+            fused.inputs = add_op.inputs;
+            fused.outputs = gelu_op.outputs;
+            fused.output_shape = gelu_op.output_shape;
+
+            auto add_exec = add_op.executor;
+            auto gelu_exec = gelu_op.executor;
+            fused.executor = [add_exec, gelu_exec](
+                                 const std::vector<const Tensor *> &in) -> Tensor {
+                Tensor mid = add_exec(in);
+                const std::vector<const Tensor *> gargs = {&mid};
+                return gelu_exec(gargs);
+            };
+
+            // Place the fused op at the gelu's (later) position, like
+            // fuse_layernorm_linear(): the bias operand may be produced by an
+            // op sitting between the add and the gelu.
+            ops_[i] = std::move(fused);
+            ops_.erase(ops_.begin() + add_idx);
+            fused_any = true;
         }
+        if (!fused_any) { break; }
     }
 }
 

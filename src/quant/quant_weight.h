@@ -94,6 +94,11 @@ inline void repack_quant_for_gpu(QuantWeight &w)
     if (!w.valid() || (w.in % 32) != 0 || w.dev_stride != 0) {
         return;
     }
+    // The repack below assumes bytes holds exactly out*row_bytes(); a
+    // malformed tensor with a short buffer would read out of bounds.
+    if (w.bytes.size() < w.out * w.row_bytes()) {
+        return;
+    }
 
     // Q4_K native: keep the 6-bit packed scales instead of expanding each
     // 32-weight sub-block to a Q4_1 block (20B -> effective ~18B/32w).

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 
 #ifdef _WIN32
@@ -104,11 +105,12 @@ bool PluginManager::load_plugin(const std::string &plugin_path, const PluginCont
     }
 
     // Store plugin instance
-    auto instance = std::make_unique<PluginInstance>();
+    auto instance = std::make_shared<PluginInstance>();
     instance->plugin = std::move(plugin);
     instance->metadata = metadata;
     instance->state = PluginState::LOADED;
     instance->context = context;
+    instance->sandbox_config = pending_sandbox_config_;
 #ifdef _WIN32
     instance->library_handle = (HMODULE)handle;
 #else
@@ -127,9 +129,9 @@ bool PluginManager::load_plugin(const std::string &plugin_path, const PluginCont
 
 bool PluginManager::create_sandbox(const PluginContext &context)
 {
-    // For now, implement basic sandboxing
-    // In production, this would use containers, chroot, or namespaces
-
+    // In-process sandboxing: resource limits via setrlimit (POSIX) plus
+    // capability/path checks enforced by the manager. True isolation
+    // (containers/namespaces) is out of scope for a DLL plugin host.
     SandboxConfig config;
     config.allowed_paths = context.allowed_paths;
     config.environment_vars = context.environment_vars;
@@ -138,6 +140,7 @@ bool PluginManager::create_sandbox(const PluginContext &context)
     config.max_file_descriptors = 100;
     config.network_access = false;  // No network access by default
 
+    pending_sandbox_config_ = config;
     return setup_resource_limits(context.plugin_id, config);
 }
 
@@ -166,39 +169,64 @@ bool PluginManager::setup_resource_limits(const std::string &plugin_id, const Sa
 
 void PluginManager::start_monitoring(const std::string &plugin_id)
 {
+    std::lock_guard<std::mutex> lock(plugins_mutex_);
     auto it = loaded_plugins_.find(plugin_id);
     if (it == loaded_plugins_.end()) return;
 
-    auto &instance = it->second;
-    instance->monitoring_thread = std::thread([this, plugin_id]() { monitor_plugin_resources(plugin_id); });
+    // Capture a shared_ptr: the instance stays alive until the thread exits,
+    // even if the plugin is unloaded while monitoring is still in flight.
+    auto instance = it->second;
+    instance->monitoring_thread =
+        std::thread([this, plugin_id, instance]() { monitor_plugin_resources(plugin_id, instance); });
 }
 
-void PluginManager::monitor_plugin_resources(const std::string &plugin_id)
+void PluginManager::monitor_plugin_resources(const std::string &plugin_id,
+                                             std::shared_ptr<PluginInstance> instance)
 {
-    auto it = loaded_plugins_.find(plugin_id);
-    if (it == loaded_plugins_.end()) return;
-
-    auto &instance = it->second;
+    const size_t mem_limit = instance->sandbox_config.max_memory_mb * 1024 * 1024;
+    const double cpu_limit = instance->sandbox_config.max_cpu_percent;
 
     while (instance->should_monitor) {
-        // Monitor memory usage
-        size_t memory_usage = get_process_memory_usage();
+        // Prefer plugin-reported usage; fall back to whole-process metrics
+        // (in-process plugins cannot be isolated, so process metrics are an
+        // upper bound shared by all loaded plugins).
+        size_t memory_usage = 0;
+        double cpu_usage = 0.0;
+        if (instance->plugin) {
+            try {
+                memory_usage = instance->plugin->get_memory_usage();
+                cpu_usage = instance->plugin->get_cpu_usage();
+            } catch (...) {
+                // Plugin metrics are best-effort; keep monitoring.
+            }
+        }
+        if (memory_usage == 0) memory_usage = get_process_memory_usage();
+        if (cpu_usage <= 0.0) cpu_usage = get_process_cpu_usage();
         instance->memory_usage = memory_usage;
-
-        // Monitor CPU usage
-        double cpu_usage = get_process_cpu_usage();
         instance->cpu_usage = cpu_usage;
 
-        // Check if plugin exceeded limits
-        if (memory_usage > 512 * 1024 * 1024) {  // 512MB
-            spdlog::warn("Plugin {} exceeded memory limit: {} MB", plugin_id, memory_usage / (1024 * 1024));
+        const bool over_mem = mem_limit > 0 && memory_usage > mem_limit;
+        const bool over_cpu = cpu_limit > 0.0 && cpu_usage > cpu_limit;
+        if (over_mem || over_cpu) {
+            spdlog::warn("Plugin {} exceeded sandbox limits (mem {} MB / cpu {}%)",
+                         plugin_id, memory_usage / (1024 * 1024), cpu_usage);
+            // Enforcement: ask the plugin to release resources once per
+            // violation episode instead of only logging.
+            if (!instance->cleanup_triggered.exchange(true) && instance->plugin) {
+                try {
+                    instance->plugin->cleanup_resources();
+                } catch (const std::exception &e) {
+                    spdlog::warn("Plugin {} cleanup_resources() failed: {}", plugin_id, e.what());
+                }
+            }
+        } else {
+            instance->cleanup_triggered = false;
         }
 
-        if (cpu_usage > 50.0) {  // 50%
-            spdlog::warn("Plugin {} exceeded CPU limit: {}%", plugin_id, cpu_usage);
+        // Sleep in short slices so stop_monitoring()/join() stays responsive.
+        for (int i = 0; i < 50 && instance->should_monitor; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-
-        std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 }
 
@@ -277,11 +305,15 @@ bool PluginManager::unload_plugin(const std::string &plugin_id)
 
 bool PluginManager::reload_plugin(const std::string &plugin_id)
 {
-    auto it = loaded_plugins_.find(plugin_id);
-    if (it == loaded_plugins_.end()) return false;
-
-    std::string path = it->second->metadata.entry_point;
-    PluginContext context = it->second->context;
+    std::string path;
+    PluginContext context;
+    {
+        std::lock_guard<std::mutex> lock(plugins_mutex_);
+        auto it = loaded_plugins_.find(plugin_id);
+        if (it == loaded_plugins_.end()) return false;
+        path = it->second->metadata.entry_point;
+        context = it->second->context;
+    }
 
     if (!unload_plugin(plugin_id)) return false;
     return load_plugin(path, context);
@@ -340,7 +372,7 @@ nlohmann::json PluginManager::execute_plugin(const std::string &plugin_id, const
         return {{"error", "Plugin not loaded"}};
     }
 
-    if (!check_plugin_permissions(plugin_id, "execute")) {
+    if (!check_plugin_permissions_locked(plugin_id, "execute")) {
         return {{"error", "Permission denied"}};
     }
 
@@ -361,16 +393,47 @@ bool PluginManager::destroy_sandbox(const std::string &plugin_id)
 
 bool PluginManager::check_plugin_permissions(const std::string &plugin_id, const std::string &operation)
 {
-    auto it = loaded_plugins_.find(plugin_id);
-    if (it == loaded_plugins_.end()) return false;
+    std::lock_guard<std::mutex> lock(plugins_mutex_);
+    return check_plugin_permissions_locked(plugin_id, operation);
+}
 
-    // Basic permission check: allowed_paths validation for IO operations
+// Caller must hold plugins_mutex_.
+bool PluginManager::check_plugin_permissions_locked(const std::string &plugin_id,
+                                                    const std::string &operation)
+{
+    auto it = loaded_plugins_.find(plugin_id);
+    if (it == loaded_plugins_.end() || !it->second->plugin) return false;
+
+    const auto &instance = *it->second;
+
+    // Filesystem operations require explicitly granted paths.
     if (operation == "io_read" || operation == "io_write") {
-        return !it->second->context.allowed_paths.empty();
+        return !instance.context.allowed_paths.empty();
     }
 
-    // Default to allow for other operations for now
-    return true;
+    // The sandbox never grants network access.
+    if (operation == "network") {
+        return false;
+    }
+
+    // Operations that map to a declared plugin capability.
+    static const std::map<std::string, PluginCapability> capability_ops = {
+        {"inference", PluginCapability::INFERENCE},
+        {"training", PluginCapability::TRAINING},
+        {"preprocessing", PluginCapability::PREPROCESSING},
+        {"postprocessing", PluginCapability::POSTPROCESSING},
+        {"custom_kernels", PluginCapability::CUSTOM_KERNELS},
+        {"model_formats", PluginCapability::MODEL_FORMATS},
+        {"security_hooks", PluginCapability::SECURITY_HOOKS},
+    };
+    auto cap_it = capability_ops.find(operation);
+    if (cap_it != capability_ops.end()) {
+        return instance.plugin->has_capability(cap_it->second);
+    }
+
+    // Lifecycle/generic operations on an already-loaded plugin are allowed.
+    static const std::set<std::string> allowed_ops = {"execute", "process", "status", "config", "metrics"};
+    return allowed_ops.count(operation) != 0;
 }
 
 nlohmann::json PluginManager::get_plugin_metrics(const std::string &plugin_id)
@@ -389,12 +452,14 @@ nlohmann::json PluginManager::get_system_metrics()
 
 void PluginManager::stop_monitoring(const std::string &plugin_id)
 {
-    std::lock_guard<std::mutex> lock(plugins_mutex_);
+    // Caller must hold plugins_mutex_ (unload_plugin / destructor).
     auto it = loaded_plugins_.find(plugin_id);
     if (it != loaded_plugins_.end()) {
         it->second->should_monitor = false;
         if (it->second->monitoring_thread.joinable()) {
-            it->second->monitoring_thread.detach();  // Simple for now
+            // Join (not detach): the thread must finish before the instance
+            // can be destroyed or the library unloaded.
+            it->second->monitoring_thread.join();
         }
     }
 }
@@ -440,7 +505,14 @@ std::unique_ptr<IPlugin> PluginFactory::create_plugin(const PluginMetadata &meta
 
 bool PluginFactory::validate_plugin(const std::string &plugin_path)
 {
-    return std::filesystem::exists(plugin_path);
+    if (!std::filesystem::exists(plugin_path)) return false;
+#ifdef _WIN32
+    const std::string ext = std::filesystem::path(plugin_path).extension().string();
+    return ext == ".dll";
+#else
+    const std::string ext = std::filesystem::path(plugin_path).extension().string();
+    return ext == ".so" || ext == ".dylib";
+#endif
 }
 
 PluginMetadata PluginFactory::extract_metadata(const std::string &plugin_path)

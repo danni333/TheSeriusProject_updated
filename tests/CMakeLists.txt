@@ -210,6 +210,9 @@ target_link_libraries(test_mcp_server PRIVATE serius_core gtest_main)
 add_executable(test_gguf_writer test_gguf_writer.cpp)
 target_link_libraries(test_gguf_writer PRIVATE serius_core gtest_main)
 
+add_executable(test_gguf_dequant test_gguf_dequant.cpp)
+target_link_libraries(test_gguf_dequant PRIVATE serius_core gtest_main)
+
 if(SERIUS_EXPERIMENTAL_AGENT)
 add_executable(test_react test_react.cpp)
 target_link_libraries(test_react PRIVATE serius_core gtest_main)
@@ -315,7 +318,14 @@ if(SERIUS_USE_CUDA)
     # test_cuda has a custom main (not gtest) — register as a plain test.
     add_test(NAME test_cuda COMMAND test_cuda)
     gtest_discover_tests(test_fused_cuda)
-    gtest_discover_tests(test_llama_inference_cuda)
+    # SERIUS_PREFILL_BATCH_CPU=1: the CPU batched-prefill kernels are opt-in
+    # (pathologically slow on quantized GGUF weights), but this suite uses
+    # small dense models where the batched path is fast — and
+    # BatchedVsSequentialPrefill specifically verifies it. gtest_discover_tests
+    # registers tests at build time, so properties must be set here rather than
+    # via set_tests_properties at configure time.
+    gtest_discover_tests(test_llama_inference_cuda
+        PROPERTIES ENVIRONMENT "SERIUS_PREFILL_BATCH_CPU=1")
 endif()
 gtest_discover_tests(test_paged_kv)
 gtest_discover_tests(test_logger)
@@ -383,6 +393,7 @@ gtest_discover_tests(test_red_team)
 gtest_discover_tests(test_mcp_client)
 gtest_discover_tests(test_mcp_server)
 gtest_discover_tests(test_gguf_writer)
+gtest_discover_tests(test_gguf_dequant)
 if(SERIUS_EXPERIMENTAL_AGENT)
     gtest_discover_tests(test_react)
     gtest_discover_tests(test_multi_agent)

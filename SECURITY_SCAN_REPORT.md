@@ -82,3 +82,56 @@ Scan di sicurezza Devin (effort normal, intera repository) su `danni333/TheSeriu
 
 - L'inference server è pensato per uso locale, rete interna o pubblico? Il manifest k8s usa un `LoadBalancer`, che sui cluster gestiti ottiene di norma un IP pubblico.
 - Il model hub (`serius_hub_server`) viene esposto in rete? La repo non contiene manifest di deploy per l'hub; i problemi 2 e 3 diventano critici se è raggiungibile da internet.
+
+---
+
+# Verifica e remediation — 2026-11-23
+
+Secondo passaggio sul branch `main` dopo le modifiche in `cd1d727` (experimental/ relocation + dependency bumps) e i fix di sicurezza applicati nella stessa sessione. Build Release completa + `ctest`: **475/475 test passati** (un test CUDA richiede `ctest -C Release`; `E2EServer.StreamingSSE` è flaky sotto `-j` parallelo ma passa in isolamento — problema di timing preesistente, non legato ai fix).
+
+## Stato dei 7 problemi originali
+
+| # | Stato | Note |
+|---|-------|------|
+| 1 | **Risolto** | `src/hub/downloader.cpp` non usa più `popen`/`system`/`curl`: download via `serius::common::run_process` (argv diretto, `CreateProcess`/`posix_spawnp`, niente shell) e repo id validato con `^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$`. `src/server/server.cpp` rifiuta repo id `hf://` malformati con 400 prima di chiamare il downloader. Test: `ServerTest.ModelsLoadRejectsMalformedHfRepoId` (passa). |
+| 2 | **Risolto** | `register_user` (`src/hub/model_hub_server.cpp`) restituisce 409 se lo username esiste, senza rilasciare la chiave. Le API key sono salvate come hash SHA-256 e generate con CSPRNG (`getrandom`/`/dev/urandom`/`std::random_device`), non più `mt19937_64`. Verificato live: seconda registrazione → `{"error":"username already registered"}` HTTP 409. |
+| 3 | **Risolto** | I nuovi account ricevono solo i permessi `read`+`upload`; `delete` globale richiede permesso esplicito (`check_permissions`). Il delete verifica ownership (`uploaded_by`) o permesso `delete`. |
+| 4 | **Risolto (opt-in)** | `POST /v1/models/load` e `DELETE /v1/models/{id}` richiedono `Authorization: Bearer $SERIUS_ADMIN_TOKEN` **se la variabile è impostata**; i path di load sono canonicalizzati e, se `SERIUS_MODEL_ROOTS` è impostata, devono ricadere in una delle directory root (403 altrimenti). Vedi rischi residui sotto. |
+| 5 | **Risolto** | I nomi file remoti sono validati (niente `..`, path assoluti o caratteri non sicuri), URL-encoded e il path finale è vincolato a `models/`; la scrittura non passa più da shell. |
+| 6 | **Risolto** | `src/io/safetensors.cpp`: `header_size` controllato senza overflow, header deve stare dentro il file mappato, ogni `data_offsets` con `start <= end <= dimensione blob`. |
+| 7 | **Risolto** | `src/io/safetensors_loader.cpp`: `copy_tensor_to_float` rifiuta offset negativi, oltre `data_.size()` o invertiti prima di calcolare `byte_len`/copiare. |
+
+## Problemi aggiuntivi trovati e corretti in questo passaggio
+
+- **Command injection in `experimental/autoopt`**: `llm_client.cpp` usava `popen("curl ...")` con URL/headerbody utente; `git_manager.cpp` usava `std::system` con messaggio di commit e path del repo; `sandbox.cpp` costruiva comandi `cl`/`g++` via shell con `target_name` non sanitizzato. Tutti migrati a `serius::common::run_process` (nuovo header `src/common/process_utils.h`: argv esplicito, nessuna shell, cattura stdout/stderr su thread separati per evitare deadlock delle pipe) o a `httplib::Client` per le chiamate HTTP.
+- **Deadlock potenziale in `run_process`**: la prima versione drenava stdout e stderr in sequenza; un figlio che riempie la pipe di stderr mentre il parent è bloccato su stdout si sarebbe bloccato. Ora entrambi i drain girano su thread dedicati.
+- **Docker**: l'immagine esegue ora il binario come utente non-root.
+- **Dipendenze FetchContent aggiornate**: nlohmann/json v3.12.0, spdlog v1.17.0, googletest v1.18.0, cpp-httplib v0.67.0, SQLite 3.54.1.
+
+## Terzo passaggio — 2026-11-23 (audit esteso)
+
+Ulteriore sweep su hub server, inference server, loader IO, MCP e SQL. Risultati:
+
+| # | Severità | Problema | Fix |
+|---|----------|----------|-----|
+| 8 | Medium | **curl senza timeout** in `downloader.cpp`: `http_get`/`http_head`/`download_file` potevano restare bloccati per sempre su connessioni morte, trattenendo thread e request. | Aggiunti `--connect-timeout 10`; `--max-time 30` per le API; `--speed-limit 1024 --speed-time 60` per i download multi-GB (niente cap totale). |
+| 9 | Medium | **OOB read in `/v1/embeddings`**: `weights.at(tid, d)` usa indici derivati da `config()` (vocab_size/hidden_size) senza verificarli contro le dimensioni reali del tensore di embedding — `Tensor::at()` non fa bounds check. | Indici ora clampati a `wshape` e il ramo salta se dtype != Float32 o shape non 2D. |
+| 10 | Low | **OOB potenziale in `hf_llama_loader.cpp` / `quant_weight.h`**: `take_quant` (permute RoPE) e `repack_quant_for_gpu` assumevano `bytes.size() == out*row_bytes()`; `row_bytes()` tronca per K-quant con `in` non multiplo di 256. | Guardie: skip permute/repack se `rb == 0` o `bytes.size() < out*rb`. |
+| 11 | Low | **MCP HTTP endpoint senza autenticazione** (`serius mcp-serve --http`): POST /mcp su `0.0.0.0` era anonimo. | Se `SERIUS_MCP_TOKEN` è impostata, `/mcp` richiede `Authorization: Bearer` (confronto costante); `/health` resta libero. |
+| 12 | Low | **`HttpTransport::parse_url`**: `std::stoi` su porta malformata (`host:abc`) lanciava eccezione non gestita. | Convertito in errore "invalid endpoint". |
+| 13 | Low | **Registrazione hub senza rate limit**: endpoint anonimo che riscrive tutto `hub_users.json` per ogni chiamata — spam = growth disco + NOTA: aperto solo da loopback in open mode, ma con utenti registrati è esposto a internet. | Rate limit 20 registrazioni/minuto per IP (finestra fissa, cleanup mappa). |
+| 14 | Info | **`is_loopback_addr`** non riconosceva `::ffff:127.x.x.x` (IPv4-mapped IPv6). | Normalizzazione del prefisso mappato. |
+
+**Non problemi verificati**: SQL interamente parametrizzato (`sqlite3_bind_*`, LIKE con escape); path traversal su download/delete bloccato dal fatto che `model_id` deve esistere nel DB (ID generati sanitizzati) e `file_name` è forzato a `sanitize_filename` in upload; `config` utente non può iniettare path; static files con canonicalization + check `..`; `Tensor::at` è l'unico uso non protetto trovato (fixato in embeddings); `StdioTransport` non è istanziato da codice raggiungibile.
+
+**Build + test**: Release build completa OK; test mirati (ModelHubServer, ServerTest, Safetensors, MCP, HubDownloader, E2EServer) tutti verdi. `E2EServer.StreamingSSE` resta flaky sotto carico (passa in isolamento, ~60s a freddo) — problema di performance/timing preesistente non legato alla sicurezza.
+
+## Rischi residui (raccomandazioni operative)
+
+1. **`SERIUS_ADMIN_TOKEN` non è obbligatoria**: senza la variabile, `/v1/models/load` e `DELETE /v1/models/{id}` restano anonimi (scelta di retrocompatibilità per l'uso locale). In produzione va **sempre impostata**; valutare di renderla obbligatoria quando il bind non è localhost.
+2. **`SERIUS_MODEL_ROOTS` opzionale**: senza di essa qualsiasi path esistente del filesystem è caricabile. In produzione impostare la variabile con le sole directory dei modelli.
+3. **Bind `0.0.0.0` di default** (inference server e hub): l'autenticazione mitigata ma non elimina il rischio — esporre solo dietro reverse proxy/auth o bindare a `127.0.0.1`/`SERIUS_HOST` in produzione. Il Service k8s `LoadBalancer` rende il servizio pubblicamente raggiungibile.
+4. **`StdioTransport` MCP** (`src/mcp/transport_stdio.cpp`): su POSIX usa `sh -c <command>` perché i comandi MCP stdio sono stringhe di configurazione operatore (es. `npx -y pkg args`); il codice non è ancora istanziato da nessun percorso remoto, ma quando verrà collegato va trattato come configurazione fidata, mai input di rete.
+5. **`Sandbox::load_kernel`**: `dlopen`/`LoadLibrary` di path arbitrari è esecuzione di codice per definizione — modulo `experimental/autoopt`, da abilitare solo in ambienti controllati.
+6. **Rate limiting**: `/v1/auth/register` è limitato a 20 req/min/IP; le route di autenticazione non hanno un limite sulle *tentate* di login (le chiavi a 128 bit rendono il brute force impraticabile, ma si può aggiungere un limiter anche lì). `SERIUS_MCP_TOKEN` è opzionale come `SERIUS_ADMIN_TOKEN` — da impostare se l'endpoint MCP HTTP è esposto.
+7. **Dimensione upload hub**: httplib applica `payload_max_length` di default (100 MB); upload di modelli grandi via hub potrebbero fallire con 413 — limite da alzare esplicitamente se serve, mai rimuoverlo.

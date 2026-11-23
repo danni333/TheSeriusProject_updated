@@ -4,6 +4,7 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
@@ -81,6 +82,33 @@ int cmd_mcp_serve(int argc, char **argv)
         http.Get("/health", [](const httplib::Request &, httplib::Response &res) {
             res.set_content(mcp::json{{"status", "ok"}}.dump(), "application/json");
         });
+        // Optional bearer auth: when SERIUS_MCP_TOKEN is set, /mcp requires
+        // "Authorization: Bearer <token>". Unset keeps the open local mode.
+        const char *mcp_token = std::getenv("SERIUS_MCP_TOKEN");
+        if (mcp_token && *mcp_token) {
+            const std::string expected = mcp_token;
+            http.set_pre_routing_handler([expected](const httplib::Request &req, httplib::Response &res) {
+                if (req.path == "/health") {
+                    return httplib::Server::HandlerResponse::Unhandled;
+                }
+                const std::string auth = req.get_header_value("Authorization");
+                const std::string prefix = "Bearer ";
+                const bool ok = auth.size() == expected.size() + prefix.size() &&
+                                auth.compare(0, prefix.size(), prefix) == 0;
+                uint8_t diff = ok ? 0 : 1;
+                if (ok) {
+                    for (size_t i = 0; i < expected.size(); ++i) {
+                        diff |= static_cast<uint8_t>(auth[prefix.size() + i] ^ expected[i]);
+                    }
+                }
+                if (diff != 0) {
+                    res.status = 401;
+                    res.set_content("{\"error\":\"unauthorized\"}", "application/json");
+                    return httplib::Server::HandlerResponse::Handled;
+                }
+                return httplib::Server::HandlerResponse::Unhandled;
+            });
+        }
         spdlog::info("MCP HTTP endpoint on port {} (POST /mcp)", http_port);
         return http.listen("0.0.0.0", http_port);
     }

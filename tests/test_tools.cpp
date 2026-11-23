@@ -123,6 +123,80 @@ TEST(ToolRegistry, WrongArgumentTypeIsRejected)
     EXPECT_FALSE(registry.execute("test", good).contains("error"));
 }
 
+TEST(ToolRegistry, SchemaEnumAndRangeValidation)
+{
+    ToolRegistry registry;
+
+    json schema;
+    schema["type"] = "object";
+    schema["properties"]["color"]["type"] = "string";
+    schema["properties"]["color"]["enum"] = {"red", "green", "blue"};
+    schema["properties"]["count"]["type"] = "integer";
+    schema["properties"]["count"]["minimum"] = 1;
+    schema["properties"]["count"]["maximum"] = 10;
+
+    ToolDefinition tool("test", "Test", schema,
+                        [](const json&) -> json { return json{{"ok", true}}; });
+    registry.register_tool(tool);
+
+    EXPECT_TRUE(registry.execute("test", json{{"color", "red"}, {"count", 5}}).contains("ok"));
+    EXPECT_TRUE(registry.execute("test", json{{"color", "purple"}}).contains("error"));
+    EXPECT_TRUE(registry.execute("test", json{{"count", 0}}).contains("error"));
+    EXPECT_TRUE(registry.execute("test", json{{"count", 11}}).contains("error"));
+}
+
+TEST(ToolRegistry, SchemaStringAndArrayConstraints)
+{
+    ToolRegistry registry;
+
+    json schema;
+    schema["type"] = "object";
+    schema["properties"]["name"]["type"] = "string";
+    schema["properties"]["name"]["minLength"] = 3;
+    schema["properties"]["name"]["maxLength"] = 8;
+    schema["properties"]["name"]["pattern"] = "^[a-z]+$";
+    schema["properties"]["tags"]["type"] = "array";
+    schema["properties"]["tags"]["items"]["type"] = "integer";
+    schema["properties"]["tags"]["minItems"] = 1;
+    schema["properties"]["tags"]["maxItems"] = 3;
+
+    ToolDefinition tool("test", "Test", schema,
+                        [](const json&) -> json { return json{{"ok", true}}; });
+    registry.register_tool(tool);
+
+    EXPECT_TRUE(registry.execute("test", json{{"name", "abc"}, {"tags", {1, 2}}}).contains("ok"));
+    EXPECT_TRUE(registry.execute("test", json{{"name", "ab"}}).contains("error"));      // too short
+    EXPECT_TRUE(registry.execute("test", json{{"name", "abcdefghi"}}).contains("error")); // too long
+    EXPECT_TRUE(registry.execute("test", json{{"name", "ABC"}}).contains("error"));       // pattern
+    EXPECT_TRUE(registry.execute("test", json{{"tags", {1, 2, 3, 4}}}).contains("error")); // too many
+    EXPECT_TRUE(registry.execute("test", json{{"tags", {"x"}}}).contains("error"));       // bad item type
+    EXPECT_TRUE(registry.execute("test", json{{"tags", json::array()}}).contains("error")); // too few
+}
+
+TEST(ToolRegistry, SchemaAdditionalPropertiesAndNestedObject)
+{
+    ToolRegistry registry;
+
+    json schema;
+    schema["type"] = "object";
+    schema["properties"]["point"]["type"] = "object";
+    schema["properties"]["point"]["properties"]["x"]["type"] = "number";
+    schema["properties"]["point"]["properties"]["y"]["type"] = "number";
+    schema["properties"]["point"]["required"] = {"x", "y"};
+    schema["properties"]["point"]["additionalProperties"] = false;
+
+    ToolDefinition tool("test", "Test", schema,
+                        [](const json&) -> json { return json{{"ok", true}}; });
+    registry.register_tool(tool);
+
+    EXPECT_TRUE(registry.execute("test", json{{"point", {{"x", 1.0}, {"y", 2.0}}}}).contains("ok"));
+    EXPECT_TRUE(registry.execute("test", json{{"point", {{"x", 1.0}}}}).contains("error"));  // missing y
+    EXPECT_TRUE(registry.execute("test", json{{"point", {{"x", 1.0}, {"y", 2.0}, {"z", 3.0}}}})
+                    .contains("error"));  // closed object
+    EXPECT_TRUE(registry.execute("test", json{{"point", {{"x", "nan"}, {"y", 2.0}}}})
+                    .contains("error"));  // wrong nested type
+}
+
 TEST(ToolRegistry, UnregisterTool)
 {
     ToolRegistry registry;

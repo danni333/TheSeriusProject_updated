@@ -101,7 +101,7 @@ int cmd_inspect(int argc, char **argv)
     parser.add_flag({"prompt", "p", "Prompt text to inspect", true, ""});
     parser.add_flag({"topk", "k", "Top-k predictions per layer (logit lens)", true, "3"});
     parser.add_flag({"attn-top", "a", "Top attended positions per layer", true, "3"});
-    parser.add_flag({"gpu", "g", "GPU backend (auto/cpu/cuda) — hooks are CPU-only", true, "cpu"});
+    parser.add_flag({"gpu", "g", "GPU backend (auto/cpu/cuda)", true, "cpu"});
 
     if (!parser.parse(argc, argv)) {
         std::cerr << "Error: " << parser.error() << "\n";
@@ -123,8 +123,11 @@ int cmd_inspect(int argc, char **argv)
     if (!loaded) {
         return 1;
     }
-    // Note: activation hooks are only emitted by the CPU inference path.
-    // --gpu defaults to cpu; cuda/auto may offload and yield no captures.
+    // Activation hooks fire on the CPU path and the eager CUDA paths
+    // (batched prefill + single-token decode; CUDA-graph decode is bypassed
+    // automatically while hooks are installed). Partial GPU offload captures
+    // only the GPU-resident prefix layers — CPU suffix layers still report
+    // through the CPU path.
 
     const int topk = parser.get_int("topk", 3);
     const int attn_top = parser.get_int("attn-top", 3);

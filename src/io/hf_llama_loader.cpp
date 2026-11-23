@@ -577,6 +577,13 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
             const size_t half = head_dim / 2;
             const size_t nh = w.out / head_dim;
             const size_t rb = w.row_bytes();
+            // row_bytes() truncates for K-quants when `in` isn't a multiple of
+            // the superblock size, and a malformed tensor could carry fewer
+            // bytes than out*rb — both would make the memcpy below run out of
+            // bounds. Skip the permutation unless the buffer fully covers it.
+            if (rb == 0 || w.bytes.size() < w.out * rb) {
+                return w;
+            }
             std::vector<uint8_t> perm(w.bytes.size());
             for (size_t h = 0; h < nh; ++h) {
                 for (size_t s = 0; s < head_dim; ++s) {

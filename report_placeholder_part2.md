@@ -417,6 +417,8 @@ Uso di `std::future` è pattern standard per thread pool, non indica codice inco
 
 **Note:** Graph compiler è molto semplificato, manca fusione kernel e tracing reale.
 
+> **Aggiornamento 2026-11-23 — TUTTO RISOLTO:** `execute()` ora fa replay reale del grafo via `Node::forward_fn` (`detail::replay_forward`); workspace usa l'allocator del CPU backend con picco di liveness; `trace(void*)` dummy **rimosso** — tracing solo via `trace_graph(Node*)` su grafi autograd reali. `fuse_elementwise_chains` fonde `add(bias)→gelu` reali.
+
 ---
 
 ### 9.6 Transformer FFN - Fused Bias GELU Temporary (1)

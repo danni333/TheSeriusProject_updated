@@ -42,11 +42,17 @@ ParsedUrl parse_url(const std::string &url)
     const auto colon = hostport.rfind(':');
     if (colon != std::string::npos) {
         out.host = hostport.substr(0, colon);
-        out.port = std::stoi(hostport.substr(colon + 1));
+        try {
+            out.port = std::stoi(hostport.substr(colon + 1));
+        }
+        catch (...) {
+            out.port = -1;  // malformed port: rejected by the port <= 0 check
+        }
     } else {
         out.host = hostport;
     }
-    if (out.port <= 0) out.port = out.ssl ? 443 : 80;
+    if (out.port == 0) out.port = out.ssl ? 443 : 80;
+    if (out.port < 0) out.host.clear();  // signal invalid URL to the caller
     return out;
 }
 

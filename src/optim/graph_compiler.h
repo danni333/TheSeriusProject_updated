@@ -22,8 +22,8 @@ struct GraphOp {
     std::string fused_kernel;  // Name of fused kernel if applicable
     /// Replays this op: maps operand tensors (in `inputs` order) to the op's
     /// output tensor. Copied from the traced node's Node::forward_fn; null for
-    /// synthetic trace() ops and nodes whose op provides no replay —
-    /// ExecutionPlan::execute throws on those.
+    /// nodes whose op provides no replay — ExecutionPlan::execute throws on
+    /// those.
     std::function<Tensor(const std::vector<const Tensor *> &)> executor;
 };
 
@@ -52,7 +52,7 @@ class ExecutionPlan
 
     /// True when every op carries a replay function, i.e. the plan came from
     /// trace_graph() (or an equivalent real trace) and execute() can run it.
-    /// Synthetic trace() plans return false.
+    /// Plans containing ops without a replay function return false.
     bool is_executable() const;
 
     /// Get the number of operations in the plan.
@@ -90,14 +90,6 @@ class GraphCompiler
     GraphCompiler();
     ~GraphCompiler();
 
-    /// Trace the graph by running a dummy forward pass.
-    /// NOTE: `model` is unused — this emits a fixed synthetic op sequence
-    /// (matmul → bias → gelu) purely so the optimizer passes can be exercised.
-    /// For real graphs use trace_graph(Node*) instead.
-    /// @param model Unused placeholder (kept for API compatibility)
-    /// @param input_shape Shape of the input tensor
-    void trace(void* model, const std::vector<size_t>& input_shape);
-
     /// Trace a real autograd graph: walks `output`'s ancestors in topological
     /// order and emits one GraphOp per computed node (op type = node name,
     /// inputs = child indices, output_shape = node data shape).
@@ -108,9 +100,8 @@ class GraphCompiler
     void optimize();
 
     /// Compile the optimized graph into an execution plan.
-    /// For graphs traced with trace_graph(), the plan can re-execute the
-    /// computation via ExecutionPlan::execute (ops lacking a replay function
-    /// still throw). Plans from the synthetic trace() are descriptive only.
+    /// The plan can re-execute the computation via ExecutionPlan::execute;
+    /// ops lacking a replay function still throw.
     std::unique_ptr<ExecutionPlan> compile();
 
     /// Get the current graph operations (for debugging).
@@ -125,7 +116,8 @@ class GraphCompiler
     std::vector<size_t> output_slots_;
     size_t slot_count_ = 0;
     // Per-slot shapes (indexed like the topological order) used by
-    // preallocate_buffers() for liveness analysis; empty for synthetic traces.
+    // preallocate_buffers() for liveness analysis and by
+    // fuse_elementwise_chains() for bias detection.
     std::vector<std::vector<size_t>> slot_shapes_;
     // Peak live-tensor bytes computed by preallocate_buffers(); 0 = not run.
     size_t peak_workspace_bytes_ = 0;

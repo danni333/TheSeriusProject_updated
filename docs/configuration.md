@@ -60,10 +60,15 @@ Variabili lette da `serius serve` all'avvio delle route HTTP:
 |-----------|---------|
 | `SERIUS_ADMIN_TOKEN` | Se impostata, `POST /v1/models/load` e `DELETE /v1/models/{id}` richiedono `Authorization: Bearer <token>`. Se vuota le route restano aperte (uso locale). |
 | `SERIUS_MODEL_ROOTS` | Lista separata da `;` di directory radice. Se impostata, un `path` di `/v1/models/load` deve risolversi (canonicalizzato) dentro una di esse, altrimenti `403`. |
+| `SERIUS_MCP_TOKEN` | Se impostata, `serius mcp-serve --http PORT` richiede `Authorization: Bearer <token>` su `POST /mcp`. Se vuota l'endpoint resta aperto (solo uso locale). |
 
 Nota: `hf://owner/repo` usa la stessa allowlist dopo la risoluzione in `models/`.
 
-## 5. Stato attuale
+## 5. Rate limiting
+
+- `serius_hub_server`: `POST /v1/auth/register` è limitato a **20 richieste/minuto per IP** (finestra fissa); oltre → `429`. Le route autenticate non hanno un limite dedicato (le API key a 128 bit non sono brute-forcibili).
+
+## 6. Stato attuale
 
 - Il sistema di configurazione è in fase di progettazione e integrazione con il runtime.
 - Questa pagina verrà popolata con la lista completa delle chiavi supportate man mano che l'implementazione si stabilizza.

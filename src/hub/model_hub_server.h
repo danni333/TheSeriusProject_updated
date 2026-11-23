@@ -72,6 +72,11 @@ class ModelHubServer
     // File-based user store: {sha256(api_key): {user_id, username, permissions[]}}
     nlohmann::json load_users() const;
     bool save_users(const nlohmann::json &users);
+    // Fixed-window rate limiter for unauthenticated endpoints. `bucket` is a
+    // logical name (e.g. "register") and `remote_addr` scopes the counter.
+    bool rate_limit_ok(const std::string &bucket, const std::string &remote_addr, int max_per_minute);
+    std::mutex rate_mutex_;
+    std::map<std::string, std::pair<int64_t, int>> rate_windows_;
     // Returns 0 on success (api_key filled), 1 on empty username/save failure,
     // 2 when the username is already registered (api_key left empty — the
     // existing account's key is never disclosed).

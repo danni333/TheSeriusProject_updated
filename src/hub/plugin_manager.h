@@ -50,12 +50,26 @@ class PluginManager : public IPluginManager
     nlohmann::json get_system_metrics() override;
 
    private:
+    struct SandboxConfig
+    {
+        std::vector<std::string> allowed_paths;
+        std::map<std::string, std::string> environment_vars;
+        size_t max_memory_mb;
+        double max_cpu_percent;
+        int max_file_descriptors;
+        bool network_access;
+    };
+
     struct PluginInstance
     {
         std::unique_ptr<IPlugin> plugin;
         PluginMetadata metadata;
         PluginState state;
         PluginContext context;
+        SandboxConfig sandbox_config;
+        // Set when the monitor detects a resource violation and asks the
+        // plugin to release resources; reset once usage is back under limits.
+        std::atomic<bool> cleanup_triggered{false};
 
 #ifdef _WIN32
         HMODULE library_handle;
@@ -69,24 +83,18 @@ class PluginManager : public IPluginManager
         std::atomic<double> cpu_usage;
     };
 
-    std::map<std::string, std::unique_ptr<PluginInstance>> loaded_plugins_;
+    // shared_ptr so the monitoring thread keeps the instance alive until it
+    // exits, even if the plugin is unloaded and erased from the map first.
+    std::map<std::string, std::shared_ptr<PluginInstance>> loaded_plugins_;
     std::mutex plugins_mutex_;
-
-    // Sandbox implementation
-    struct SandboxConfig
-    {
-        std::vector<std::string> allowed_paths;
-        std::map<std::string, std::string> environment_vars;
-        size_t max_memory_mb;
-        double max_cpu_percent;
-        int max_file_descriptors;
-        bool network_access;
-    };
+    // SandboxConfig produced by the most recent create_sandbox() call; only
+    // accessed while plugins_mutex_ is held during load_plugin().
+    SandboxConfig pending_sandbox_config_;
 
     // Resource monitoring
     void start_monitoring(const std::string &plugin_id);
     void stop_monitoring(const std::string &plugin_id);
-    void monitor_plugin_resources(const std::string &plugin_id);
+    void monitor_plugin_resources(const std::string &plugin_id, std::shared_ptr<PluginInstance> instance);
 
     // Plugin loading utilities
     void *load_library(const std::string &path);
@@ -100,6 +108,7 @@ class PluginManager : public IPluginManager
     bool setup_resource_limits(const std::string &plugin_id, const SandboxConfig &config);
 
     // Security utilities
+    bool check_plugin_permissions_locked(const std::string &plugin_id, const std::string &operation);
     bool validate_plugin_signature(const std::string &plugin_path);
     bool check_plugin_dependencies(const PluginMetadata &metadata);
     bool scan_plugin_malware(const std::string &plugin_path);

@@ -11,12 +11,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <random>
 #include <sstream>
 
@@ -172,7 +174,13 @@ bool is_loopback_addr(const std::string &addr)
     if (addr.empty()) {
         return true;
     }  // non-network callers (CLI, tests)
-    return addr == "::1" || addr.rfind("127.", 0) == 0 || addr == "localhost";
+    // IPv4-mapped IPv6 loopback (::ffff:127.x.x.x) counts as loopback too.
+    std::string a = addr;
+    const std::string v4mapped = "::ffff:";
+    if (a.rfind(v4mapped, 0) == 0) {
+        a = a.substr(v4mapped.size());
+    }
+    return a == "::1" || a.rfind("127.", 0) == 0 || a == "localhost";
 }
 
 std::string sanitize_filename(std::string name)
@@ -238,7 +246,10 @@ void ModelHubServer::start()
 {
     setup_routes();
     spdlog::info("Model Hub Server starting on port {}", port_);
-    server_->listen("0.0.0.0", port_);
+    if (server_->bind_to_port("0.0.0.0", port_) && server_->listen_after_bind()) {
+        return;
+    }
+    spdlog::error("Model Hub Server failed to listen on port {}", port_);
 }
 
 void ModelHubServer::stop()
@@ -398,9 +409,41 @@ bool ModelHubServer::check_permissions(const std::string &user_id, const std::st
     return false;
 }
 
+bool ModelHubServer::rate_limit_ok(const std::string &bucket, const std::string &remote_addr, int max_per_minute)
+{
+    const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    const int64_t window = now / 60;
+    const std::string key = bucket + "|" + remote_addr;
+    std::lock_guard<std::mutex> lk(rate_mutex_);
+    auto &slot = rate_windows_[key];
+    if (slot.first != window) {
+        slot = {window, 0};
+    }
+    if (++slot.second > max_per_minute) {
+        return false;
+    }
+    // Opportunistic cleanup so the map can't grow unboundedly.
+    if (rate_windows_.size() > 4096) {
+        for (auto it = rate_windows_.begin(); it != rate_windows_.end();) {
+            it = (it->second.first < window - 1) ? rate_windows_.erase(it) : std::next(it);
+        }
+    }
+    return true;
+}
+
 void ModelHubServer::setup_auth_routes()
 {
     server_->Post("/v1/auth/register", [this](const httplib::Request &req, httplib::Response &res) {
+        // Registration is unauthenticated by design; cap the rate so a remote
+        // client can't fill hub_users.json (each write rewrites the whole
+        // file) or mass-create accounts.
+        if (!rate_limit_ok("register", req.remote_addr, 20)) {
+            res.status = 429;
+            res.set_content(nlohmann::json{{"error", "rate limit exceeded"}}.dump(), "application/json");
+            return;
+        }
         nlohmann::json body;
         try {
             body = nlohmann::json::parse(req.body);

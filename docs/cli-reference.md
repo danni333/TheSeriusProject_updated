@@ -147,7 +147,9 @@ default 512), `--max-tokens/-n` (cap scored tokens, 0 = all), `--gpu/-g`
 > **Sperimentale**: richiede `-DSERIUS_EXPERIMENTAL_INTERPRET=ON`.
 
 Per-layer interpretability on a real prompt: runs one instrumented forward
-pass (`infer::ActivationHooks`, CPU path only) and reports, for every
+pass (`infer::ActivationHooks` on the CPU path and the eager CUDA paths —
+batched prefill and single-token decode; CUDA-graph decode is bypassed
+automatically while hooks are installed) and reports, for every
 transformer layer, the top-k next-token predictions via logit lens
 (`interpret::LogitLens` on the captured hidden state + real LM head) and
 attention statistics (entropy + top attended positions, averaged over heads).

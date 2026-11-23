@@ -957,6 +957,51 @@ void q41i_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out
     out = sum + msum;
 }
 
+// Q4_K x Q8: 256 weights / 144B superblock, 8 sub-blocks of 32 with
+// per-sub-block 6-bit scale/min. Two sub-blocks share one 32B qs group
+// (low nibbles = even sb, high = odd), so one zmm maddubs covers 64
+// weights. Requires in % 256 == 0.
+// term_sb = (d*d6) * (xq.d*S) - (dmin*m6) * xq.c
+void q4ki_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &out)
+{
+    const size_t nsb = in / 256;
+    const __m512i ones = _mm512_set1_epi16(1);
+    const __m256i nib_mask = _mm256_set1_epi8(0x0F);
+    float acc = 0.0F;
+
+    for (size_t s = 0; s < nsb; ++s) {
+        const uint8_t *blk = row + s * 144;
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        const uint8_t *sc = blk + 4;
+        const uint8_t *qs = blk + 16;
+        int d6[8], m6[8];
+        for (int sb = 0; sb < 8; ++sb) {
+            q4k_scale_min(sc, sb, d6[sb], m6[sb]);
+        }
+        for (int g = 0; g < 4; ++g) {
+            // 32 packed bytes -> 64 u8 nibbles: [lo(32) | hi(32)]
+            const __m256i qb = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(qs + g * 32));
+            const __m256i lo = _mm256_and_si256(qb, nib_mask);
+            const __m256i hi = _mm256_and_si256(_mm256_srli_epi16(qb, 4), nib_mask);
+            __m512i w = _mm512_castsi256_si512(lo);
+            w = _mm512_inserti64x4(w, hi, 1);
+            const size_t xoff = (s * 8 + 2 * g) * 32;
+            const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + xoff));
+            const __m512i prod = _mm512_maddubs_epi16(w, xqv);
+            const __m512i p32 = _mm512_madd_epi16(prod, ones);
+            const float slo = static_cast<float>(hsum256_epi32(_mm512_castsi512_si256(p32)));
+            const float shi = static_cast<float>(hsum256_epi32(_mm512_extracti32x8_epi32(p32, 1)));
+            const int sb0 = 2 * g;
+            acc += (d * static_cast<float>(d6[sb0])) * (xq.d[s * 8 + sb0] * slo) -
+                   (dmin * static_cast<float>(m6[sb0])) * xq.c[s * 8 + sb0];
+            acc += (d * static_cast<float>(d6[sb0 + 1])) * (xq.d[s * 8 + sb0 + 1] * shi) -
+                   (dmin * static_cast<float>(m6[sb0 + 1])) * xq.c[s * 8 + sb0 + 1];
+        }
+    }
+    out = acc;
+}
+
 #endif  // AVX-512
 
 // ---------------- ARM NEON kernels ----------------
@@ -1322,8 +1367,11 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
         return std::getenv("SERIUS_INTDOT") != nullptr;
 #endif
     }();
-    if (yes_intdot && (w.type == quant::QuantType::Q4_0 || w.type == quant::QuantType::Q4_1) && (K % 32) == 0 &&
-        K >= 32) {
+    const bool intdot_type = (w.type == quant::QuantType::Q4_0 || w.type == quant::QuantType::Q4_1 ||
+                              w.type == quant::QuantType::Q4_K);
+    const bool intdot_ok = intdot_type && (K % 32) == 0 && K >= 32 &&
+                           (w.type != quant::QuantType::Q4_K || (K % 256) == 0);
+    if (yes_intdot && intdot_ok) {
         const auto info = get_cpu_info();
         using IRowFn = void (*)(const uint8_t *, size_t, const XQuant &, float &);
         IRowFn ifn = nullptr;
@@ -1338,11 +1386,17 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
 #endif
         }();
         if (info.has_avx512f && !no_avx512) {
-            ifn = (w.type == quant::QuantType::Q4_0) ? q40i_row_avx512 : q41i_row_avx512;
+            if (w.type == quant::QuantType::Q4_0) {
+                ifn = q40i_row_avx512;
+            } else if (w.type == quant::QuantType::Q4_1) {
+                ifn = q41i_row_avx512;
+            } else {
+                ifn = q4ki_row_avx512;
+            }
         }
 #endif
         if (ifn == nullptr) {
-            if (!info.has_avx2) {
+            if (w.type == quant::QuantType::Q4_K || !info.has_avx2) {
                 goto fp_path;
             }
             ifn = (w.type == quant::QuantType::Q4_0) ? q40i_row_avx2 : q41i_row_avx2;

@@ -12,7 +12,12 @@ namespace infer {
 /// Pointed-to data is only valid for the duration of the call — copy it
 /// if you need to keep it.
 ///
-/// CPU inference path only: the CUDA kernels do not invoke these hooks.
+/// Supported on the CPU path and the eager CUDA paths (batched prefill and
+/// single-token decode). The CUDA-graph decode path cannot emit hooks —
+/// llama_forward_single_token_cuda_graph() automatically falls back to the
+/// eager path while hooks are installed. In the fused-GQA CUDA decode branch
+/// (FP16 + KV cache <= 4096) attention probabilities are never materialized,
+/// so attention_row does not fire there; layer_hidden still does.
 /// When no hooks are set the overhead is a single pointer check per
 /// layer/head-row.
 struct ActivationHooks

@@ -40,7 +40,10 @@ class ModelDownloader
     /// @return true on success
     bool download_url(const std::string &url, const std::string &output_path, ProgressFn progress = nullptr);
 
-    /// Set timeout for HTTP requests (in seconds).
+    /// Set timeout for API/metadata HTTP requests (in seconds). Applies to
+    /// the tree/API/HEAD calls; file downloads themselves abort on stall
+    /// (<1 KiB/s for 60s) rather than a total timeout, since model files are
+    /// multi-GB.
     void set_timeout(int seconds) { timeout_seconds_ = seconds; }
 
     /// List files in a HF repo via the tree API (recursive), with sizes.
@@ -69,7 +72,7 @@ class ModelDownloader
     static bool is_safe_repo_path(const std::string &path);
 
    private:
-    int timeout_seconds_ = 300;
+    int timeout_seconds_ = 30;
 
     /// Download a single file.
     bool download_file(const std::string &url, const std::string &path, ProgressFn progress = nullptr,

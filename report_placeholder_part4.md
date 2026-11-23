@@ -39,22 +39,23 @@ TEST(CoreDummy, Returns42)
 
 ---
 
-### 2.2 Test Graph Compiler - Usa trace(nullptr)
+### 2.2 Test Graph Compiler - ~~Usa trace(nullptr)~~ RISOLTO 2026-11-23
 
 **File:** `tests/test_graph_compiler.cpp`
 
-Tutti i test chiamano `compiler.trace(nullptr, input_shape)` che è una semplificazione (vedi part2). I test verificano che ops.size() > 0 ma non eseguono vero forward pass.
+~~Tutti i test chiamano `compiler.trace(nullptr, input_shape)` che è una semplificazione (vedi part2).~~ **Aggiornamento:** `GraphCompiler::trace(void*, shape)` è stato rimosso (API impossibile da implementare davvero: `void*` non porta un forward callable). I test ora costruiscono grafi autograd reali e usano `trace_graph(Node*)`; l'esecuzione è replay reale via `Node::forward_fn`. `fuse_elementwise_chains` fonde `add(bias rank-1)→gelu` in `fused_bias_gelu` con verifica di equivalenza numerica.
 
 **Test presenti:**
 - TraceCreatesOps - verifica ops.size() > 0
-- FuseElementwise - verifica fused_bias_gelu op
+- FuseElementwise - verifica fused_bias_gelu op + equivalenza numerica
 - EliminateRedundantCopies - verifica no contiguous ops
 - CreateFromCompiler - verifica plan compilation
-- Execute - esegue plan con inputs dummy
+- ExecuteReplaysTracedGraph / ExecuteBranchingGraph - replay reale
+- ExecuteThrowsOnMissingReplay - op custom senza forward_fn → runtime_error
 - ConfigDefaults - verifica config defaults
 - DisableOptimizations - verifica optimizations disabilitate
 
-**Note:** Test funzionano ma usano trace(nullptr) che crea dummy graph invece di vero forward pass. I test verificano correttezza dell'API ma non validano funzionalità reale.
+**Note:** Test ora validano funzionalità reale end-to-end (trace → optimize → execute → numerica corretta).
 
 ---
 
@@ -129,7 +130,7 @@ Tutti i test chiamano `compiler.trace(nullptr, input_shape)` che è una semplifi
 | File | Problema | Gravità |
 |------|---------|---------|
 | test_placeholder.cpp | EXPECT_TRUE(true) dummy | Bassa |
-| test_graph_compiler.cpp | Usa trace(nullptr) semplificato | Media |
+| test_graph_compiler.cpp | ~~Usa trace(nullptr)~~ ✅ risolto: trace_graph su grafi reali | — |
 
 ---
 
@@ -138,7 +139,7 @@ Tutti i test chiamano `compiler.trace(nullptr, input_shape)` che è una semplifi
 ### Test di Buona Qualità
 
 - **1 test dummy da rimuovere:** test_placeholder.cpp
-- **1 file con test semplificati:** test_graph_compiler.cpp (trace(nullptr))
+- ~~**1 file con test semplificati:** test_graph_compiler.cpp (trace(nullptr))~~ ✅ risolto 2026-11-23
 - **6 GTEST_SKIP corretti:** per CUDA (pattern corretto)
 - **Test multi-agent ben scritti:** con ScriptedModel mock
 - **77 file test totali:** copertura ampia del codebase

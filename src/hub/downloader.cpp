@@ -22,6 +22,11 @@ namespace hub {
 namespace {
 
 constexpr size_t kMaxRepoSegment = 96;
+// curl tuning: connection establishment cap, stall detection for downloads
+// (abort when throughput stays below kStallSpeedBps for kStallTimeSec).
+constexpr int kConnectTimeoutSec = 10;
+constexpr int kStallSpeedBps = 1024;
+constexpr int kStallTimeSec = 60;
 
 bool is_repo_char(char c)
 {
@@ -59,9 +64,11 @@ std::string url_encode_path(const std::string &s)
 }
 
 // Base curl invocation: -q (must be first) ignores any .curlrc.
+// Timeouts are mandatory: without them a hung connection would pin a
+// worker thread (and the calling request) forever.
 std::vector<std::string> curl_args(const std::string &token)
 {
-    std::vector<std::string> args = {"curl", "-q"};
+    std::vector<std::string> args = {"curl", "-q", "--connect-timeout", std::to_string(kConnectTimeoutSec)};
     if (!token.empty()) {
         args.push_back("-H");
         args.push_back("Authorization: Bearer " + token);
@@ -69,21 +76,21 @@ std::vector<std::string> curl_args(const std::string &token)
     return args;
 }
 
-std::string http_get(const std::string &url, const std::string &token)
+std::string http_get(const std::string &url, const std::string &token, int timeout_sec)
 {
     if (!is_valid_token(token)) return "";
     auto args = curl_args(token);
-    args.insert(args.end(), {"-s", "-X", "GET", "--url", url});
+    args.insert(args.end(), {"-s", "--max-time", std::to_string(timeout_sec), "-X", "GET", "--url", url});
     std::string response;
     if (serius::common::run_process(args, &response) != 0) return "";
     return response;
 }
 
-std::string http_head(const std::string &url, const std::string &token)
+std::string http_head(const std::string &url, const std::string &token, int timeout_sec)
 {
     if (!is_valid_token(token)) return "";
     auto args = curl_args(token);
-    args.insert(args.end(), {"-sIL", "--url", url});
+    args.insert(args.end(), {"-sIL", "--max-time", std::to_string(timeout_sec), "--url", url});
     std::string response;
     if (serius::common::run_process(args, &response) != 0) return "";
     return response;
@@ -164,7 +171,7 @@ std::string ModelDownloader::build_hf_url(const std::string &repo_id, const std:
 std::string ModelDownloader::fetch_model_info(const std::string &repo_id, const std::string &token)
 {
     if (!is_valid_repo_id(repo_id)) return "";
-    return http_get("https://huggingface.co/api/models/" + repo_id, token);
+    return http_get("https://huggingface.co/api/models/" + repo_id, token, timeout_seconds_);
 }
 
 bool ModelDownloader::download_file(const std::string &url, const std::string &path, ProgressFn progress,
@@ -181,10 +188,16 @@ bool ModelDownloader::download_file(const std::string &url, const std::string &p
     // --retry covers transient failures, -C - resumes partial downloads.
     // Arguments are passed as a vector; no shell ever parses them.
     auto args = curl_args(token);
-    args.insert(args.end(), {"-sSL", "--retry", "3", "-C", "-", "-o", path, "--url", url});
+    // Model files are multi-GB, so no total --max-time; instead abort when
+    // the transfer stalls (<1 KiB/s for 60s) so a dead connection can't pin
+    // the async worker forever.
+    args.insert(args.end(), {"-sSL", "--retry", "3", "-C", "-",
+                             "--speed-limit", std::to_string(kStallSpeedBps),
+                             "--speed-time", std::to_string(kStallTimeSec),
+                             "-o", path, "--url", url});
 
     // Best-effort total size via HEAD (HF resolve redirects to the CDN).
-    const size_t total = content_length_of(http_head(url, token));
+    const size_t total = content_length_of(http_head(url, token, timeout_seconds_));
 
     // Run curl asynchronously so the progress callback can report the real
     // number of bytes written so far instead of a fake 0/0.
@@ -214,12 +227,21 @@ bool ModelDownloader::download_hf(const std::string &repo_id, const std::string 
     // to load a model: configs, tokenizer assets and safetensors shards.
     // GGUF/optimizer/training files are skipped (use resolve_hf_gguf for
     // quantized downloads).
-    std::vector<std::string> wanted;
+    struct WantedFile
+    {
+        std::string path;
+        size_t size = 0;
+        bool size_known = false;
+    };
+    std::vector<WantedFile> wanted;
     const auto remote = list_hf_files(repo_id, token);
     if (remote.empty()) {
         // API unreachable or empty repo: fall back to the common names so a
         // transient listing failure doesn't break imports entirely.
-        wanted = {"config.json", "tokenizer.json", "model.safetensors", "vocab.json"};
+        for (const char *name :
+             {"config.json", "tokenizer.json", "model.safetensors", "vocab.json"}) {
+            wanted.push_back({name});
+        }
     } else {
         auto wanted_name = [](const std::string &p) {
             const size_t slash = p.find_last_of('/');
@@ -244,12 +266,26 @@ bool ModelDownloader::download_hf(const std::string &repo_id, const std::string 
                    (ext == ".json" && base.find("model.safetensors.index") != std::string::npos);
         };
         for (const auto &f : remote) {
-            if (wanted_name(f.path)) wanted.push_back(f.path);
+            if (wanted_name(f.path)) {
+                // The tree API reports authoritative sizes (0 is a valid size).
+                wanted.push_back({f.path, f.size, true});
+            }
         }
     }
 
+    // When every file size is known, report cumulative progress across the
+    // whole download instead of resetting per file.
+    const bool cumulative =
+        progress && std::all_of(wanted.begin(), wanted.end(), [](const WantedFile &w) { return w.size_known; });
+    size_t completed_bytes = 0;
+    size_t grand_total = 0;
+    if (cumulative) {
+        for (const auto &w : wanted) grand_total += w.size;
+    }
+
     bool downloaded_any = false;
-    for (const auto &filename : wanted) {
+    for (const auto &w : wanted) {
+        const std::string &filename = w.path;
         std::string url = build_hf_url(repo_id, filename);
         std::string rel = filename;
         // Keep the repo's directory layout for nested files.
@@ -262,9 +298,17 @@ bool ModelDownloader::download_hf(const std::string &repo_id, const std::string 
         }
         // Individual missing files are tolerated; success requires at least
         // one file to actually land on disk.
-        if (download_file(url, output_path, progress, token)) {
+        ProgressFn file_progress = progress;
+        if (cumulative) {
+            const size_t base = completed_bytes;
+            file_progress = [progress, base, grand_total](size_t cur, size_t) {
+                progress(base + cur, grand_total);
+            };
+        }
+        if (download_file(url, output_path, file_progress, token)) {
             downloaded_any = true;
         }
+        completed_bytes += w.size;
     }
 
     return downloaded_any;
@@ -274,8 +318,8 @@ std::vector<HubFile> ModelDownloader::list_hf_files(const std::string &repo_id, 
 {
     // GET /api/models/{repo}/tree/main?recursive=true → [{type,path,size,...}]
     if (!is_valid_repo_id(repo_id)) return {};
-    const std::string response =
-        http_get("https://huggingface.co/api/models/" + repo_id + "/tree/main?recursive=true", token);
+    const std::string response = http_get(
+        "https://huggingface.co/api/models/" + repo_id + "/tree/main?recursive=true", token, timeout_seconds_);
     if (response.empty()) return {};
 
     std::vector<HubFile> files;

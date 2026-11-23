@@ -59,22 +59,22 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ### Critici (Backend Hardware)
 1. **Vulkan Backend** - 4 TODO + availability stub
 2. **Metal Backend** - 2 TODO + availability stub
-3. **Hub Search Engine** - 13 metodi stub (tutti ritornano `{}`)
+3. ~~Hub Search Engine~~ ✅ riscritto: full-text + filtri, ranking, similarità, trending, analytics (v. tabella)
 4. **Hub Embedding Manager** - ~~3 metodi stub~~ ✅ path primario: encoder `nomic-bert` reale (GGUF, `src/hub/nomic_bert.cpp`) — dim 768, ~0.84s/embedding CPU (GEMM BLAS, ~4.5x), task prefix retrieval. Fallback: mean-pool `token_embd.weight` o hash n-gram deterministico
 5. **Hub Metadata Manager** - ~~SQLite disabled~~ ✅ backend SQLite reale + migrazione JSON automatica
 
 ### Alti (Funzionalità Core)
-6. **MCP HTTP Transport** - 1 not implemented
-7. **MCP Stdio Transport** - 1 stub
-8. **Flash Attention Backward** - 1 not implemented (CPU)
-9. **Graph Compiler Trace** - 1 not implemented
-10. **Stress Runner** - 2 Placeholder (VRAM/RAM monitoring)
-11. **Pipeline Parallel** - 1 Placeholder (gradiente)
+6. ~~MCP HTTP Transport~~ ✅ `transport_http.cpp` JSON-RPC via httplib
+7. ~~MCP Stdio Transport~~ ✅ `transport_stdio.cpp` subprocess
+8. ~~Flash Attention Backward~~ ✅ `cpu::backward` reale in `flash_attn.cpp` (ricombina probs da LSE, backward math standard) collegato a `backward_fn`
+9. ~~**Graph Compiler Trace**~~ ✅ `trace_graph(Node*)` è il path reale ed esegue il grafo via replay `forward_fn`; `trace(void*)` sintetico **rimosso** 2026-11-23 (`void*` non può portare un forward callable); `fuse_elementwise_chains` fonde `add(bias)→gelu` reali
+10. ~~Stress Runner~~ ✅ `/health` espone ram/vram, metriche reali
+11. ~~Pipeline Parallel~~ ✅ `execute_1f1b()` schedule Megatron
 12. **LLaMA Inference** - ~~1 Placeholder (intermediate ranks)~~ ✅ PP non-ultimo rank ritorna `Tensor()` vuoto documentato (logits esistono solo sull'ultimo rank)
-13. **Hub Converter** - 1 Placeholder (Safetensors→GGUF)
+13. ~~Hub Converter~~ ✅ `io/gguf_writer.cpp` GGUF v3 + `serius convert`
 14. **SSM Block** - ~~1 Placeholder (input projection)~~ ✅ `in_proj_` ora è una proiezione reale `[d_model, 2*d_state+1]` che produce B/C/dt per passo (dt via softplus); B/C non più presi direttamente da x
 15. **CLI Commands** - ~~2 implementation pending~~ ✅ `serius doctor` ora è un health-check reale: versione, core CPU, RAM totale/available, backend GPU HAL + nome device CUDA e VRAM, flag di build
-16. **Model Hub Server** - 1 stub (search_models)
+16. ~~Model Hub Server~~ ✅ route REST + auth API key reali
 
 ### Media (Limitazioni)
 17. **CPU Backend** - ~~5 stream no-ops~~ ✅ stream reali (worker thread + queue)
@@ -84,7 +84,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 21. **GGUF Loader** - ~~3 unused parameters~~ ✅ rimosso `value_length` morto da `read_gguf_kv_entry` (scriveva sempre 0, tutti i caller passavano `nullptr`)
 
 ### Bassa (Commenti/Opzionale)
-22. **Transformer FFN** - 1 commento sviluppo
+22. ~~Transformer FFN~~ ✅ `fused_bias_gelu` integrato (commento stale rimosso)
 23. **Tokenizer BPE** - 1 optional
 24. **Test Placeholder** - 1 dummy test
 
@@ -93,18 +93,18 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ## Report Part 2: Implementazioni "For Now"/Simple (21)
 
 ### Hub/Plugin (7)
-- Downloader: progress placeholder, common_files hardcoded
+- ~~Downloader: progress placeholder, common_files hardcoded~~ ✅ progress già reale (byte su disco pollati ogni 100ms vs Content-Length via HEAD); migliorato: `download_hf` ora riporta progress **cumulativo** su tutti i file quando le dimensioni sono note dall'API tree (prima si resettava a ogni file); `common_files` resta solo come fallback se l'API fallisce (documentato). Test `test_hub_downloader` 5/5
 - ~~Metadata Manager: SQLite disabled, file-based storage~~ ✅ SQLite reale (v. item 5)
-- Plugin Manager: basic sandboxing, basic permission check, simple detach
+- ~~Plugin Manager: basic sandboxing, basic permission check, simple detach~~ ✅ fix race/real bugs: monitoring thread ora `join()` (era `detach()` → use-after-free potenziale) e cattura `shared_ptr<PluginInstance>` così l'istanza resta viva; `monitor_plugin_resources` non accede più alla mappa senza lock; `stop_monitoring` non fa più self-deadlock su `plugins_mutex_` (lock rimosso, chiamato solo con lock tenuto); `reload_plugin` legge la mappa sotto lock; `check_plugin_permissions` ora capability-based (mappa operazioni → `PluginCapability`, `io_*` richiede `allowed_paths`, `network` sempre negato, ops sconosciute negate) + `validate_plugin` controlla estensione .dll/.so/.dylib; monitor usa `plugin->get_memory_usage()/get_cpu_usage()` con fallback a metriche di processo e chiama `cleanup_resources()` una volta per violazione (enforcement, non solo warn). `hub` compila; nessun test dedicato (nessun caller esterno).
 
 ### Optim/Graph (3)
-- Graph Compiler: simplified execution, dummy tracing, standard allocator
+- ~~Graph Compiler: simplified execution, dummy tracing, standard allocator~~ ✅ `execute()` reale (v. tabella RISOLTO), pass di ottimizzazione completi (incl. fusione `add(bias)→gelu` reale), workspace via backend allocator con peak di liveness; `trace(void*)` dummy **rimosso** 2026-11-23 — tracing solo via `trace_graph(Node*)`
 
 ### Benchmark (1)
 - ~~Latency: simulated metrics quando modello caricato~~ ✅ `bench_single` esegue inferenza reale (`llama_forward_single_token` + sampler reale, TTFT/prefill/decode TPS misurati); se nessun modello è utilizzabile lascia i metric a 0 con messaggio esplicito "no simulated values"
 
 ### AutoOpt (1)
-- Refactorer: library loading non integrato
+- ~~Refactorer: library loading non integrato~~ ✅ già integrato — `optimize_with_llm` carica la libreria compilata via `Sandbox::load_kernel` (LoadLibraryA/dlopen + GetProcAddress "kernel_entry", C ABI) e la passa a `evaluate_candidate`; modulo tenuto caricato per lifetime del processo (scelta documentata)
 
 ### RAG (1)
 - ~~Embeddings: hash-based invece di embedding model~~ ✅ encoder `nomic-bert` reale su GGUF (Q4_K/Q5_K/Q6_K dequant inclusa `dequantize_q5_k`) con task prefix `search_query:`/`search_document:`; fallback mean-pool token_embd, poi hash n-gram (word unigram + char 3-5 gram, firmati)
@@ -113,25 +113,25 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 - ~~FFN: fused_bias_gelu temporary~~ ✅ `FFN::forward_optimized` usa `ops::fused_bias_gelu` reale (autograd op in `ops_norm.cpp` con backward, kernel CUDA `hal::fused_bias_gelu` in `fused_kernels.cu`, forward_fn per replay nel graph compiler); rimossi i commenti di sviluppo stale
 
 ### Train (1)
-- ~~Trainer: manual cleanup nodi~~ ✅ `Trainer::cleanup_graph()` fa topological_sort da `scaled_loss` e deleta tutti i nodi raggiungibili tranne i parametri del modello (set `model_params_set_` catturato nel ctor, stesso pattern di `SFTTrainer::cleanup_graph`) — prima l'intero forward graph (attivazioni, gradienti, input/target) leakava a ogni step
+- ~~Trainer: manual cleanup nodi~~ ✅ `Trainer::cleanup_graph()` fa topological_sort da `scaled_loss` e deleta tutti i nodi raggiungibili tranne i parametri del modello (set `model_params_set_` catturato nel ctor, stesso pattern di `SFTTrainer::cleanup_graph`) — prima l'intero forward graph (attivazioni, gradienti, input/target) leakava a ogni step. Follow-up 2026-11-23: `target_node` non è registrato come child da `cross_entropy` quindi non era raggiungibile dal sink — ora `delete target_node` esplicito dopo `cleanup_graph`; `input_node` e gli intermedi invece sono coperti dal grafo. Verificato: `ctest` 712/712 (6 skip per modelli reali assenti), `test_autograd` 6/6
 
 ### Agent (1)
 - ~~Consensus: simple trigram similarity~~ ✅ embedder opzionale (`TextEmbedFn`) con fallback trigram — vedi tabella RISOLTO in alto
 
 ### Reasoning (1)
-- Verifier: keyword-based
+- ~~Verifier: keyword-based~~ ✅ embedder opzionale + cosine (`EmbeddingVerifier`) — vedi tabella RISOLTO
 
 ### Safety (1)
-- Toxicity: keyword-based
+- ~~Toxicity: keyword-based~~ ✅ `ToxicityClassifier` (red_team) con prototype embedding + lexical — vedi tabella RISOLTO
 
 ### Grounding (1)
-- Citation: keyword overlap
+- ~~Citation: keyword overlap~~ ✅ `SupportScorer` con lexical + cosine embedding in `citation_engine` — vedi tabella RISOLTO
 
 ### RLHF (1)
 - ~~Reward Model: simplified generation~~ ✅ generazione già reale (decode autoregressivo con KV cache, argmax greedy, log_softmax del token scelto); fix reale applicato: `score()`/`compute_logprobs()` leakavano l'intero grafo autograd per chiamata — ora `free_graph()` fa topological_sort ed elimina tutti i nodi tranne i parametri del transformer (`collect_params`, stesso pattern di `Trainer::cleanup_graph`)
 
 ### Tools (1)
-- Registry: simplified JSON validation
+- ~~Registry: simplified JSON validation~~ ✅ `validate_schema` ora usa un validatore JSON Schema ricorsivo (`validate_value`): type (stringa o array di tipi), `enum`, `minimum`/`maximum`, `minLength`/`maxLength`, `pattern` (regex), `minItems`/`maxItems`, `items` su array, `properties`/`required` annidati su oggetti, `additionalProperties:false` a tutti i livelli. Schema senza `properties` valida comunque le keyword a livello valore. Test `test_tools` 17/17 (3 nuovi test)
 
 ### Attention (2)
 - Block Sparse: ~~simplified kernel, no softmax~~ ✅ RISOLTO — kernel CUDA riscritto (`block_sparse.cu`): softmax online numericamente stabile (running max/sum-exp + rescale, stile flash-attention) ristretta ai blocchi attivi della mask, guardia causale per le coppie k>q, thread block per query row, score/key-shop in shared memory, riduzione max/sum via warp shuffle. Fix anche del race originale (ogni k-block sovrascrive O). Verificato su GPU in `test_cuda` vs reference CPU: max err ~4.5e-8 su maschere causal, local-window e past-only.
@@ -145,16 +145,16 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ## Report Part 3: Hardcoded Values (200+)
 
 ### Porte Network (6)
-- Porta 8080 hardcoded in 6 file diversi
+- ~~Porta 8080 hardcoded in 6 file diversi~~ ✅ `src/common/defaults.h`: `kHttpPort`/`kHubPort`/`kHost`/`kServerUrl` condivisi da CLI (`cmd_serve`), `ServerConfig`, hub, stress, MCP
 
 ### Timeout (1)
-- Download timeout: 300 secondi hardcoded
+- ~~Download timeout: 300 secondi hardcoded~~ ✅ `ModelDownloader::timeout_seconds_` (default 30) ora cablato davvero in `http_get`/`http_head` (era membro morto: `set_timeout` mai chiamato, `--max-time 30` hardcoded); connect-timeout 10 e stall-detection (1KiB/s per 60s) ora `constexpr` nominati. Timeouts MCP/stress in `defaults.h` (`kMcpConnectTimeoutSec`, `kStressTimeoutSec`, …)
 
 ### Max Tokens (60+)
-- 128, 256, 512, 1024, 2048, 4096 hardcoded ovunque
+- Parziale: `defaults::kMaxNewTokens` (256) + `kTemperature`/`kTopK`/`kTopP` in `defaults.h` usati da sampler/CLI; restano default per-call deliberati nei moduli agent/experimental (256/512/1024 a seconda del ruolo: react, planner, supervisor, cot, mcts) — sono scelte di dominio, non bug
 
 ### Thresholds (12)
-- 0.01f, 0.1f, 0.7f, 0.8f, 1e-6f, 10MB hardcoded
+- Parziale: leakage 10MB e severity/toxicity thresholds sono parametri con default nominale nei rispettivi header (`leak_detector.h`, `red_team.h`, `toxicity.h`) — opportunamente configurabili; epsilon numerici restano costanti di modulo
 
 ### Numeri Magici (75+)
 - 1e-5f, 1e-6f, 1e-7f, 1e-8f, 1e-9f per stabilità numerica
@@ -175,7 +175,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 
 ### Problemi (2)
 1. **test_placeholder.cpp** - EXPECT_TRUE(true) dummy da rimuovere
-2. **test_graph_compiler.cpp** - usa trace(nullptr) semplificato
+2. ~~**test_graph_compiler.cpp** - usa trace(nullptr) semplificato~~ ✅ RISOLTO 2026-11-23: `trace(void*)` rimosso, test migrati a `trace_graph(Node*)` su grafi autograd reali
 
 ### Corretti (6)
 - GTEST_SKIP per CUDA (pattern corretto)
@@ -238,7 +238,7 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 ### MEDIE (Miglioramento)
 
 14. **Configurare hardcoded values** (porte, max tokens, thresholds)
-15. **Implementare Graph Compiler trace reale**
+15. ~~**Implementare Graph Compiler trace reale**~~ ✅ `trace_graph(Node*)` + replay executor; `trace(void*)` rimosso
 16. **~~Implementare CPU backend stream asincrono~~** ✅ D4
 17. **~~Implementare BLAS stream parameter usage~~** ✅ D4
 18. **~~Implementare Quantization FP8 kernel~~** ✅ D5 (CPU dequant-matmul)

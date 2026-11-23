@@ -1,4 +1,3 @@
-#include <exception>
 #include <gtest/gtest.h>
 
 #include <chrono>
@@ -13,18 +12,6 @@
 using namespace serius::hub;
 
 namespace {
-
-struct TerminateProbe
-{
-    TerminateProbe()
-    {
-        std::set_terminate([] {
-            std::fprintf(stderr, "[TerminateProbe] std::terminate called\n");
-            std::abort();
-        });
-    }
-};
-TerminateProbe g_terminate_probe;
 
 int find_free_port()
 {
@@ -59,23 +46,19 @@ struct ServerGuard
         std::filesystem::current_path(workdir);
         server = std::make_unique<ModelHubServer>(find_free_port());
         port = server->get_port();
-        thread = std::thread([this] {
-            try {
-                server->start();
-            }
-            catch (const std::exception &e) {
-                std::fprintf(stderr, "[ServerGuard] server thread exception: %s\n", e.what());
-            }
-            catch (...) {
-                std::fprintf(stderr, "[ServerGuard] server thread unknown exception\n");
-            }
-        });
+        thread = std::thread([this] { server->start(); });
     }
 
     ~ServerGuard()
     {
         server->stop();
         if (thread.joinable()) { thread.join(); }
+        // Destroy the server BEFORE removing workdir: its MetadataManager holds
+        // an open SQLite handle on models_metadata.json inside workdir, and
+        // members are only destroyed after the dtor body — remove_all() would
+        // throw filesystem_error on the locked file, and a throwing dtor calls
+        // std::terminate.
+        server.reset();
         std::filesystem::current_path(old_cwd);
         std::filesystem::remove_all(workdir);
     }

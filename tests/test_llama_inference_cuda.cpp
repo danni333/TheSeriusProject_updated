@@ -5,6 +5,10 @@
 #include <filesystem>
 
 #include "infer/llama_inference.h"
+#include "infer/activation_hook.h"
+#if defined(SERIUS_EXPERIMENTAL_INTERPRET)
+#include "interpret/inference_capture.h"
+#endif
 #include "io/hf_llama_loader.h"
 #include "io/gguf_loader.h"
 #include "transformer/llama_model.h"
@@ -62,6 +66,22 @@ protected:
     }
 };
 
+// llama_forward_inference returns [seq_len, vocab] on the batched-prefill
+// paths but only the last position [1, vocab] on the per-token fallback
+// (CPU batched prefill is opt-in via SERIUS_PREFILL_BATCH_CPU=1). Reduce any
+// of those layouts to the last-position logits row for comparison.
+static std::vector<float> last_position_logits(const Tensor &t)
+{
+    const auto &shape = t.shape();
+    if (shape.empty() || t.size() == 0) { return {}; }
+    const size_t vocab = shape.back();
+    const size_t rows = shape.size() > 1 ? shape[shape.size() - 2] : 1;
+    std::vector<float> out(vocab);
+    const size_t base = (rows - 1) * vocab;
+    for (size_t v = 0; v < vocab; ++v) { out[v] = t[base + v]; }
+    return out;
+}
+
 TEST_F(LLaMAInferenceCUDATest, PrefillParity) {
     LLamaConfig cfg = get_test_config();
     LLaMAModel model(cfg);
@@ -79,12 +99,16 @@ TEST_F(LLaMAInferenceCUDATest, PrefillParity) {
     model.set_device(hal::DeviceType::CUDA);
     Tensor gpu_logits = llama_forward_inference(model, token_ids, nullptr);
 
-    // Cross-device parity: FP32 accumulation order differs between GPU parallel
-    // reductions and CPU sequential FMA chains across multiple layers.
+    // Cross-device parity on last-position logits: CPU may take the per-token
+    // fallback ([1, vocab]) while GPU runs batched prefill ([seq, vocab]).
+    // FP32 accumulation order differs between GPU parallel reductions and CPU
+    // sequential FMA chains across multiple layers.
     // Tolerance of 0.15 covers expected numerical drift for 2-layer FP32 inference.
-    ASSERT_EQ(cpu_logits.size(), gpu_logits.size());
-    for (size_t i = 0; i < cpu_logits.size(); ++i) {
-        EXPECT_NEAR(cpu_logits[i], gpu_logits[i], 0.15f);
+    const auto cpu_last = last_position_logits(cpu_logits);
+    const auto gpu_last = last_position_logits(gpu_logits);
+    ASSERT_EQ(cpu_last.size(), gpu_last.size());
+    for (size_t i = 0; i < cpu_last.size(); ++i) {
+        EXPECT_NEAR(cpu_last[i], gpu_last[i], 0.15f);
     }
 }
 
@@ -218,14 +242,16 @@ TEST_F(LLaMAInferenceCUDATest, GqaBf16PrefillParity) {
 
     Tensor gpu_logits = llama_forward_inference(model, token_ids, nullptr);
 
-    ASSERT_EQ(cpu_logits.size(), gpu_logits.size());
+    const auto cpu_last = last_position_logits(cpu_logits);
+    const auto gpu_last = last_position_logits(gpu_logits);
+    ASSERT_EQ(cpu_last.size(), gpu_last.size());
     double max_diff = 0.0;
     size_t cpu_am = 0, gpu_am = 0;
     float cpu_mx = -1e30f, gpu_mx = -1e30f;
-    for (size_t i = 0; i < cpu_logits.size(); ++i) {
-        max_diff = std::max(max_diff, static_cast<double>(std::fabs(cpu_logits[i] - gpu_logits[i])));
-        if (cpu_logits[i] > cpu_mx) { cpu_mx = cpu_logits[i]; cpu_am = i; }
-        if (gpu_logits[i] > gpu_mx) { gpu_mx = gpu_logits[i]; gpu_am = i; }
+    for (size_t i = 0; i < cpu_last.size(); ++i) {
+        max_diff = std::max(max_diff, static_cast<double>(std::fabs(cpu_last[i] - gpu_last[i])));
+        if (cpu_last[i] > cpu_mx) { cpu_mx = cpu_last[i]; cpu_am = i; }
+        if (gpu_last[i] > gpu_mx) { gpu_mx = gpu_last[i]; gpu_am = i; }
     }
     std::cerr << "[bf16-gqa] max_diff=" << max_diff << " cpu_argmax=" << cpu_am
               << " gpu_argmax=" << gpu_am << " cpu_max=" << cpu_mx << " gpu_max=" << gpu_mx << "\n";
@@ -272,13 +298,16 @@ TEST_F(LLaMAInferenceCUDATest, GqaFp16PrefillParity) {
 
     Tensor gpu_logits = llama_forward_inference(model, token_ids, nullptr);
 
+    const auto cpu_last = last_position_logits(cpu_logits);
+    const auto gpu_last = last_position_logits(gpu_logits);
+    ASSERT_EQ(cpu_last.size(), gpu_last.size());
     size_t nan_count = 0;
     double max_diff = 0.0;
-    for (size_t i = 0; i < gpu_logits.size(); ++i) {
-        if (!std::isfinite(gpu_logits[i])) { ++nan_count; continue; }
-        max_diff = std::max(max_diff, static_cast<double>(std::fabs(cpu_logits[i] - gpu_logits[i])));
+    for (size_t i = 0; i < gpu_last.size(); ++i) {
+        if (!std::isfinite(gpu_last[i])) { ++nan_count; continue; }
+        max_diff = std::max(max_diff, static_cast<double>(std::fabs(cpu_last[i] - gpu_last[i])));
     }
-    std::cerr << "[fp16-gqa] nan=" << nan_count << "/" << gpu_logits.size()
+    std::cerr << "[fp16-gqa] nan=" << nan_count << "/" << gpu_last.size()
               << " max_diff=" << max_diff << "\n";
     EXPECT_EQ(nan_count, 0u);
 }
@@ -462,6 +491,78 @@ TEST(LLaMARealGGUFTest, BatchedVsSequentialRealModel) {
     std::cerr << "[real-gguf] max_diff=" << max_diff
               << " seq_argmax=" << seq_arg << " batch_argmax=" << batch_arg << "\n";
     EXPECT_LT(max_diff, 0.5);
+}
+
+#if defined(SERIUS_EXPERIMENTAL_INTERPRET)
+TEST_F(LLaMAInferenceCUDATest, CudaPrefillCaptureHooks) {
+    LLamaConfig cfg = get_test_config();
+    LLaMAModel model(cfg);
+    randomize_model(model);
+    model.set_device(hal::DeviceType::CUDA);
+
+    const size_t seq_len = 4;
+    Tensor token_ids({seq_len});
+    for (size_t i = 0; i < seq_len; ++i) {
+        token_ids[i] = static_cast<float>(i % cfg.vocab_size);
+    }
+
+    interpret::InferenceCapture capture;
+    Tensor logits = capture.run(model, token_ids);
+    EXPECT_GT(logits.size(), 0);
+    EXPECT_EQ(capture.num_layers(), cfg.num_hidden_layers);
+    EXPECT_EQ(capture.num_attention_heads(0), cfg.num_attention_heads);
+
+    // Per (layer, head): one attention row per query position; row q has
+    // q+1 valid entries summing to ~1 under the causal mask.
+    const auto &rows = capture.attention_rows(0, 0);
+    ASSERT_EQ(rows.size(), seq_len);
+    for (size_t q = 0; q < seq_len; ++q) {
+        EXPECT_EQ(rows[q].size(), q + 1);
+        double sum = 0.0;
+        for (size_t k = 0; k < rows[q].size(); ++k) {
+            sum += rows[q][k];
+        }
+        EXPECT_NEAR(sum, 1.0, 1e-4);
+    }
+    EXPECT_EQ(capture.hidden_last_position(0).size(), cfg.hidden_size);
+}
+#endif
+
+namespace {
+int g_hook_hidden_calls = 0;
+int g_hook_attn_calls = 0;
+}  // namespace
+
+TEST_F(LLaMAInferenceCUDATest, CudaDecodeHooksFire) {
+    LLamaConfig cfg = get_test_config();
+    LLaMAModel model(cfg);
+    randomize_model(model);
+    model.set_device(hal::DeviceType::CUDA);
+
+    const size_t seq_len = 3;
+    Tensor token_ids({seq_len});
+    for (size_t i = 0; i < seq_len; ++i) {
+        token_ids[i] = static_cast<float>(i % cfg.vocab_size);
+    }
+
+    KVCache cache;
+    llama_forward_inference(model, token_ids, &cache);  // prefill, hooks off
+
+    g_hook_hidden_calls = 0;
+    g_hook_attn_calls = 0;
+    ActivationHooks hooks{};
+    hooks.layer_hidden = [](int, const float *, size_t, size_t) { ++g_hook_hidden_calls; };
+    hooks.attention_row = [](int, int, size_t, const float *, size_t) { ++g_hook_attn_calls; };
+    set_activation_hooks(hooks);
+
+    Tensor next = llama_forward_single_token(model, 5, seq_len, &cache);
+    clear_activation_hooks();
+
+    EXPECT_GT(next.size(), 0);
+    EXPECT_EQ(g_hook_hidden_calls, static_cast<int>(cfg.num_hidden_layers));
+    // FP32 model takes the non-fused attention branch: one row per head.
+    EXPECT_EQ(g_hook_attn_calls,
+              static_cast<int>(cfg.num_hidden_layers * cfg.num_attention_heads));
 }
 
 int main(int argc, char **argv) {

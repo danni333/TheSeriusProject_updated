@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "llama_inference.h"
+#include "activation_hook.h"
 
 #ifdef SERIUS_USE_CUDA
 #include <cuda_runtime.h>
@@ -294,6 +295,24 @@ static void split_gu_f16(void *gate, void *up, const void *gu, size_t seq, size_
     hal::extract_cols_f16(up, gu, seq, 2 * inter, inter, inter);
 }
 
+// Copies `count` elements of a device buffer of dtype `src_dtype` into the
+// host float buffer `dst`. Non-FP32 sources are staged through `stage_f32`
+// (grown on demand) so per-layer calls don't reallocate.
+static void cuda_dev_to_host_f32(float *dst, const void *src, size_t count, hal::DType src_dtype,
+                                 core::Tensor &stage_f32)
+{
+    if (src_dtype == hal::DType::Float32) {
+        CHECK_CUDA(cudaMemcpy(dst, src, count * sizeof(float), cudaMemcpyDeviceToHost));
+        return;
+    }
+    if (stage_f32.size() < count) {
+        stage_f32 = core::Tensor::gpu_only({count}, hal::DType::Float32);
+    }
+    hal::convert_dtype(stage_f32.raw_data_gpu(), src, count, src_dtype, hal::DType::Float32);
+    stage_f32.mark_dirty(Tensor::DataLocation::GPU);
+    CHECK_CUDA(cudaMemcpy(dst, stage_f32.raw_data_gpu(), count * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
 static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache,
                                       bool last_only)
 {
@@ -381,6 +400,25 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
     const double pt_mask = prof_p ? pt_now() : 0.0;
 
     double acc_proj = 0, acc_attn = 0, acc_mlp = 0;
+
+    // Interpretability hooks (activation_hook.h): opt-in per-layer D2H
+    // copies. Fetched once — toggling hooks mid-forward is unsupported.
+    const ActivationHooks &ahooks = activation_hooks();
+    const bool want_hidden_hook = (ahooks.layer_hidden != nullptr);
+    const bool want_attn_hook = (ahooks.attention_row != nullptr);
+    std::vector<float> hook_hidden_host;
+    std::vector<float> hook_scores_host;
+    core::Tensor hook_stage_f32;
+    if (want_hidden_hook) {
+        hook_hidden_host.resize(seq_len * hidden);
+    }
+    if (want_attn_hook) {
+        hook_scores_host.resize(n_heads * seq_len * seq_len);
+        if (dtype != hal::DType::Float32) {
+            hook_stage_f32 = core::Tensor::gpu_only({n_heads * seq_len * seq_len}, hal::DType::Float32);
+        }
+    }
+
     for (size_t layer_idx = 0; layer_idx < layers.size(); ++layer_idx) {
         const double seg0 = prof_p ? pt_now() : 0.0;
         const auto *blk = layers[layer_idx].get();
@@ -477,6 +515,19 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         // mask=nullptr → the kernel applies causal masking (i > q_idx) itself.
         hal::fused_masked_softmax(scores.raw_data_gpu(), nullptr, n_heads, seq_len, seq_len, dtype, scale);
 
+        if (want_attn_hook) {
+            // scores is {n_heads, seq, seq} row-major; row q attends to
+            // positions [0, q] under the causal mask applied above.
+            cuda_dev_to_host_f32(hook_scores_host.data(), scores.raw_data_gpu(), hook_scores_host.size(), dtype,
+                                 hook_stage_f32);
+            for (size_t h = 0; h < n_heads; ++h) {
+                for (size_t q = 0; q < seq_len; ++q) {
+                    ahooks.attention_row(static_cast<int>(layer_idx), static_cast<int>(h), q,
+                                         hook_scores_host.data() + (h * seq_len + q) * seq_len, q + 1);
+                }
+            }
+        }
+
         {
             Tensor v_t = Tensor::gpu_view(v_hs_buf.raw_data_gpu(), {n_heads, seq_len, head_dim}, dtype);
             Tensor ctx_t = Tensor::gpu_view(ctx_hs_buf.raw_data_gpu(), {n_heads, seq_len, head_dim}, dtype);
@@ -519,6 +570,12 @@ static Tensor llama_forward_cuda_impl(const model::LLaMAModel &model, const Tens
         hal::add_inplace_mixed(hidden_states_gpu.raw_data_gpu(), mlp_down.raw_data_gpu(), seq_len * hidden,
                                stream_dtype, dtype);
         hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
+        if (want_hidden_hook) {
+            // hidden_states_gpu is the FP32 residual stream — direct D2H.
+            CHECK_CUDA(cudaMemcpy(hook_hidden_host.data(), hidden_states_gpu.raw_data_gpu(),
+                                  hook_hidden_host.size() * sizeof(float), cudaMemcpyDeviceToHost));
+            ahooks.layer_hidden(static_cast<int>(layer_idx), hook_hidden_host.data(), seq_len, hidden);
+        }
         if (prof_p) {
             const double seg3 = pt_now();
             acc_proj += seg1 - seg0;
@@ -849,6 +906,9 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model, KVC
 Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache)
 {
     if (cache == nullptr || pos + 1 > 4096) return Tensor();
+    // Captured graphs can't emit activation hooks — fall back to the eager
+    // path while interpretability hooks are installed.
+    if (activation_hooks_enabled()) return Tensor();
     {
         if (env_nonempty("SERIUS_NO_GRAPH")) return Tensor();
     }
@@ -1109,6 +1169,20 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
         }
     }
 
+    // Interpretability hooks (activation_hook.h): opt-in D2H copies.
+    const ActivationHooks &ahooks = activation_hooks();
+    const bool want_hidden_hook = (ahooks.layer_hidden != nullptr);
+    const bool want_attn_hook = (ahooks.attention_row != nullptr);
+    std::vector<float> hook_hidden_host(want_hidden_hook ? hidden : 0);
+    std::vector<float> hook_scores_host;
+    core::Tensor hook_stage_f32;
+    if (want_attn_hook) {
+        hook_scores_host.resize(n_heads * (pos + 1));
+        if (dtype != hal::DType::Float32) {
+            hook_stage_f32 = core::Tensor::gpu_only({n_heads * (pos + 1)}, hal::DType::Float32);
+        }
+    }
+
     for (size_t layer_idx = layer_begin; layer_idx < layer_end && layer_idx < layers.size(); ++layer_idx) {
         const auto *blk = layers[layer_idx].get();
         hal::rmsnorm_mixed(normed_buf.raw_data_gpu(), hidden_states_gpu.raw_data_gpu(),
@@ -1275,9 +1349,20 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
             core::blas::batched_matmul(q_hs, k_hs.transpose(1, 2), scores);
 
             float scale = (dtype == hal::DType::Float32) ? (1.0F / std::sqrt(static_cast<float>(head_dim))) : 1.0F;
-            hal::fused_masked_softmax(scores.raw_data_gpu(), decode_mask_for(effective_len), n_heads, 1, effective_len,
-                                      dtype, scale);
+            hal::fused_masked_softmax(scores.raw_data_gpu(), decode_mask_for(effective_len), n_heads, 1,
+                                      effective_len, dtype, scale);
             scores.mark_dirty(Tensor::DataLocation::GPU);
+
+            if (want_attn_hook) {
+                // scores is {n_heads, 1, effective_len} — the single query
+                // row attends to all effective_len cached positions.
+                cuda_dev_to_host_f32(hook_scores_host.data(), scores.raw_data_gpu(),
+                                     static_cast<size_t>(n_heads) * effective_len, dtype, hook_stage_f32);
+                for (size_t h = 0; h < n_heads; ++h) {
+                    ahooks.attention_row(static_cast<int>(layer_idx), static_cast<int>(h), 0,
+                                         hook_scores_host.data() + h * effective_len, effective_len);
+                }
+            }
 
             Tensor context_heads({n_heads, 1, head_dim}, dtype);
             context_heads.alloc_gpu();
@@ -1313,6 +1398,11 @@ static Tensor llama_forward_single_token_cuda_impl(const model::LLaMAModel &mode
         }
         hal::add_inplace_mixed(hidden_states_gpu.raw_data_gpu(), mlp_down.raw_data_gpu(), hidden, stream_dtype, dtype);
         hidden_states_gpu.mark_dirty(Tensor::DataLocation::GPU);
+        if (want_hidden_hook) {
+            CHECK_CUDA(cudaMemcpy(hook_hidden_host.data(), hidden_states_gpu.raw_data_gpu(),
+                                  hidden * sizeof(float), cudaMemcpyDeviceToHost));
+            ahooks.layer_hidden(static_cast<int>(layer_idx), hook_hidden_host.data(), 1, hidden);
+        }
     }
 
     // Partial-offload prefix: hand the FP32 residual stream back to the host

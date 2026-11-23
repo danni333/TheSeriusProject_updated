@@ -122,8 +122,9 @@ E2E stdio+HTTP, `test_mcp_server` 11/11).
 - `ExecutionPlan::execute` ora ri-esegue davvero il grafo: `GraphOp::executor`
   copiado da `Node::forward_fn` (replay zero-copy via `detail::replay_forward`,
   view host per operand float32/contiguous); `in_replay()` evita le catture
-  Tensor di backward/forward durante il replay. `trace()` dummy resta per
-  compatibilità test (i suoi piani non sono eseguibili).
+  Tensor di backward/forward durante il replay. `trace(void*)` dummy
+  **rimosso** 2026-11-23: `void*` non può portare un forward callable, l'unico
+  tracing è `trace_graph(Node*)`; i test usano grafi autograd reali.
 - Optimization passes implementati: `fuse_layernorm_linear` (fusione
   norm→matmul con executor composto dai due executor originali),
   `eliminate_redundant_copies` (match sul nome reale `contiguous(...)` +
@@ -132,8 +133,9 @@ E2E stdio+HTTP, `test_mcp_server` 11/11).
   picco tensor vivi invece della somma conservativa). Fix leak workspace:
   `~ExecutionPlan` libera via `hal::IBackend::free`, `compile()` alloca col
   CPU backend alla dimensione peak (non più `::operator new` di `total_size`).
-  `fuse_elementwise_chains` fonde tutte le catene; `is_executable()` +
-  errore esplicito per piani da `trace()` sintetico.
+  `fuse_elementwise_chains` fonde `add(bias rank-1)→gelu` reali in
+  `fused_bias_gelu` (era `"bias"→"gelu"` che non matchava mai grafo reale);
+  `is_executable()` + errore esplicito per op senza `forward_fn`.
 - Test: `TraceGraphFromRealAutogradGraph`, `TraceGraphNullIsEmpty`,
   `ExecuteReplaysTracedGraph`, `ExecuteBranchingGraph`, `IsExecutable`,
   `FuseLayernormLinear`, `PreallocateBuffersUsesLivenessPeak`,

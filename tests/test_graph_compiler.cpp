@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <set>
+
 #include "autograd/ops.h"
 #include "optim/graph_compiler.h"
 #include "tensor/tensor.h"
@@ -10,13 +12,28 @@ using namespace serius::core;
 
 TEST(GraphCompiler, TraceCreatesOps)
 {
-    GraphCompiler compiler;
-    std::vector<size_t> input_shape = {10, 64};
+    core::Tensor a_data({4, 4}), b_data({4, 4});
+    a_data.rand();
+    b_data.rand();
+    auto *a = new core::autograd::Node(std::move(a_data));
+    auto *b = new core::autograd::Node(std::move(b_data));
+    a->requires_grad = b->requires_grad = false;
 
-    compiler.trace(nullptr, input_shape);
+    auto *mm = core::autograd::ops::matmul(a, b);
+    auto *out = core::autograd::ops::relu(mm);
+
+    GraphCompiler compiler;
+    compiler.trace_graph(out);
 
     const auto& ops = compiler.get_ops();
-    EXPECT_GT(ops.size(), 0);
+    ASSERT_EQ(ops.size(), 2u);
+    EXPECT_EQ(ops[0].type, "matmul");
+    EXPECT_EQ(ops[1].type, "relu");
+
+    delete out;
+    delete mm;
+    delete a;
+    delete b;
 }
 
 TEST(GraphCompiler, FuseElementwise)
@@ -25,21 +42,48 @@ TEST(GraphCompiler, FuseElementwise)
     cfg.fuse_elementwise = true;
     GraphCompiler compiler(cfg);
 
-    std::vector<size_t> input_shape = {10, 64};
-    compiler.trace(nullptr, input_shape);
+    // out = gelu(add(x, bias)) — bias {64} broadcasts over x {10,64}, the
+    // same pattern ops::fused_bias_gelu implements natively.
+    core::Tensor x_data({10, 64}), b_data({64});
+    x_data.rand();
+    b_data.rand();
+    auto *x = new core::autograd::Node(std::move(x_data));
+    auto *b = new core::autograd::Node(std::move(b_data));
+    x->requires_grad = b->requires_grad = false;
+
+    auto *sum = core::autograd::ops::add(x, b);
+    auto *out = core::autograd::ops::gelu(sum);
+
+    compiler.trace_graph(out);
     compiler.optimize();
 
     const auto& ops = compiler.get_ops();
+    ASSERT_EQ(ops.size(), 1u);
+    EXPECT_EQ(ops[0].type, "fused_bias_gelu");
+    EXPECT_EQ(ops[0].inputs.size(), 2u);
 
-    // Should have fused bias + gelu
-    bool has_fused = false;
-    for (const auto& op : ops) {
-        if (op.type == "fused_bias_gelu") {
-            has_fused = true;
-            break;
-        }
+    // The fused plan must reproduce the eager result.
+    auto plan = compiler.compile();
+    ASSERT_NE(plan, nullptr);
+    EXPECT_TRUE(plan->is_executable());
+    EXPECT_EQ(plan->num_inputs(), 2u);
+    EXPECT_EQ(plan->num_outputs(), 1u);
+
+    std::vector<Tensor> inputs;
+    inputs.push_back(x->data);
+    inputs.push_back(b->data);
+    std::vector<Tensor> outputs;
+    ASSERT_NO_THROW(plan->execute(inputs, outputs));
+    ASSERT_EQ(outputs.size(), 1u);
+    ASSERT_EQ(outputs[0].shape(), out->data.shape());
+    for (size_t i = 0; i < outputs[0].size(); ++i) {
+        EXPECT_FLOAT_EQ(outputs[0][i], out->data[i]);
     }
-    EXPECT_TRUE(has_fused);
+
+    delete out;
+    delete sum;
+    delete x;
+    delete b;
 }
 
 TEST(GraphCompiler, EliminateRedundantCopies)
@@ -48,61 +92,112 @@ TEST(GraphCompiler, EliminateRedundantCopies)
     cfg.eliminate_redundant_copies = true;
     GraphCompiler compiler(cfg);
 
-    std::vector<size_t> input_shape = {10, 64};
-    compiler.trace(nullptr, input_shape);
+    // out = relu(contiguous(transpose(matmul(a, b)))) — the transpose makes
+    // contiguous() a real node that the pass must remove.
+    core::Tensor a_data({4, 4}), b_data({4, 4});
+    a_data.rand();
+    b_data.rand();
+    auto *a = new core::autograd::Node(std::move(a_data));
+    auto *b = new core::autograd::Node(std::move(b_data));
+    a->requires_grad = b->requires_grad = false;
+
+    auto *mm = core::autograd::ops::matmul(a, b);
+    auto *t = core::autograd::ops::transpose(mm, 0, 1);
+    auto *c = core::autograd::ops::contiguous(t);
+    ASSERT_NE(c, t);
+    auto *out = core::autograd::ops::relu(c);
+
+    compiler.trace_graph(out);
     compiler.optimize();
 
     const auto& ops = compiler.get_ops();
-
-    // Should not have contiguous operations
     for (const auto& op : ops) {
-        EXPECT_NE(op.type, "contiguous");
+        EXPECT_FALSE(op.type == "contiguous" ||
+                     op.type.rfind("contiguous(", 0) == 0);
     }
+    EXPECT_GT(ops.size(), 0u);
+
+    delete out;
+    delete c;
+    delete t;
+    delete mm;
+    delete a;
+    delete b;
 }
 
 TEST(ExecutionPlan, CreateFromCompiler)
 {
+    core::Tensor a_data({4, 4}), b_data({4, 4});
+    a_data.rand();
+    b_data.rand();
+    auto *a = new core::autograd::Node(std::move(a_data));
+    auto *b = new core::autograd::Node(std::move(b_data));
+    a->requires_grad = b->requires_grad = false;
+
+    auto *mm = core::autograd::ops::matmul(a, b);
+    auto *out = core::autograd::ops::relu(mm);
+
     GraphCompiler compiler;
-    std::vector<size_t> input_shape = {10, 64};
-    compiler.trace(nullptr, input_shape);
+    compiler.trace_graph(out);
     compiler.optimize();
 
     auto plan = compiler.compile();
     EXPECT_NE(plan, nullptr);
     EXPECT_GT(plan->num_ops(), 0);
+
+    delete out;
+    delete mm;
+    delete a;
+    delete b;
 }
 
-TEST(ExecutionPlan, ExecuteThrowsNotImplemented)
+TEST(ExecutionPlan, ExecuteThrowsOnMissingReplay)
 {
-    GraphCompiler compiler;
-    std::vector<size_t> input_shape = {10, 64};
-    compiler.trace(nullptr, input_shape);
-    compiler.optimize();
+    core::Tensor leaf_data({4, 4});
+    leaf_data.rand();
+    auto *leaf = new core::autograd::Node(std::move(leaf_data), false);
 
+    // A node with children but no forward_fn: it traces into a plan op with
+    // a null executor, so execute() must fail loudly.
+    auto *out = new core::autograd::Node(core::Tensor({4, 4}), false);
+    out->children = {leaf};
+    out->name = "custom_op";
+
+    GraphCompiler compiler;
+    compiler.trace_graph(out);
     auto plan = compiler.compile();
+    ASSERT_NE(plan, nullptr);
+    EXPECT_FALSE(plan->is_executable());
 
     std::vector<Tensor> inputs;
-    inputs.emplace_back(input_shape);
-    inputs[0].fill(1.0f);
-
+    inputs.push_back(leaf->data);
     std::vector<Tensor> outputs;
-    outputs.emplace_back(input_shape);
-
-    // Synthetic trace() ops carry no replay function, so execution must fail
-    // loudly rather than silently copying inputs to outputs.
     EXPECT_THROW(plan->execute(inputs, outputs), std::runtime_error);
+
+    delete out;
+    delete leaf;
 }
 
 TEST(ExecutionPlan, IsExecutable)
 {
-    // Synthetic trace() plans are descriptive only.
-    GraphCompiler synth;
-    synth.trace(nullptr, {4, 4});
-    auto synth_plan = synth.compile();
-    ASSERT_NE(synth_plan, nullptr);
-    EXPECT_FALSE(synth_plan->is_executable());
+    // Plans containing an op without a replay function are not executable.
+    core::Tensor leaf_data({4, 4});
+    leaf_data.rand();
+    auto *leaf = new core::autograd::Node(std::move(leaf_data), false);
+    auto *custom = new core::autograd::Node(core::Tensor({4, 4}), false);
+    custom->children = {leaf};
+    custom->name = "custom_op";
 
-    // Plans from trace_graph() carry replay functions.
+    GraphCompiler no_replay;
+    no_replay.trace_graph(custom);
+    auto no_replay_plan = no_replay.compile();
+    ASSERT_NE(no_replay_plan, nullptr);
+    EXPECT_FALSE(no_replay_plan->is_executable());
+
+    delete custom;
+    delete leaf;
+
+    // Plans from trace_graph() on real ops carry replay functions.
     core::Tensor a_data({4, 4}), b_data({4, 4});
     a_data.rand();
     b_data.rand();
@@ -467,14 +562,30 @@ TEST(GraphCompiler, DisableOptimizations)
     cfg.eliminate_redundant_copies = false;
 
     GraphCompiler compiler(cfg);
-    std::vector<size_t> input_shape = {10, 64};
-    compiler.trace(nullptr, input_shape);
+
+    // out = gelu(add(x, bias)) — same shape as FuseElementwise.
+    core::Tensor x_data({10, 64}), b_data({64});
+    x_data.rand();
+    b_data.rand();
+    auto *x = new core::autograd::Node(std::move(x_data));
+    auto *b = new core::autograd::Node(std::move(b_data));
+    x->requires_grad = b->requires_grad = false;
+
+    auto *sum = core::autograd::ops::add(x, b);
+    auto *out = core::autograd::ops::gelu(sum);
+
+    compiler.trace_graph(out);
     compiler.optimize();
 
     const auto& ops = compiler.get_ops();
+    ASSERT_EQ(ops.size(), 2u);
+    std::set<std::string> types;
+    for (const auto& op : ops) { types.insert(op.type); }
+    EXPECT_TRUE(types.count("add") == 1);
+    EXPECT_TRUE(types.count("gelu") == 1);
 
-    // Should not have fused operations
-    for (const auto& op : ops) {
-        EXPECT_NE(op.type, "fused_bias_gelu");
-    }
+    delete out;
+    delete sum;
+    delete x;
+    delete b;
 }

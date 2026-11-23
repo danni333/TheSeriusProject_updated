@@ -119,6 +119,8 @@
 
 **Note:** Funzione di tracing dichiarata ma non implementata in questa versione.
 
+> **Aggiornamento 2026-11-23 — RISOLTO:** `trace(void*)` rimosso (era un placeholder impossibile da implementare: `void*` non porta un forward callable). Il tracing reale è `trace_graph(Node*)` con replay executor via `Node::forward_fn`.
+
 ---
 
 ### 1.10 Flash Attention Backward - CPU Not Implemented (1)
@@ -481,8 +483,8 @@ I seguenti file contengono riferimenti a "todo" come parte della documentazione 
    - Backward pass su CPU lancia eccezione
    - Richiede implementazione CPU o fallback
 
-9. **Graph Compiler Trace** - 1 not implemented
-   - Metodo trace() per dummy forward pass
+9. ~~**Graph Compiler Trace**~~ - 1 not implemented
+   - ~~Metodo trace() per dummy forward pass~~ ✅ rimosso 2026-11-23; tracing reale via `trace_graph(Node*)`
 
 10. **Stress Runner** - 2 Placeholder
     - VRAM monitoring (CUDA)
