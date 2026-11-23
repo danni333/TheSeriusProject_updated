@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 
+#include "distributed/bootstrap.h"
 #include "tokenizer/bpe.h"
 #include "transformer/llama_model.h"
 
@@ -17,6 +18,9 @@ struct LlamaCliModel
     BPETokenizer tokenizer;
     std::string resolved_path;  ///< local path after hf:// resolution
     bool weights_loaded = false;
+    /// Keeps distributed communicators alive — the model's topology holds
+    /// raw pointers into this context. Null for single-node launches.
+    std::shared_ptr<distributed::DistributedContext> dist;
 };
 
 /// Load a LLaMA model for CLI commands (chat, eval, ...).

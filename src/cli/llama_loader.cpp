@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 
+#include "../distributed/bootstrap.h"
 #include "../hub/downloader.h"
 #include "cli/download_progress.h"
 #include "infer/llama_inference.h"
@@ -48,6 +49,20 @@ std::unique_ptr<LlamaCliModel> load_llama_cli_model(const std::string &model_pat
 
     auto out = std::make_unique<LlamaCliModel>();
     out->resolved_path = model_path;
+
+    // Distributed launch: SERIUS_RANK/WORLD_SIZE/TP_SIZE/PP_SIZE env vars.
+    // Single-node env (or no vars) => nullptr context, zero overhead.
+    try {
+        out->dist = distributed::DistributedContext::bootstrap();
+    } catch (const std::exception &e) {
+        std::cerr << "[Serius] Distributed bootstrap failed: " << e.what() << "\n";
+        return nullptr;
+    }
+    if (out->dist != nullptr) {
+        const auto &env = out->dist->env();
+        std::cout << "[Serius] Distributed: rank=" << env.rank << "/" << env.world_size
+                  << " tp_size=" << env.tp_size << " pp_size=" << env.pp_size << " backend=" << env.backend << "\n";
+    }
     BPETokenizer &tokenizer = out->tokenizer;
 
     // Load Tokenizer
@@ -152,7 +167,9 @@ std::unique_ptr<LlamaCliModel> load_llama_cli_model(const std::string &model_pat
               << ", layers=" << config.num_hidden_layers << ", heads=" << config.num_attention_heads
               << ", kv_heads=" << config.num_key_value_heads << ")...\n";
 
-    auto model = std::make_unique<model::LLaMAModel>(config);
+    const distributed::DistributedTopology &topology =
+        (out->dist != nullptr) ? out->dist->topology() : distributed::DistributedTopology::single_node();
+    auto model = std::make_unique<model::LLaMAModel>(config, topology);
 
     if (std::filesystem::is_regular_file(model_path) && model_path.size() >= 5 &&
         model_path.compare(model_path.size() - 5, 5, ".gguf") == 0) {

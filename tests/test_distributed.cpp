@@ -10,6 +10,7 @@
 
 #include "distributed/comm.h"
 #include "distributed/data_parallel.h"
+#include "distributed/bootstrap.h"
 #include "distributed/local_comm.h"
 #include "distributed/pipeline.h"
 #include "distributed/tensor_parallel.h"
@@ -849,6 +850,94 @@ TEST(DistributedComm, AllReduceLargeBuffer)
         EXPECT_NEAR(results[0][i], expected, 1e-3f)
             << "Large AllReduce mismatch at element " << i;
     }
+}
+
+
+// ============================================================
+// Distributed bootstrap env parsing
+// ============================================================
+
+namespace {
+
+const char *lookup_env(std::initializer_list<std::pair<const char *, const char *>> vars, const char *name)
+{
+    for (const auto &kv : vars) {
+        if (std::string(kv.first) == name) return kv.second;
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+TEST(DistributedBootstrap, DefaultsToSingleNode)
+{
+    auto env = distributed_env_from_getenv([](const char *) { return nullptr; });
+    EXPECT_FALSE(env.is_distributed());
+    EXPECT_EQ(env.world_size, 1);
+    EXPECT_EQ(env.tp_size, 1);
+    EXPECT_EQ(env.pp_size, 1);
+}
+
+TEST(DistributedBootstrap, ParsesPpLaunch)
+{
+    auto env = distributed_env_from_getenv([&](const char *name) -> const char * {
+        return lookup_env({{"SERIUS_RANK", "1"}, {"SERIUS_WORLD_SIZE", "2"}, {"SERIUS_PP_SIZE", "2"}}, name);
+    });
+    EXPECT_TRUE(env.is_distributed());
+    EXPECT_EQ(env.rank, 1);
+    EXPECT_EQ(env.world_size, 2);
+    EXPECT_EQ(env.pp_size, 2);
+
+    auto topo = topology_from_env(env, nullptr, nullptr);
+    EXPECT_EQ(topo.pp_rank, 1);
+    EXPECT_EQ(topo.pp_size, 2);
+    EXPECT_EQ(topo.tp_rank, 0);
+}
+
+TEST(DistributedBootstrap, RejectsTpAndPpCombined)
+{
+    EXPECT_THROW(
+        distributed_env_from_getenv([&](const char *name) -> const char * {
+            if (std::string(name) == "SERIUS_WORLD_SIZE") return "4";
+            if (std::string(name) == "SERIUS_TP_SIZE") return "2";
+            if (std::string(name) == "SERIUS_PP_SIZE") return "2";
+            return nullptr;
+        }),
+        std::invalid_argument);
+}
+
+TEST(DistributedBootstrap, RejectsWorldMismatch)
+{
+    EXPECT_THROW(
+        distributed_env_from_getenv([&](const char *name) -> const char * {
+            if (std::string(name) == "SERIUS_WORLD_SIZE") return "3";
+            if (std::string(name) == "SERIUS_TP_SIZE") return "2";
+            return nullptr;
+        }),
+        std::invalid_argument);
+}
+
+TEST(DistributedBootstrap, RejectsInvalidBackend)
+{
+    EXPECT_THROW(
+        distributed_env_from_getenv([&](const char *name) -> const char * {
+            if (std::string(name) == "SERIUS_WORLD_SIZE") return "2";
+            if (std::string(name) == "SERIUS_COMM_BACKEND") return "gloo";
+            return nullptr;
+        }),
+        std::invalid_argument);
+}
+
+TEST(DistributedBootstrap, RankBoundsEnforced)
+{
+    EXPECT_THROW(
+        distributed_env_from_getenv([&](const char *name) -> const char * {
+            if (std::string(name) == "SERIUS_WORLD_SIZE") return "2";
+            if (std::string(name) == "SERIUS_RANK") return "2";
+            if (std::string(name) == "SERIUS_TP_SIZE") return "2";
+            return nullptr;
+        }),
+        std::invalid_argument);
 }
 
 }  // namespace test

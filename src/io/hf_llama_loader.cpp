@@ -423,12 +423,29 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
     }
 
     const model::LLamaConfig &cfg = model->config();
+    const auto &topo = model->topology();
+    if (topo.tp_size > 1) {
+        // GGUF tensors are loaded whole and fused into QuantWeight rows
+        // (qkv_w / gate_up_w) — there is no safe way to row-shard them per
+        // TP rank today. Fail explicitly instead of overflowing the
+        // sharded param buffers. Use safetensors for TP launches.
+        std::cerr << "[Loader] GGUF + tensor parallelism (tp_size=" << topo.tp_size
+                  << ") is not supported — use safetensors weights or pipeline parallelism\n";
+        return false;
+    }
     const size_t vocab_size = cfg.vocab_size;
     const size_t hidden = cfg.hidden_size;
     const size_t num_layers = cfg.num_hidden_layers;
     const size_t inter_size = cfg.intermediate_size;
     const size_t head_dim = hidden / cfg.num_attention_heads;
     const size_t kv_dim = cfg.num_key_value_heads * head_dim;
+
+    // Pipeline parallelism: this rank owns global layers
+    // [pp_start, pp_start + local layer count).
+    const int pp_rank = topo.pp_rank;
+    const int pp_size = topo.pp_size > 0 ? topo.pp_size : 1;
+    const size_t pp_layers_per_stage = num_layers / static_cast<size_t>(pp_size);
+    const size_t pp_start = static_cast<size_t>(pp_rank) * pp_layers_per_stage;
 
     // Helper: copy or transpose a dequantised float tensor from the map into a raw buffer.
     auto copy_tensor = [&](const std::string &name, float *dst, size_t rows, size_t cols, bool should_transpose,
@@ -489,10 +506,11 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
 #endif
     }();
 
-    // Layers
-    for (size_t l = 0; l < num_layers; ++l) {
-        if (l >= model->layers().size()) break;
-        model::LLaMABlock *block = model->layers()[l].get();
+    // Layers — local index li maps to global transformer layer pp_start+li.
+    for (size_t li = 0; li < model->layers().size(); ++li) {
+        const size_t l = pp_start + li;
+        if (l >= num_layers) break;
+        model::LLaMABlock *block = model->layers()[li].get();
         std::string pfx = "blk." + std::to_string(l) + ".";
 
         require_tensor(pfx + "attn_norm.weight", block->input_layernorm_weight->data.data(), 1, hidden, false);
@@ -574,8 +592,10 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
         return w;
     };
 
-    for (size_t l = 0; l < model->layers().size(); ++l) {
-        model::LLaMABlock *block = model->layers()[l].get();
+    for (size_t li = 0; li < model->layers().size(); ++li) {
+        const size_t l = pp_start + li;
+        if (l >= num_layers) break;
+        model::LLaMABlock *block = model->layers()[li].get();
         const std::string p = "blk." + std::to_string(l) + ".";
         block->q_w = take_quant(p + "attn_q.weight", rope_perm, hidden, hidden);
         block->k_w = take_quant(p + "attn_k.weight", rope_perm, hidden, kv_dim);

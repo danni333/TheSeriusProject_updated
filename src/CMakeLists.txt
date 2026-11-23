@@ -78,6 +78,7 @@ add_library(serius_core
     safety/sanitizer.cpp
     debug/nan_debugger.cpp
     distributed/local_comm.cpp
+    distributed/bootstrap.cpp
     distributed/data_parallel.cpp
     distributed/pipeline.cpp
     distributed/tensor_parallel.cpp
