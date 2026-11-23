@@ -1,18 +1,19 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
-#include <vector>
-#include <unordered_map>
 #include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
+#include "../quant/quant_weight.h"
 #include "../tensor/tensor.h"
 #include "../transformer/model.h"
-#include "../quant/quant_weight.h"
 
 namespace serius {
 namespace io {
 
+// Values match ggml.h GGML_TYPE_* exactly — do not reorder.
 enum class GGMLType : uint32_t {
     F32 = 0,
     F16 = 1,
@@ -28,12 +29,28 @@ enum class GGMLType : uint32_t {
     Q5_K = 13,
     Q6_K = 14,
     Q8_K = 15,
-    I8 = 16,
-    I16 = 17,
-    I32 = 18,
-    I64 = 19,
-    F64 = 20,
-    BF16 = 21
+    IQ2_XXS = 16,
+    IQ2_XS = 17,
+    IQ3_XXS = 18,
+    IQ1_S = 19,
+    IQ4_NL = 20,
+    IQ3_S = 21,
+    IQ2_S = 22,
+    IQ4_XS = 23,
+    I8 = 24,
+    I16 = 25,
+    I32 = 26,
+    I64 = 27,
+    F64 = 28,
+    IQ1_M = 29,
+    BF16 = 30,
+    TQ1_0 = 34,
+    TQ2_0 = 35,
+    MXFP4 = 39,
+    NVFP4 = 40,
+    Q1_0 = 41,
+    Q2_0 = 42,
+    F8_E4M3 = 43
 };
 
 struct GGUFMeta
@@ -55,11 +72,11 @@ struct GGUFTensorInfo
 /// Vocabulary and merge rules extracted from a GGUF file's KV metadata.
 struct GGUFTokenizerData
 {
-    std::string              tokenizer_model;   ///< "llama", "gpt2", etc.
-    std::vector<std::string> tokens;            ///< token strings, index = token-id
-    std::vector<int32_t>     token_types;       ///< 1=normal, 3=control, 6=byte, etc.
-    std::vector<float>       scores;            ///< SentencePiece log-prob scores
-    std::vector<std::string> merges;            ///< BPE merge rules: "▁Ġ a" etc.
+    std::string tokenizer_model;       ///< "llama", "gpt2", etc.
+    std::vector<std::string> tokens;   ///< token strings, index = token-id
+    std::vector<int32_t> token_types;  ///< 1=normal, 3=control, 6=byte, etc.
+    std::vector<float> scores;         ///< SentencePiece log-prob scores
+    std::vector<std::string> merges;   ///< BPE merge rules: "▁Ġ a" etc.
     int32_t bos_token_id = 1;
     int32_t eos_token_id = 2;
     bool valid = false;
@@ -69,11 +86,24 @@ GGUFMeta load_gguf_metadata(const std::string &path);
 
 std::vector<std::string> gguf_tensor_names(const std::string &path);
 
+/// Aggregate weight statistics read in a single pass over the GGUF tensor
+/// infos: total parameter count (sum of element counts across all tensors)
+/// and total payload bytes in the data section. `valid` is false when the
+/// file is not a readable GGUF.
+struct GGUFWeightStats
+{
+    uint64_t total_params = 0;
+    uint64_t total_bytes = 0;
+    uint64_t tensors_counted = 0;
+    bool valid = false;
+};
+
+GGUFWeightStats gguf_weight_stats(const std::string &path);
+
 std::optional<GGUFTensorInfo> get_tensor_info(const std::string &path, const std::string &tensor_name);
 
 std::unordered_map<std::string, core::Tensor> load_all_tensors(
-    const std::string &path,
-    std::unordered_map<std::string, quant::QuantWeight> *quant_out = nullptr);
+    const std::string &path, std::unordered_map<std::string, quant::QuantWeight> *quant_out = nullptr);
 
 /// Returns the value of `general.architecture` (e.g. "llama", "qwen2"), or "".
 std::string gguf_architecture(const std::string &path);

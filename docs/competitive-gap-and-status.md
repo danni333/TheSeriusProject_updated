@@ -61,11 +61,11 @@ Obiettivo dichiarato del repo resta **didattico / estensibile**; la roadmap `tod
 | Componente | Stato |
 |------------|--------|
 | `config_loader` | JSON → ModelConfig (documentato in architettura) |
-| `gguf_loader` | Metadati, tokenizer, **caricamento pesi tensor end-to-end**: dtype supportati F32/F16/BF16/Q4_0/Q4_1/Q8_0/Q4_K/Q5_K/Q6_K/Q5_0 con dequant packed per il decode; dtype non supportati (Q2_K/Q3_K/Q8_K/IQ/TQ) falliscono esplicitamente per tensori critici (attention/FFN), skippati con warning per non-critici |
+| `gguf_loader` | Metadati, tokenizer, **caricamento pesi tensor end-to-end**: dtype supportati F32/F16/BF16/Q4_0/Q4_1/Q8_0/Q5_0/Q5_1/Q4_K/Q5_K/Q6_K/Q2_K/Q3_K/Q8_K/IQ4_NL/IQ4_XS/TQ1_0/TQ2_0 con dequant verificato contro `gguf` (Python) — Q3_K, TQ2_0 bit-exact; generazione coerente verificata su Qwen2.5-0.5B per Q3_K_M, Q2_K, IQ4_NL, IQ4_XS (TQ2_0 degenere = limite intrinseco del quant, confermato vs llama.cpp). Le K-quant non-native (Q2_K/Q3_K/Q8_K/IQ/TQ) vengono dequantizzate in FP32 e requantizzate a Q4_1 per il fast path `matvec_q`. Dtype non supportati (IQ1/IQ2/IQ3 families, MXFP4, NVFP4, …) falliscono esplicitamente per tensori critici, skippati con warning per non-critici |
 | `safetensors_loader` + `hf_llama_loader` | Caricamento pesi LLaMA da `.safetensors` (anche sharded) |
 | `simple_weights_loader` | Presente (test dedicato) |
 
-Allineamento con `docs/architecture.md`: la frase su “GGUF/safetensors in fase di implementazione” per il flusso completo resta in parte valida: **safetensors LLaMA sì; GGUF pesi no**.
+Allineamento con `docs/architecture.md`: la frase su “GGUF/safetensors in fase di implementazione” per il flusso completo non è più valida: **entrambi i formati caricano pesi end-to-end** (GGUF con 17 dtype, safetensors LLaMA).
 
 ### 4.3 Core build (`src/CMakeLists.txt`)
 
@@ -79,13 +79,7 @@ Allineamento con `docs/architecture.md`: la frase su “GGUF/safetensors in fase
 
 **Target di test registrati con `gtest_discover_tests`:** tensor, autograd, hal, (CUDA: fused, llama_inference_cuda), paged_kv, logger, quant, flash_attn, config_loader, simple_weights_loader, llama_model, sampler, guardrails, nan_debugger, transformer, transformer_optim, amp, blas, dataloader, tokenizer, training, kv_cache_logic, memory, distributed, thread_pool.
 
-**Target `add_executable` ma non passati a `gtest_discover_tests`:**
-
-- `test_cuda` (solo se CUDA)
-- `test_distributed_llama`
-- `test_pipeline_llama`
-
-→ Con `ctest` dalla build standard, questi tre **possono non essere eseguiti** automaticamente (restano eseguibili manuali).
+**Tutti i target `add_executable` sono registrati in `ctest`** via `gtest_discover_tests` ( inclusi `test_cuda`, `test_distributed_llama`, `test_pipeline_llama`).
 
 Benchmark: `bench_full`, `bench_matmul`, `bench_memory`, `bench_mixed_precision`, `bench_quant` (non necessariamente legati a `ctest`).
 
@@ -113,7 +107,8 @@ Stato al 2026-11-22 (dettaglio completo in `AUDIT_STUBS_AND_GAPS_2026-11-22.md`)
 3. ~~**Mappare GGUF sui modelli**~~ — **FATTO**: `load_llama_weights_from_gguf_file` con pesi packed quantizzati.
 4. ~~**Quantizzazione nel forward**~~ — **FATTO**: fast path packed-quant GEMV nel decode (`llama_inference.cpp`).
 5. ~~**Adapter agent ↔ modelli reali**~~ — **FATTO**: `agent/llama_model_adapter` + `ToolRegistry` in `ReActEngine`.
-6. **Residui aperti**: Vulkan/Metal backend non compilano se attivati; `graph_compiler`/`autoopt`/`rag::embeddings` ancora placeholder; `bench/latency` ora usa inferenza reale; `test_cuda`/`test_distributed_llama`/`test_pipeline_llama` registrati in ctest; manca benchmark vs llama.cpp.
+6. **Residui aperti**: Vulkan/Metal backend rimossi (solo CPU+CUDA); `graph_compiler` fallisce onestamente se eseguito; benchmark vs llama.cpp **fatto** (`BENCHMARKS.md` — decode GPU paritario/superiore, prefill e CPU in svantaggio); test E2E sensibili al timeout sotto `ctest -j` alto (fix consigliato: `set_read_timeout_sec(60)` su `httplib::Client` in `test_e2e.cpp`).
+7. **Distribuito — stato reale verificato (2026-11)**: `LocalCommunicator` (thread in-process) supporta DP/TP/PP con test di equivalenza numerica che **passano tutti** (TP e PP vs single-rank, diff <1e-4). `NCCLCommunicator` e `MPICommunicator` sono implementati e gated da `SERIUS_USE_NCCL`/`SERIUS_USE_MPI`, ma: (a) NCCL è Linux-only — non buildabile su Windows; (b) `Communicator::create_nccl(world,rank)` richiede MPI per il bootstrap di `ncclUniqueId`; (c) **non esiste launcher multi-processo** — nessun path in `serius` CLI/server costruisce una `DistributedTopology` reale da env/argomenti, quindi TP/PP sono oggi usabili solo come libreria o via test. Gap verso llama.cpp/DeepSpeed: servono rank bootstrap (env `RANK`/`WORLD_SIZE` o file-store), wiring in `serve`/`generate`, e verifica NCCL su Linux.
 
 ---
 
