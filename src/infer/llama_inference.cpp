@@ -1105,6 +1105,13 @@ Tensor llama_forward_cuda_last(const model::LLaMAModel &model, const Tensor &tok
 Tensor llama_forward_single_token_cuda(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache);
 Tensor llama_forward_single_token_cuda_prefix(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache,
                                               size_t n_gpu_layers, float *hidden_out, size_t hidden_size);
+bool llama_cuda_prefix_batched_ready(const model::LLaMAModel &model, size_t n_gpu_layers);
+bool llama_cuda_prefix_batched_fresh(const KVCache *cache);
+Tensor llama_forward_cuda_prefix_batched(const model::LLaMAModel &model, const Tensor &token_ids, KVCache *cache,
+                                         size_t n_gpu_layers, float *hidden_out, size_t hidden_out_elems);
+Tensor llama_logits_gpu_last(const model::LLaMAModel &model, const float *normed_host, size_t hidden_size);
+static Tensor llama_forward_partial_prefill_last(const model::LLaMAModel &model, const Tensor &token_ids,
+                                                  KVCache *cache);
 Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache);
 #endif
 
@@ -1265,6 +1272,15 @@ Tensor llama_forward_inference_last(const model::LLaMAModel &model, const Tensor
     if (partial_gpu_layers(model) == 0 && model.embed_tokens() && model.embed_tokens()->data.is_gpu()) {
         return llama_forward_cuda_last(model, token_ids, cache);
     }
+    // Partial offload: batched GPU prefix + batched CPU suffix — ~seq_len×
+    // faster prompt processing than the per-token hybrid path. Returns an
+    // empty tensor when not applicable; fall through to the per-token path.
+    {
+        Tensor partial_logits = llama_forward_partial_prefill_last(model, token_ids, cache);
+        if (partial_logits.size() > 0) {
+            return partial_logits;
+        }
+    }
 #endif
     Tensor logits = llama_forward_inference(model, token_ids, cache);
     if (logits.size() == 0) {
@@ -1301,16 +1317,78 @@ static Tensor llama_forward_suffix_cpu(const model::LLaMAModel &model, float *hi
     }
     Tensor final_normed({1, hidden_dim});
     rms_norm({hidden, model.norm_weight()->data.data(), final_normed.data(), 1, hidden_dim, cfg.rms_norm_eps});
+    Tensor gl = llama_logits_gpu_last(model, final_normed.data(), hidden_dim);
+    if (gl.size() > 0) {
+        return gl;
+    }
     Tensor logits({1, cfg.vocab_size});
     compute_logits(model, final_normed, logits, 1, cfg);
     return logits;
 }
 #endif  // SERIUS_USE_CUDA
 
+#ifdef SERIUS_USE_CUDA
+/// Batched CPU suffix for partial offload: runs the remaining layers over
+/// the whole prompt at once (dense FP32 host weights, same kernels as the
+/// CPU batched prefill) and returns last-position logits only — decode only
+/// ever samples the final row, so the {seq,vocab} logits GEMM is skipped.
+/// `hidden` is a {seq_len, hidden_dim} FP32 buffer updated in place.
+static Tensor llama_forward_suffix_cpu_batched(const model::LLaMAModel &model, float *hidden, size_t seq_len,
+                                               KVCache *cache, size_t layer_begin)
+{
+    const auto &cfg = model.config();
+    const size_t hidden_dim = cfg.hidden_size;
+
+    Tensor normed({seq_len, hidden_dim});
+    const auto &layer_blocks = model.layers();
+    for (size_t i = layer_begin; i < layer_blocks.size(); ++i) {
+        KVCacheLayer *cl = (cache != nullptr && i < cache->layers.size()) ? &cache->layers[i] : nullptr;
+        llama_attention_layer_cpu(layer_blocks[i].get(), hidden, normed.data(), seq_len, 0, cfg, model.topology(), cl,
+                                  static_cast<int>(i));
+        llama_mlp_layer_cpu(layer_blocks[i].get(), hidden, normed.data(), seq_len, cfg, model.topology());
+    }
+    float *last = hidden + (seq_len - 1) * hidden_dim;
+    Tensor final_normed({1, hidden_dim});
+    rms_norm({last, model.norm_weight()->data.data(), final_normed.data(), 1, hidden_dim, cfg.rms_norm_eps});
+    // Packed lm_head may be GPU-resident (partial offload uploads it): the
+    // logits GEMV is the single biggest CPU cost on large-vocab models.
+    Tensor gl = llama_logits_gpu_last(model, final_normed.data(), hidden_dim);
+    if (gl.size() > 0) {
+        return gl;
+    }
+    Tensor logits({1, cfg.vocab_size});
+    compute_logits(model, final_normed, logits, 1, cfg);
+    return logits;
+}
+
+/// Batched prefill under partial offload: GPU prefix (layers [0, n_gpu))
+/// processes the whole prompt in one pass, one D2H copy hands the residual
+/// stream to the CPU suffix. Returns an empty tensor when the fast path
+/// doesn't apply (non-fresh KV, unsupported weights, tiny prompt) so the
+/// caller falls back to the per-token hybrid path.
+static Tensor llama_forward_partial_prefill_last(const model::LLaMAModel &model, const Tensor &token_ids,
+                                                  KVCache *cache)
+{
+    const size_t ngpu = partial_gpu_layers(model);
+    const size_t total = model.layers().size();
+    const size_t seq_len = token_ids.size();
+    if (ngpu == 0 || ngpu >= total || seq_len < 2 || !llama_cuda_prefix_batched_ready(model, ngpu) ||
+        !llama_cuda_prefix_batched_fresh(cache)) {
+        return Tensor({0});
+    }
+    const size_t hidden_dim = model.config().hidden_size;
+    std::vector<float> hbuf(seq_len * hidden_dim, 0.0f);
+    llama_forward_cuda_prefix_batched(model, token_ids, cache, ngpu, hbuf.data(), hbuf.size());
+    return llama_forward_suffix_cpu_batched(model, hbuf.data(), seq_len, cache, ngpu);
+}
+#endif  // SERIUS_USE_CUDA
+
 /// One decode/prefill-token step under partial offload: GPU prefix (layers
 /// [0, n_gpu)) produces the residual stream, D2H once, CPU suffix finishes.
 /// Every token goes through this path so each layer's KV cache is written by
-/// the device that owns it — batched prefill is deliberately bypassed.
+/// the device that owns it. Fresh prompts use the batched hybrid prefill
+/// (llama_forward_partial_prefill_last); this remains the fallback for
+/// non-fresh KV, unsupported weights, and decode steps.
 /// CUDA-only: partial offload requires the GPU prefix path.
 #ifdef SERIUS_USE_CUDA
 static Tensor llama_forward_single_token_partial(const model::LLaMAModel &model, int token_id, size_t pos,

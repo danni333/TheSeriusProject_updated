@@ -187,21 +187,44 @@ da qui. Baseline misurata in `BENCHMARKS.md` (confronto diretto vs llama.cpp).
   o dequant peak-memory più basso. Misurare con `serius bench
   --latency-only`.
 
-### 4. Partial offload performance — ⛔ DA FARE (feature shipped rotta)
+### 4. Partial offload performance — IN LAVORAZIONE (era: feature shipped rotta)
 - `src/infer/llama_gpu_offload.cpp` + suffix CPU in `llama_inference.cpp`.
-- **Stato**: ~0.3 tok/s sul 1.5B — *più lento del CPU pieno* (~1.3 tok/s).
-  Una feature esposta (`--gpu-layers` in chat/generate/serve) che in
-  pratica non funziona: o si sistema o si maschera onestamente.
-- Cause identificate: decine di cudaMalloc/layer/token nel prefisso GPU
-  (path FP32 non ottimizzato), attention FP32 eager, prefill sempre
-  per-token (niente batched), nessuna quantizzazione packed nel prefisso.
-- Fix previsti: scratch persistente (KV + buffers riusati), attention
-  FP16/quantized nel prefisso, pesi packed quant anche nel prefisso GPU,
-  prefill batched per i layer GPU. Target: ≥ CPU-only a parità di layer.
-- Alternativa onesta se il fix è troppo costoso: rimuovere il flag o
-  marcarlo experimental con warning esplicito al load.
-- Da NON fare: sedersi sui fix parziali — il path ibrido ha costi di
-  sincronizzazione D2H per token che vanificano benefici piccoli.
+- **Baseline 2026-11-23**: ~0.3-0.6 tok/s — più lento del CPU pieno.
+- **Dopo fix scratch (2026-11-24)**: `DecodeScratch` persistente in
+  `llama_forward_single_token_cuda_impl` (niente più Tensor-ctor memset +
+  cudaMalloc/cudaFree per layer/token; attention via copy_layout in buffer
+  preallocati come il prefill). Misurato:
+  - Qwen2.5-0.5B Q4_K_M `--gpu-layers 8`: 1.16 → **5.42 tok/s**
+  - Qwen2.5-0.5B `--gpu-layers 23`: 4.58 → **13.66 tok/s** (batte il CPU
+    pieno ~8.5)
+  - Qwen2.5-Coder-1.5B `--gpu-layers 8`: 0.59 → **1.27 tok/s**
+  - Qwen2.5-Coder-1.5B `--gpu-layers 16`: **1.95 tok/s**
+- I pesi packed-quant nel prefisso erano già caricati dall'offload
+  (`packed-quant` nel log) — il collo era solo alloc churn +
+  transpose/contiguous per layer.
+- Resta da fare: CUDA graph per il prefisso (WS-A.4), prefill batched
+  prefisso (WS-A.2, in corso lato utente), misura finale vs CPU.
+- **2026-11-24 (Devin)**: prefisso packed-quant upgrade —
+  `offload_llama_model_partial` ora carica i `QuantWeight` fused
+  (Q4_0/Q4_1/Q8_0/Q4_K- aligned) dei layer GPU + **lm_head packed**,
+  saltando le copie dense FP16 → molto più layer in VRAM.
+  **Batched partial prefill**: `llama_forward_cuda_impl` accetta un
+  range di layer + output hidden `{seq,hidden}` FP32; suffix CPU
+  batched (`llama_forward_suffix_cpu_batched`, dense FP32, solo
+  logits dell'ultima riga). Fallback per-token su KV non-fresh o
+  pesi non supportati. **GPU lm_head**: `llama_logits_gpu_last`
+  (tiled dequant + cuBLAS) usato da entrambe le suffix → il logits
+  GEMV CPU (~50 ms su vocab 152k) sparisce.
+  Misure Qwen2.5-Coder-1.5B Q4_K_M (prompt 31 tok, 32 out, temp 0,
+  output identico al full offload, conf ~0.432):
+  - `--gpu-layers 24`: 0.8 → **19.6 tok/s**
+  - `--gpu-layers 26`: **27.0 tok/s**
+  - `--gpu-layers 27`: **37.0 tok/s** (fwd 21.8 ms/token)
+  - `--gpu-layers 28` → full offload: 103 tok/s (il modello ci sta:
+    ~1.94 GiB — la stima VRAM vecchia era obsoleta)
+  Partial resta il path per modelli >VRAM; su questo HW il target
+  sensato è metamà layers. Prossimo: misurare un modello che NON
+  entra in VRAM (serve download 7B) e valutare graph per il prefisso.
 
 ### 4b. Decode GPU eager (Senza graph): copertura e gap — DA FARE
 - Misurato 2026-11-23: `SERIUS_NO_GRAPH=1` sul Qwen2.5-0.5B Q4_K_M =
@@ -334,6 +357,29 @@ Conferme:
 - Priorita' kernel: gate_up (+10% = ~4.8 ms/tok) > lm_head (top-k
   early-exit o chunked) > down. Int-dot Q8_0 irrilevante su questo
   modello (nessun GEMV Q8_0 nel path dopo la fusion qkv).
+- **Caveat micro-bench** (`%TEMP%\mvq_bench\bench.exe`): riusa lo STESSO
+  QuantWeight per N iter → dopo la prima iter il peso e' in L3 e i GB/s
+  misurati (8-20) sono bandwidth L3, non DRAM. Nel decode reale ~75-300
+  MB/token streamano da DRAM → i ~2.8 GB/s in-model sono i numeri giusti.
+  Per misure realistiche servirebbero piu' pesi o `MADV_DONTNEED`/flush
+  tra iter; in ogni caso la proiezione "kernel isolate sono veloci"
+  non si applica al decode.
+- **Soak attivo**: `serius.exe` (PID ~13k, ~9.4GB) gira durante le misure
+  → contende CPU E bandwidth DRAM. Riverificare a soak fermo prima di
+  concludere su micro-ott kernel.
+- **WIN — prefetch hint NTA (2026-11-24, misurato a sistema scarico)**:
+  i kernel GEMV (`q40/q41/q80/q4k_row_avx512`) usavano
+  `_mm_prefetch(..., _MM_HINT_T0)` → pesi in L1 ~16 blocchi prima dell'uso
+  (migliaia di cicli): eviction prematura + thrash di L1 su x/KV/scores.
+  Cambiato in `_MM_HINT_NTA` (4 siti in matvec_quant.cpp;
+  `prefetch_quant_weight` resta T0 — la sua funzione e' scaldare cache ed
+  e' opt-in). **Misura A/B stessa macchina, 300 tok, 2-3 run**:
+  T0 = 26.9/28.7 tok/s (media ~27.8) → NTA = 51.1/44.6/43.7 (media ~46.5)
+  = **+67% decode**. A/B su Qwen2.5-0.5B Q4_K_M (Q4_1-dominante,
+  150 tok, sistema scarico): T0 = 14.7 → NTA = 19.0 tok/s = **+29%**.
+  AVX2 kernel non hanno prefetch (nulla da cambiare). Attenzione:
+numeri assumono sistema scarico — riverificare che il gain regga con
+  carico (il NTA dovrebbe aiutare anche sotto contesa, ma non misurato).
 
 ## Avvertenze operative
 

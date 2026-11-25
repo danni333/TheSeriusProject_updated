@@ -40,6 +40,11 @@ class KVCache
     bool is_rolling() const { return rolling_; }
 
    private:
+    /// Return the sequence dimension in chronological order. For a wrapped
+    /// rolling buffer the physical layout is circular, so this gathers the
+    /// slots into a new contiguous tensor; otherwise it returns a cheap view.
+    Tensor ordered_seq_(const Tensor &src) const;
+
     std::unique_ptr<Tensor> keys_;
     std::unique_ptr<Tensor> values_;
     size_t max_len_;

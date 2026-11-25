@@ -406,6 +406,26 @@ bool EmbeddingManager::initialize(const std::string &model_path)
 
 std::vector<float> EmbeddingManager::compute_embedding(const std::string &text)
 {
+    {
+        std::lock_guard<std::mutex> lock(emb_mutex_);
+        auto it = emb_cache_.find(text);
+        if (it != emb_cache_.end()) {
+            return it->second;
+        }
+    }
+    std::vector<float> result = compute_embedding_uncached(text);
+    {
+        std::lock_guard<std::mutex> lock(emb_mutex_);
+        if (emb_cache_.size() >= 8192) {
+            emb_cache_.clear();  // bounded: drop-all is fine for a cache
+        }
+        emb_cache_.emplace(text, result);
+    }
+    return result;
+}
+
+std::vector<float> EmbeddingManager::compute_embedding_uncached(const std::string &text)
+{
     if (bert_ != nullptr && bert_->is_loaded()) {
         return bert_->embed(text);
     }
@@ -515,6 +535,10 @@ void EmbeddingManager::unload_model()
     tokenizer_.reset();
     bert_.reset();
     use_task_prefixes_ = false;
+    {
+        std::lock_guard<std::mutex> lock(emb_mutex_);
+        emb_cache_.clear();
+    }
 }
 
 namespace {

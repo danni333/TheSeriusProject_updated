@@ -8,8 +8,32 @@
 #include <random>
 
 #include "server_internal.h"
+
+#include <unordered_set>
+
+#include "../autograd/engine.h"
+#include "../transformer/model.h"
+
 namespace serius {
 namespace server {
+
+namespace {
+
+/// Delete every node reachable from \p root except the model's parameter
+/// nodes. TransformerModel::forward() builds a fresh autograd graph per call;
+/// without this the whole activation graph leaks on every generated token.
+void free_graph(core::autograd::Node *root,
+                const std::unordered_set<core::autograd::Node *> &params)
+{
+    if (!root) return;
+    for (core::autograd::Node *n : core::autograd::topological_sort(root)) {
+        if (n && params.find(n) == params.end()) {
+            delete n;
+        }
+    }
+}
+
+}  // namespace
 
 /// j.value(key, "") throws nlohmann::json::type_error when the key holds a
 /// non-string JSON type (e.g. {"role": 42}). Tolerate it as the fallback —
@@ -329,9 +353,11 @@ GenerationResult generate_llama(const model::LLaMAModel &model, BPETokenizer &to
         next_id = sampler.sample(logits);
     }
 
+    bool stopped = false;
     for (size_t gen = 0; gen < max_new_tokens; ++gen) {
         std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
         if (is_stop_token(tokenizer, next_id, tok_str)) {
+            stopped = true;
             break;
         }
         res.text += tok_str;
@@ -350,6 +376,9 @@ GenerationResult generate_llama(const model::LLaMAModel &model, BPETokenizer &to
         if (!infer::sample_gpu_candidates(next_logits, 0, sampler, next_id)) {
             next_id = sampler.sample(next_logits);
         }
+    }
+    if (!stopped) {
+        res.finish_reason = "length";
     }
 
     if (kv_ids) {
@@ -389,6 +418,7 @@ void stream_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const
     }
 
     std::string pending;
+    bool stopped = false;
     for (size_t gen = 0; gen < max_new_tokens; ++gen) {
         if (sink.is_writable && !sink.is_writable()) {
             break;
@@ -396,6 +426,7 @@ void stream_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const
 
         std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
         if (is_stop_token(tokenizer, next_id, tok_str)) {
+            stopped = true;
             break;
         }
         if (metrics) {
@@ -439,12 +470,13 @@ void stream_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const
         sink.write(tail_str.data(), tail_str.size());
     }
 
+    const char *finish = stopped ? "stop" : "length";
     nlohmann::json stop_chunk = {
         {"id", req_id},
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{{"index", 0}, {"delta", nlohmann::json::object()}, {"finish_reason", "stop"}}}}};
+        {"choices", {{{"index", 0}, {"delta", nlohmann::json::object()}, {"finish_reason", finish}}}}};
     std::string stop_str = "data: " + stop_chunk.dump() + "\n\n";
     sink.write(stop_str.data(), stop_str.size());
 
@@ -467,14 +499,23 @@ GenerationResult generate_transformer(const model::TransformerModel &model, BPET
     }
     res.prompt_tokens = ids.size();
 
+    std::unordered_set<core::autograd::Node *> params;
+    for (core::autograd::Node *p : model.parameters()) {
+        if (p) params.insert(p);
+    }
+
+    bool stopped = false;
     for (size_t gen = 0; gen < max_new_tokens; ++gen) {
         core::Tensor input_tensor({ids.size()});
         for (size_t i = 0; i < ids.size(); ++i) {
             input_tensor[i] = static_cast<float>(ids[i]);
         }
 
-        core::autograd::Node input_node(input_tensor, false);
-        core::autograd::Node *logits_node = model.forward(&input_node);
+        // Heap-allocated: the graph stores this pointer as a child of the
+        // embedding node, so it must be freed together with the graph (a
+        // stack Node would dangle inside the leaked graph).
+        auto *input_node = new core::autograd::Node(input_tensor, false);
+        core::autograd::Node *logits_node = model.forward(input_node);
         const core::Tensor &logits = logits_node->data;
 
         size_t vocab_size = logits.shape().back();
@@ -484,10 +525,12 @@ GenerationResult generate_transformer(const model::TransformerModel &model, BPET
         for (size_t i = 0; i < vocab_size; ++i) {
             last_logits[i] = src[i];
         }
+        free_graph(logits_node, params);
 
         int next_id = sampler.sample(last_logits);
         std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
         if (is_stop_token(tokenizer, next_id, tok_str)) {
+            stopped = true;
             break;
         }
 
@@ -498,6 +541,9 @@ GenerationResult generate_transformer(const model::TransformerModel &model, BPET
         }
 
         ids.push_back(static_cast<TokenId>(next_id));
+    }
+    if (!stopped) {
+        res.finish_reason = "length";
     }
 
     res.text = sanitize_utf8(res.text);
@@ -525,7 +571,13 @@ void stream_transformer(const model::TransformerModel &model, BPETokenizer &toke
     std::string intro_str = "data: " + intro.dump() + "\n\n";
     sink.write(intro_str.data(), intro_str.size());
 
+    std::unordered_set<core::autograd::Node *> params;
+    for (core::autograd::Node *p : model.parameters()) {
+        if (p) params.insert(p);
+    }
+
     std::string pending;
+    bool stopped = false;
     for (size_t gen = 0; gen < max_new_tokens; ++gen) {
         if (sink.is_writable && !sink.is_writable()) {
             break;
@@ -536,8 +588,8 @@ void stream_transformer(const model::TransformerModel &model, BPETokenizer &toke
             input_tensor[i] = static_cast<float>(ids[i]);
         }
 
-        core::autograd::Node input_node(input_tensor, false);
-        core::autograd::Node *logits_node = model.forward(&input_node);
+        auto *input_node = new core::autograd::Node(input_tensor, false);
+        core::autograd::Node *logits_node = model.forward(input_node);
         const core::Tensor &logits = logits_node->data;
 
         size_t vocab_size = logits.shape().back();
@@ -547,10 +599,12 @@ void stream_transformer(const model::TransformerModel &model, BPETokenizer &toke
         for (size_t i = 0; i < vocab_size; ++i) {
             last_logits[i] = src[i];
         }
+        free_graph(logits_node, params);
 
         int next_id = sampler.sample(last_logits);
         std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
         if (is_stop_token(tokenizer, next_id, tok_str)) {
+            stopped = true;
             break;
         }
         if (metrics) {
@@ -585,12 +639,13 @@ void stream_transformer(const model::TransformerModel &model, BPETokenizer &toke
         sink.write(tail_str.data(), tail_str.size());
     }
 
+    const char *finish = stopped ? "stop" : "length";
     nlohmann::json stop_chunk = {
         {"id", req_id},
         {"object", "chat.completion.chunk"},
         {"created", created},
         {"model", model_name},
-        {"choices", {{{"index", 0}, {"delta", nlohmann::json::object()}, {"finish_reason", "stop"}}}}};
+        {"choices", {{{"index", 0}, {"delta", nlohmann::json::object()}, {"finish_reason", finish}}}}};
     std::string stop_str = "data: " + stop_chunk.dump() + "\n\n";
     sink.write(stop_str.data(), stop_str.size());
 

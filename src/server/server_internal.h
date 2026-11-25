@@ -26,6 +26,9 @@ struct GenerationResult
     std::string text;
     size_t prompt_tokens = 0;
     size_t completion_tokens = 0;
+    /// OpenAI-style finish reason: "stop" on EOS/stop token, "length" when
+    /// max_new_tokens was reached first.
+    std::string finish_reason = "stop";
 };
 
 std::string extract_user_prompt(const nlohmann::json &body);

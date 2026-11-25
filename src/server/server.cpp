@@ -276,7 +276,14 @@ LoadedModel Server::load_llama_gguf(const std::string &gguf_path)
     }
 
     entry.llama = std::make_unique<model::LLaMAModel>(config);
-    io::load_llama_weights_from_gguf_file(gguf_path, entry.llama.get());
+    const bool weights_ok = io::load_llama_weights_from_gguf_file(gguf_path, entry.llama.get());
+    if (!weights_ok) {
+        // Refuse to publish a model with random weights: a corrupt or
+        // unreadable GGUF must fail the load, not serve garbage.
+        spdlog::error("GGUF weight loading failed for {} — model rejected", gguf_path);
+        entry.llama.reset();
+        return entry;
+    }
     entry.tokenizer = std::move(tokenizer);
     entry.kv_cache = std::make_unique<infer::KVCache>();
 
@@ -397,12 +404,17 @@ LoadedModel Server::load_llama_dir(const std::string &model_dir_or_config)
     // First .gguf inside the model dir (GGUF-only distributions have no
     // config.json / safetensors; it provides config, tokenizer and weights).
     std::string dir_gguf;
+    bool dir_has_weight_files = false;
     if (!model_dir.empty() && std::filesystem::is_directory(model_dir)) {
         for (const auto &dir_entry : std::filesystem::directory_iterator(model_dir)) {
             std::string p = dir_entry.path().string();
             if (p.size() >= 5 && p.compare(p.size() - 5, 5, ".gguf") == 0) {
                 dir_gguf = p;
+                dir_has_weight_files = true;
                 break;
+            }
+            if (p.size() >= 12 && p.compare(p.size() - 12, 12, ".safetensors") == 0) {
+                dir_has_weight_files = true;
             }
         }
     }
@@ -460,7 +472,15 @@ LoadedModel Server::load_llama_dir(const std::string &model_dir_or_config)
     if (!weights_loaded && !dir_gguf.empty()) {
         weights_loaded = io::load_llama_weights_from_gguf_file(dir_gguf, entry.llama.get());
     }
-    (void)weights_loaded;
+    // Weight files were present but nothing loaded (corrupt, wrong shape,
+    // incomplete coverage): reject the model instead of serving random
+    // weights. A directory with no weight files at all keeps the previous
+    // config-only behavior.
+    if (!weights_loaded && dir_has_weight_files) {
+        spdlog::error("Weight loading failed for {} — model rejected", model_dir_or_config);
+        entry.llama.reset();
+        return entry;
+    }
     entry.kv_cache = std::make_unique<infer::KVCache>();
 
     maybe_offload_to_gpu(*entry.llama);
@@ -1064,7 +1084,7 @@ void Server::setup_routes()
         out["model"] = requested_model;
         out["choices"] = nlohmann::json::array();
         out["choices"].push_back(
-            {{"index", 0}, {"message", {{"role", "assistant"}, {"content", gen_res.text}}}, {"finish_reason", "stop"}});
+            {{"index", 0}, {"message", {{"role", "assistant"}, {"content", gen_res.text}}}, {"finish_reason", gen_res.finish_reason}});
         out["usage"] = {{"prompt_tokens", gen_res.prompt_tokens},
                         {"completion_tokens", gen_res.completion_tokens},
                         {"total_tokens", gen_res.prompt_tokens + gen_res.completion_tokens}};
@@ -1203,7 +1223,7 @@ void Server::setup_routes()
         out["created"] = created;
         out["model"] = requested_model;
         out["choices"] = nlohmann::json::array();
-        out["choices"].push_back({{"text", gen_res.text}, {"index", 0}, {"finish_reason", "stop"}});
+        out["choices"].push_back({{"text", gen_res.text}, {"index", 0}, {"finish_reason", gen_res.finish_reason}});
         out["usage"] = {{"prompt_tokens", gen_res.prompt_tokens},
                         {"completion_tokens", gen_res.completion_tokens},
                         {"total_tokens", gen_res.prompt_tokens + gen_res.completion_tokens}};
@@ -1278,13 +1298,13 @@ void Server::setup_routes()
                 emb_vector.assign(hs, 0.0f);
 
                 core::autograd::Node *embed_node = lm->llama->embed_tokens();
-                if (embed_node && embed_node->data.size() > 0 &&
-                    embed_node->data.dtype() == hal::DType::Float32) {
+                if (embed_node && embed_node->data.size() > 0) {
                     const auto &weights = embed_node->data;
                     const auto &wshape = weights.shape();
-                    // Tensor::at() does no bounds checking: clamp every index
-                    // to the real tensor dimensions so a config/tensor size
-                    // mismatch can't read out of bounds.
+                    // Tensor::at() is Float32-only and does no bounds checking:
+                    // item() handles any dtype (GPU-offloaded models store
+                    // Float16/BFloat16 embeddings) and compute_offset applies
+                    // strides; clamp indices to the real dimensions.
                     const size_t w_rows = wshape.size() >= 1 ? wshape[0] : 0;
                     const size_t w_cols = wshape.size() >= 2 ? wshape[1] : 0;
                     const size_t vocab = lm->llama->config().vocab_size;
@@ -1294,7 +1314,7 @@ void Server::setup_routes()
                         size_t tid = static_cast<size_t>(id) % vocab;
                         tid %= w_rows;
                         for (size_t d = 0; d < cols; ++d) {
-                            emb_vector[d] += weights.at(tid, d);
+                            emb_vector[d] += weights.item(tid, d);
                         }
                     }
                     for (size_t d = 0; d < hs; ++d) {

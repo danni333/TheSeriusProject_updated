@@ -308,9 +308,15 @@ bool ModelHubServer::save_users_locked(const nlohmann::json &users)
     std::error_code ec;
     fs::rename(tmp, target, ec);
     if (ec) {
-        std::error_code rm_ec;
-        fs::remove(tmp, rm_ec);
-        return false;
+        // Windows rename fails if the target exists: remove then retry.
+        fs::remove(target, ec);
+        ec.clear();
+        fs::rename(tmp, target, ec);
+        if (ec) {
+            std::error_code rm_ec;
+            fs::remove(tmp, rm_ec);
+            return false;
+        }
     }
     return true;
 }
@@ -367,6 +373,9 @@ int ModelHubServer::register_user(const std::string &username, std::string &api_
     if (username.empty()) {
         return 1;
     }
+    // Serialize the whole check-then-write cycle: without the lock two
+    // concurrent registrations of the same username could both pass the
+    // conflict check and the loser's api_key would never be persisted.
     std::lock_guard<std::mutex> lk(users_mutex_);
     auto users = load_users_locked();
     // An existing username is a conflict: never return the stored key, that
@@ -757,14 +766,22 @@ void ModelHubServer::setup_model_routes()
 
         const uint64_t fsize = fs::file_size(model_path);
         res.set_content_provider(fsize, "application/octet-stream",
-                                 [model_path](size_t offset, size_t length, httplib::DataSink &sink) {
+                                 [model_path, fsize](size_t offset, size_t length, httplib::DataSink &sink) {
+                                     if (offset >= fsize) {
+                                         return false;
+                                     }
+                                     // Clamp to the real file size: a client
+                                     // asking for an oversized range must not
+                                     // trigger a huge allocation.
+                                     const size_t avail = static_cast<size_t>(fsize - offset);
+                                     const size_t to_read = std::min(length, avail);
                                      std::ifstream file(model_path, std::ios::binary);
                                      if (!file) {
                                          return false;
                                      }
                                      file.seekg(static_cast<std::streamoff>(offset));
-                                     std::vector<char> buffer(length);
-                                     file.read(buffer.data(), static_cast<std::streamsize>(length));
+                                     std::vector<char> buffer(to_read);
+                                     file.read(buffer.data(), static_cast<std::streamsize>(to_read));
                                      sink.write(buffer.data(), static_cast<size_t>(file.gcount()));
                                      return true;
                                  });
@@ -1006,10 +1023,28 @@ bool ModelHubServer::validate_model_file(const std::string &file_path)
     if (!file) {
         return false;
     }
-    char magic[4] = {};
-    file.read(magic, 4);
-    // GGUF magic "GGUF" or safetensors header sanity (>0 header size)
-    return file.gcount() == 4;
+    char magic[8] = {};
+    file.read(magic, 8);
+    if (file.gcount() < 4) {
+        return false;
+    }
+    // GGUF magic is "GGUF" at offset 0.
+    if (std::memcmp(magic, "GGUF", 4) == 0) {
+        return true;
+    }
+    if (file.gcount() != 8) {
+        return false;
+    }
+    // Safetensors: little-endian uint64 header length, then a '{' JSON
+    // header. Bound the claimed length to something sane.
+    uint64_t header_len = 0;
+    std::memcpy(&header_len, magic, sizeof(header_len));
+    if (header_len == 0 || header_len >= (1ull << 32)) {
+        return false;
+    }
+    char first_json = 0;
+    file.read(&first_json, 1);
+    return file.gcount() == 1 && first_json == '{';
 }
 
 void ModelHubServer::log_access(const std::string &user_id, const std::string &action, const std::string &resource)

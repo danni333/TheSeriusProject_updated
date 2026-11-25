@@ -20,7 +20,7 @@ Misurazioni eseguite il 2026-11-22 con `serius generate` su:
 | SmolLM2-135M Q4_0 | CUDA + graph | **~120 tok/s** | 16 token in 0.13 s |
 | SmolLM2-135M Q4_0 | CUDA (eager, `SERIUS_NO_GRAPH=1`) | ~27 tok/s | stesso modello senza graph |
 | SmolLM2-135M Q8_0 | CUDA + graph | **~66 tok/s** | 16 token in 0.24 s |
-| Qwen2.5-Coder-1.5B Q4_K_M | parziale 8/28 layer (`--gpu-layers 8`) | **~0.3 tok/s** | corretto ma LENTO — vedi sotto |
+| Qwen2.5-Coder-1.5B Q4_K_M | parziale 8/28 layer (`--gpu-layers 8`) | **~0.3 tok/s** | storico — vedi tabella sotto per i valori attuali |
 
 Nota: il CUDA graph decode (`llama_forward_single_token_cuda_graph`) è
 attivo solo se **tutti** i layer hanno pesi quantizzati packed su GPU
@@ -84,14 +84,24 @@ in una RTX 3060 da 6 GiB con desktop attivo e il modello ricade in CPU a
 2. ~~KV cache fissa~~ — **FATTO**: cap iniziale 1024 posizioni/layer con
    crescita on-demand (`ensure_kv_capacity_gpu`); l'eager decode ora supera il
    vecchio cap 4096, il CUDA graph resta a 4096.
-3. ~~Partial offload~~ — **FATTO (v1)**: `--gpu-layers N` in `chat`/`generate`.
-   I primi N layer girano su GPU in FP32 dual-resident, il resto su CPU;
-   decode = prefisso GPU → D2H → suffisso CPU per token. **Limiti noti**:
-   prefill sempre per-token (niente batched), path GPU FP32 non ottimizzato
-   (allocazioni per layer/proiezione) → ~0.3 tok/s sul 1.5B, più lento del
-   CPU pieno; servono scratch persistente e kernel attention FP32.
+3. ~~Partial offload~~ — **FATTO (v1→v2)**: `--gpu-layers N` in `chat`/`generate`.
    `serve` cablato: `--gpu-layers N` → `ServerConfig::gpu_layers` →
    `maybe_offload_to_gpu` prova il partial offload prima del path auto.
+   **v2 (2026-11-24)**: prefisso packed-quant + lm_head packed su GPU,
+   batched partial prefill (GPU prefix batched → D2H una volta → CPU
+   suffix batched, fallback per-token su KV non-fresh), logits su GPU
+   (`llama_logits_gpu_last`). Misure Qwen2.5-Coder-1.5B Q4_K_M,
+   prompt 31 tok / 32 out, temp 0, output identico al full offload:
+
+   | `--gpu-layers` | tok/s end-to-end | fwd/token |
+   |---|---|---|
+   | 24/28 | 19.6 | 45 ms |
+   | 26/28 | 27.0 | 31 ms |
+   | 27/28 | 37.0 | 22 ms |
+   | 28 (full) | 103 | — |
+
+   Era ~0.3-0.8 tok/s (più lento del CPU). Il partial resta il path per
+   modelli >VRAM; su questo hardware il punto dolce è ~metà layer.
 
 ## Confronto llama-bench diretto — MISURATO (2026-11-23, post-fix batched prefill)
 

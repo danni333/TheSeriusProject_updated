@@ -504,7 +504,15 @@ bool offload_llama_model_partial(model::LLaMAModel &model, size_t n_layers)
             move_param_f16(blk->down_proj.get());
         }
     }
-    // norm_weight and lm_head stay CPU-only: the suffix computes them there.
+    // norm_weight stays CPU-only (the suffix computes it there). The packed
+    // lm_head IS uploaded when possible: the logits GEMV is ~20-25% of CPU
+    // suffix time on large-vocab models and runs in <1 ms on GPU. VRAM is
+    // not planned for the partial path — a failed upload just keeps the CPU
+    // logits path (gpu_data stays null).
+    try {
+        upload_qw(model.lm_head_q());
+    } catch (...) {
+    }
 
     partial_layers_registry()[&model] = n_layers;
     std::fprintf(stderr,
