@@ -1,0 +1,45 @@
+name: Debug ASan/UBSan CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-test-asan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build libssl-dev ccache
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+            build/_deps
+          key: ${{ runner.os }}-cpu-debug-${{ hashFiles('CMakeLists.txt', 'src/CMakeLists.txt', 'tests/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-cpu-debug-${{ hashFiles('CMakeLists.txt', 'src/CMakeLists.txt', 'tests/CMakeLists.txt') }}-
+            ${{ runner.os }}-cpu-debug-
+
+      - name: Configure (Debug + ASan/UBSan)
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DSERIUS_USE_CUDA=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build (Debug + ASan/UBSan)
+        run: cmake --build build --config Debug -j$(nproc)
+
+      - name: Unit Tests (ASan/UBSan)
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build --output-on-failure

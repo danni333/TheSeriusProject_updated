@@ -11,13 +11,29 @@ jobs:
   build-test-cpu:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake g++ ninja-build libssl-dev ccache
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+            build/_deps
+          key: ${{ runner.os }}-cpu-release-${{ hashFiles('CMakeLists.txt', 'src/CMakeLists.txt', 'tests/CMakeLists.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-cpu-release-${{ hashFiles('CMakeLists.txt', 'src/CMakeLists.txt', 'tests/CMakeLists.txt') }}-
+            ${{ runner.os }}-cpu-release-
 
       - name: Configure (CPU)
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSERIUS_USE_CUDA=OFF
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DSERIUS_USE_CUDA=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build (CPU)
         run: cmake --build build --config Release -j$(nproc)
