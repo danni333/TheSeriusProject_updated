@@ -272,7 +272,7 @@ void ModelHubServer::setup_routes()
 // Auth: file-based API keys. Empty users store => open mode (default_user).
 // ---------------------------------------------------------------------------
 
-nlohmann::json ModelHubServer::load_users() const
+nlohmann::json ModelHubServer::load_users_locked() const
 {
     std::ifstream in(users_path_);
     if (!in) {
@@ -288,14 +288,43 @@ nlohmann::json ModelHubServer::load_users() const
     }
 }
 
-bool ModelHubServer::save_users(const nlohmann::json &users)
+bool ModelHubServer::save_users_locked(const nlohmann::json &users)
 {
-    std::ofstream out(users_path_, std::ios::trunc);
-    if (!out) {
+    const fs::path target(users_path_);
+    const fs::path tmp = users_path_ + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
+        if (!out) {
+            return false;
+        }
+        out << users.dump(2);
+        out.flush();
+        if (!out) {
+            std::error_code rm_ec;
+            fs::remove(tmp, rm_ec);
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, target, ec);
+    if (ec) {
+        std::error_code rm_ec;
+        fs::remove(tmp, rm_ec);
         return false;
     }
-    out << users.dump(2);
-    return static_cast<bool>(out);
+    return true;
+}
+
+nlohmann::json ModelHubServer::load_users() const
+{
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    return load_users_locked();
+}
+
+bool ModelHubServer::save_users(const nlohmann::json &users)
+{
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    return save_users_locked(users);
 }
 
 std::string ModelHubServer::resolve_user_id(const std::string &api_key) const
@@ -338,7 +367,8 @@ int ModelHubServer::register_user(const std::string &username, std::string &api_
     if (username.empty()) {
         return 1;
     }
-    auto users = load_users();
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    auto users = load_users_locked();
     // An existing username is a conflict: never return the stored key, that
     // would allow account takeover by anyone who can reach /v1/auth/register.
     for (auto it = users.begin(); it != users.end(); ++it) {
@@ -353,7 +383,7 @@ int ModelHubServer::register_user(const std::string &username, std::string &api_
                        {"username", username},
                        {"permissions", {"read", "upload"}},
                        {"created_at", now_iso8601()}};
-    if (!save_users(users)) {
+    if (!save_users_locked(users)) {
         api_key.clear();
         return 1;
     }
@@ -525,8 +555,11 @@ void ModelHubServer::setup_model_routes()
         res.set_content(nlohmann::json{{"data", arr}, {"total", arr.size()}}.dump(), "application/json");
     });
 
-    // Upload model (multipart: "model" file + "metadata" JSON file)
-    server_->Post("/v1/models/upload", [this](const httplib::Request &req, httplib::Response &res) {
+    // Upload model (streaming multipart: "model" file + "metadata" JSON file).
+    // Streams the model payload straight to a temporary file while computing
+    // SHA-256 incrementally so large uploads never buffer the entire file in RAM.
+    server_->Post("/v1/models/upload", [this](const httplib::Request &req, httplib::Response &res,
+                                              const httplib::ContentReader &content_reader) {
         std::string user_id;
         if (!authenticate_user(req.get_header_value("Authorization"), user_id, req.remote_addr) ||
             !check_permissions(user_id, "upload")) {
@@ -534,19 +567,114 @@ void ModelHubServer::setup_model_routes()
             res.set_content(nlohmann::json{{"error", "unauthorized"}}.dump(), "application/json");
             return;
         }
+        if (!req.is_multipart_form_data()) {
+            res.status = 400;
+            res.set_content(nlohmann::json{{"error", "expected multipart/form-data"}}.dump(), "application/json");
+            return;
+        }
 
-        if (!req.form.has_file("model") || !req.form.has_file("metadata")) {
+        constexpr size_t kMaxMetadataBytes = 1024 * 1024;  // 1 MiB
+        const std::string tmp_path = models_dir_ + "/.upload_" + random_hex(8) + ".tmp";
+        struct TmpFileGuard {
+            std::string path;
+            bool keep = false;
+            ~TmpFileGuard()
+            {
+                if (!keep && !path.empty()) {
+                    std::error_code ec;
+                    fs::remove(path, ec);
+                }
+            }
+        } tmp_guard{tmp_path, false};
+
+        std::ofstream model_out;
+        Sha256 sha;
+        size_t model_bytes = 0;
+        bool has_model = false;
+        bool has_metadata = false;
+        bool duplicate_field = false;
+        bool metadata_too_large = false;
+        bool write_failed = false;
+        std::string model_filename;
+        std::string metadata_json;
+        std::string current_field;
+
+        const bool read_ok = content_reader(
+            [&](const httplib::FormData &file) {
+                current_field = file.name;
+                if (file.name == "model") {
+                    if (has_model) {
+                        duplicate_field = true;
+                        return false;
+                    }
+                    has_model = true;
+                    model_filename = sanitize_filename(file.filename);
+                    model_out.open(tmp_path, std::ios::binary | std::ios::trunc);
+                    if (!model_out) {
+                        write_failed = true;
+                        return false;
+                    }
+                } else if (file.name == "metadata") {
+                    if (has_metadata) {
+                        duplicate_field = true;
+                        return false;
+                    }
+                    has_metadata = true;
+                    metadata_json.clear();
+                }
+                return true;
+            },
+            [&](const char *data, size_t data_length) {
+                if (current_field == "model") {
+                    if (!model_out.is_open()) {
+                        write_failed = true;
+                        return false;
+                    }
+                    if (data_length > 0) {
+                        model_out.write(data, static_cast<std::streamsize>(data_length));
+                        if (!model_out) {
+                            write_failed = true;
+                            return false;
+                        }
+                        sha.update(reinterpret_cast<const uint8_t *>(data), data_length);
+                        model_bytes += data_length;
+                    }
+                } else if (current_field == "metadata") {
+                    if (metadata_json.size() + data_length > kMaxMetadataBytes) {
+                        metadata_too_large = true;
+                        return false;
+                    }
+                    metadata_json.append(data, data_length);
+                }
+                return true;
+            });
+
+        if (model_out.is_open()) {
+            model_out.flush();
+            model_out.close();
+            if (!model_out) {
+                write_failed = true;
+            }
+        }
+        if (metadata_too_large) {
+            res.status = 413;
+            res.set_content(nlohmann::json{{"error", "metadata field too large"}}.dump(), "application/json");
+            return;
+        }
+        if (write_failed) {
+            res.status = 500;
+            res.set_content(nlohmann::json{{"error", "failed to stream model file"}}.dump(), "application/json");
+            return;
+        }
+        if (duplicate_field || !read_ok || !has_model || !has_metadata) {
             res.status = 400;
             res.set_content(nlohmann::json{{"error", "expected multipart fields 'model' and 'metadata'"}}.dump(),
                             "application/json");
             return;
         }
 
-        const auto model_file = req.form.get_file("model");
-        const auto metadata_file = req.form.get_file("metadata");
-
         try {
-            ModelMetadata metadata = json_to_model(nlohmann::json::parse(metadata_file.content));
+            ModelMetadata metadata = json_to_model(nlohmann::json::parse(metadata_json));
             metadata.id = generate_model_id(metadata.name, metadata.author);
             {
                 std::lock_guard<std::mutex> lk(db_mutex_);
@@ -556,28 +684,31 @@ void ModelHubServer::setup_model_routes()
                 while (!metadata_.get_model_metadata(metadata.id).id.empty()) {
                     metadata.id = base + "-" + std::to_string(++suffix);
                 }
-                metadata.file_size = model_file.content.size();
-                metadata.checksum_sha256 = calculate_checksum_bytes(model_file.content);
+                metadata.file_size = model_bytes;
+                metadata.checksum_sha256 = sha.final();
                 metadata.created_at = now_iso8601();
                 metadata.updated_at = metadata.created_at;
-                metadata.config["file_name"] = sanitize_filename(model_file.filename);
+                metadata.config["file_name"] = model_filename;
                 metadata.config["uploaded_by"] = user_id;
-
-                const std::string model_path =
-                    models_dir_ + "/" + metadata.id + "_" + sanitize_filename(model_file.filename);
-                std::ofstream out(model_path, std::ios::binary);
-                out.write(model_file.content.data(), static_cast<std::streamsize>(model_file.content.size()));
-                out.close();
-                if (!out) {
-                    throw std::runtime_error("failed to write model file");
+                const std::string model_path = models_dir_ + "/" + metadata.id + "_" + model_filename;
+                std::error_code ec;
+                fs::rename(tmp_path, model_path, ec);
+                if (ec) {
+                    throw std::runtime_error("failed to finalize model file: " + ec.message());
                 }
-
+                tmp_guard.keep = true;
                 if (!metadata_.save_model_metadata(metadata)) {
+                    fs::remove(model_path, ec);
                     throw std::runtime_error("failed to save metadata");
                 }
             }
             res.status = 201;
             res.set_content(model_to_json(metadata).dump(), "application/json");
+        }
+        catch (const nlohmann::json::exception &e) {
+            res.status = 400;
+            res.set_content(nlohmann::json{{"error", std::string("invalid metadata JSON: ") + e.what()}}.dump(),
+                            "application/json");
         }
         catch (const std::exception &e) {
             res.status = 500;

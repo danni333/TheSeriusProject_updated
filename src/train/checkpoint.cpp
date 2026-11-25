@@ -43,7 +43,8 @@ void save_checkpoint(const std::string &path, const model::TransformerModel &mod
             os.write(reinterpret_cast<char *>(&val), sizeof(size_t));
         }
 
-        os.write(reinterpret_cast<char *>(p->data.data()), p->data.size() * sizeof(float));
+        p->data.syncToHost();
+        os.write(reinterpret_cast<const char *>(p->data.data()), p->data.size() * sizeof(float));
 
         // A parameter may have no optimizer state yet (e.g. frozen or never
         // stepped). Write zero moments + step 0 instead of throwing via .at(),
@@ -59,9 +60,14 @@ void save_checkpoint(const std::string &path, const model::TransformerModel &mod
             os.write(reinterpret_cast<const char *>(&zero_step), 4);
         } else {
             auto &state = state_it->second;
+            state.m.syncToHost();
+            state.v.syncToHost();
             os.write(reinterpret_cast<const char *>(state.m.data()), state.m.size() * sizeof(float));
             os.write(reinterpret_cast<const char *>(state.v.data()), state.v.size() * sizeof(float));
             os.write(reinterpret_cast<const char *>(&state.step), 4);
+        }
+        if (!os) {
+            throw std::runtime_error("Failed to write checkpoint: " + path);
         }
     }
 }
