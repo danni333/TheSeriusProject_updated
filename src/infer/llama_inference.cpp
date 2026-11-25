@@ -167,6 +167,7 @@ static void enable_ftz_daz_once()
 }
 
 // --- AVX2 Helpers ---
+#if defined(__AVX2__) || defined(_MSC_VER)
 
 inline float _mm256_reduce_add_ps(__m256 input_vec)
 {
@@ -192,6 +193,7 @@ inline float vec_dot_avx2(const float *vec_a, const float *vec_b, size_t n)
     }
     return sum;
 }
+#endif
 
 struct ScaleAccumulator
 {
@@ -203,8 +205,9 @@ struct ScaleAccumulator
 
 static void vec_add_scale_avx2(const ScaleAccumulator &args)
 {
-    const __m256 v_scale = _mm256_set1_ps(args.scale);
     size_t vec_idx = 0;
+#if defined(__AVX2__) || defined(_MSC_VER)
+    const __m256 v_scale = _mm256_set1_ps(args.scale);
     constexpr size_t AVX_STEP = 8;
     for (; vec_idx + AVX_STEP <= args.count; vec_idx += AVX_STEP) {
         __m256 v_out = _mm256_loadu_ps(args.data + vec_idx);
@@ -212,6 +215,7 @@ static void vec_add_scale_avx2(const ScaleAccumulator &args)
         v_out = _mm256_fmadd_ps(v_src, v_scale, v_out);
         _mm256_storeu_ps(args.data + vec_idx, v_out);
     }
+#endif
     for (; vec_idx < args.count; ++vec_idx) {
         args.data[vec_idx] += args.increment[vec_idx] * args.scale;
     }
@@ -234,22 +238,31 @@ static void rms_norm(const RMSNormArgs &args)
         float *out_row = args.outputs + (row_idx * args.dim);
         float sum_sq = 0.0F;
         size_t float_idx = 0;
-        __m256 v_sum = _mm256_setzero_ps();
-        for (; float_idx + AVX_FLOAT_STRIDE <= args.dim; float_idx += AVX_FLOAT_STRIDE) {
-            const __m256 vec_v = _mm256_loadu_ps(in_row + float_idx);
-            v_sum = _mm256_fmadd_ps(vec_v, vec_v, v_sum);
+#if defined(__AVX2__) || defined(_MSC_VER)
+        {
+            __m256 v_sum = _mm256_setzero_ps();
+            for (; float_idx + AVX_FLOAT_STRIDE <= args.dim; float_idx += AVX_FLOAT_STRIDE) {
+                const __m256 vec_v = _mm256_loadu_ps(in_row + float_idx);
+                v_sum = _mm256_fmadd_ps(vec_v, vec_v, v_sum);
+            }
+            sum_sq = _mm256_reduce_add_ps(v_sum);
         }
-        sum_sq = _mm256_reduce_add_ps(v_sum);
+#endif
         for (; float_idx < args.dim; ++float_idx) {
             sum_sq += in_row[float_idx] * in_row[float_idx];
         }
         const float rms = 1.0F / std::sqrt((sum_sq / static_cast<float>(args.dim)) + args.eps);
-        const __m256 v_rms = _mm256_set1_ps(rms);
-        for (float_idx = 0; float_idx + AVX_FLOAT_STRIDE <= args.dim; float_idx += AVX_FLOAT_STRIDE) {
-            const __m256 vec_x = _mm256_loadu_ps(in_row + float_idx);
-            const __m256 vec_w = _mm256_loadu_ps(args.weights + float_idx);
-            _mm256_storeu_ps(out_row + float_idx, _mm256_mul_ps(_mm256_mul_ps(vec_x, v_rms), vec_w));
+        float_idx = 0;
+#if defined(__AVX2__) || defined(_MSC_VER)
+        {
+            const __m256 v_rms = _mm256_set1_ps(rms);
+            for (; float_idx + AVX_FLOAT_STRIDE <= args.dim; float_idx += AVX_FLOAT_STRIDE) {
+                const __m256 vec_x = _mm256_loadu_ps(in_row + float_idx);
+                const __m256 vec_w = _mm256_loadu_ps(args.weights + float_idx);
+                _mm256_storeu_ps(out_row + float_idx, _mm256_mul_ps(_mm256_mul_ps(vec_x, v_rms), vec_w));
+            }
         }
+#endif
         for (; float_idx < args.dim; ++float_idx) {
             out_row[float_idx] = (in_row[float_idx] * rms) * args.weights[float_idx];
         }
@@ -356,6 +369,7 @@ static void apply_rope_inplace(const RoPEArgs &args)
     }
 }
 
+#if defined(__AVX2__) || defined(_MSC_VER)
 // Vectorized exp: exp(x) = poly(r) * 2^n with n = round(x*log2e),
 // r = x - n*ln2 in [-0.347, 0.347]. Degree-7 Taylor -> rel err ~1e-7.
 inline __m256 exp256_ps(__m256 x)
@@ -377,6 +391,7 @@ inline __m256 exp256_ps(__m256 x)
     const __m256 pow2n = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_add_epi32(ni, _mm256_set1_epi32(127)), 23));
     return _mm256_mul_ps(p, pow2n);
 }
+#endif
 
 struct SoftmaxRowsArgs
 {
@@ -407,11 +422,11 @@ static void softmax_rows_inplace(const SoftmaxRowsArgs &args)
         for (; col_idx < args.cols; ++col_idx) {
             max_val = std::max(max_val, row[col_idx]);
         }
-        const __m256 v_max = _mm256_set1_ps(max_val);
         float sum_val = 0.0F;
         col_idx = 0;
 #if defined(__AVX2__) || defined(_MSC_VER)
         {
+            const __m256 v_max = _mm256_set1_ps(max_val);
             __m256 vsum = _mm256_setzero_ps();
             for (; col_idx + AVX_FLOAT_STRIDE <= args.cols; col_idx += AVX_FLOAT_STRIDE) {
                 const __m256 e = exp256_ps(_mm256_sub_ps(_mm256_loadu_ps(row + col_idx), v_max));
@@ -426,11 +441,13 @@ static void softmax_rows_inplace(const SoftmaxRowsArgs &args)
             sum_val += row[col_idx];
         }
         const float inv_sum = 1.0F / sum_val;
-        const __m256 v_invs = _mm256_set1_ps(inv_sum);
         col_idx = 0;
 #if defined(__AVX2__) || defined(_MSC_VER)
-        for (; col_idx + AVX_FLOAT_STRIDE <= args.cols; col_idx += AVX_FLOAT_STRIDE) {
-            _mm256_storeu_ps(row + col_idx, _mm256_mul_ps(_mm256_loadu_ps(row + col_idx), v_invs));
+        {
+            const __m256 v_invs = _mm256_set1_ps(inv_sum);
+            for (; col_idx + AVX_FLOAT_STRIDE <= args.cols; col_idx += AVX_FLOAT_STRIDE) {
+                _mm256_storeu_ps(row + col_idx, _mm256_mul_ps(_mm256_loadu_ps(row + col_idx), v_invs));
+            }
         }
 #endif
         for (; col_idx < args.cols; ++col_idx) {
@@ -503,6 +520,7 @@ static void compute_qkv_rope(const model::LLaMABlock *block, const Tensor &norme
 /**
  * @brief Updates the KV cache with new key and value tensors.
  */
+#if defined(__AVX2__) || defined(_MSC_VER)
 // FP16 helpers for the KV cache (round-to-nearest via F16C where available).
 static inline __m128i f32x8_to_f16x8(__m256 v)
 {
@@ -511,7 +529,7 @@ static inline __m128i f32x8_to_f16x8(__m256 v)
 #else
     alignas(32) float f[8];
     _mm256_store_ps(f, v);
-    __m128i h = _mm_setzero_si128();
+    alignas(16) uint16_t out[8];
     for (int i = 0; i < 8; ++i) {
         const float x = f[i];
         uint32_t b;
@@ -527,9 +545,9 @@ static inline __m128i f32x8_to_f16x8(__m256 v)
         } else {
             r = static_cast<uint16_t>(sign | (static_cast<uint32_t>(e) << 10) | (m >> 13));
         }
-        h = _mm_insert_epi16(h, static_cast<int>(r), i);
+        out[i] = r;
     }
-    return h;
+    return _mm_load_si128(reinterpret_cast<const __m128i *>(out));
 #endif
 }
 
@@ -558,7 +576,7 @@ static inline __m256 f16x8_to_f32x8(__m128i h)
                     --exp;
                 }
                 mm &= 0x3FFu;
-                r = sign | static_cast<uint32_t>(127 - 15 + 1 + exp << 23) | (mm << 13);
+                r = sign | (static_cast<uint32_t>(127 - 15 + 1 + exp) << 23) | (mm << 13);
             }
         } else if (e == 31) {
             r = sign | 0x7F800000u | (m << 13);
@@ -570,6 +588,7 @@ static inline __m256 f16x8_to_f32x8(__m128i h)
     return _mm256_load_ps(f);
 #endif
 }
+#endif
 
 static inline uint16_t f32_to_f16_scalar(float x)
 {
@@ -620,16 +639,17 @@ static inline float f16_to_f32_scalar(uint16_t h)
 // Dot product q(fp32) . kv(fp16 or fp32) at element offset `off`.
 static float kv_dot_f32(const float *q, const uint16_t *p16, const float *p32, size_t off, size_t dim)
 {
-    __m256 acc = _mm256_setzero_ps();
     size_t d = 0;
+    float s = 0.0F;
 #if defined(__AVX2__) || defined(_MSC_VER)
+    __m256 acc = _mm256_setzero_ps();
     for (; d + 8 <= dim; d += 8) {
         const __m256 kv = p16 ? f16x8_to_f32x8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(p16 + off + d)))
                               : _mm256_loadu_ps(p32 + off + d);
         acc = _mm256_fmadd_ps(_mm256_loadu_ps(q + d), kv, acc);
     }
+    s = _mm256_reduce_add_ps(acc);
 #endif
-    float s = _mm256_reduce_add_ps(acc);
     for (; d < dim; ++d) {
         const float kv = p16 ? f16_to_f32_scalar(p16[off + d]) : p32[off + d];
         s += q[d] * kv;
@@ -771,6 +791,7 @@ static void compute_head_attention(const HeadAttentionArgs &args)
         const float *kbase = (!kv16 && args.cache_layer != nullptr) ? args.cache_layer->k.data() : args.key_buf.data();
         const float *vbase32 =
             (!kv16 && args.cache_layer != nullptr) ? args.cache_layer->v.data() : args.value_buf.data();
+#if defined(__AVX2__) || defined(_MSC_VER)
         auto load_kv = [](const uint16_t *p16, const float *p32, size_t off) -> __m256 {
             return p16 ? f16x8_to_f32x8(_mm_loadu_si128(reinterpret_cast<const __m128i *>(p16 + off)))
                        : _mm256_loadu_ps(p32 + off);
@@ -800,7 +821,9 @@ static void compute_head_attention(const HeadAttentionArgs &args)
                 scores[kj] = kv_dot_f32(q_ptr, k16base, kbase, (kj * args.local_kv_dim) + koff, args.head_dim) *
                              args.attention_scale;
             }
-        } else {
+        } else
+#endif
+        {
             for (size_t kj = 0; kj < npos; ++kj) {
                 scores[kj] = kv_dot_f32(q_ptr, k16base, kbase, (kj * args.local_kv_dim) + koff, args.head_dim) *
                              args.attention_scale;
@@ -820,6 +843,7 @@ static void compute_head_attention(const HeadAttentionArgs &args)
 
         float *out_ptr = args.attention_out_ptr + (qi * args.local_hidden_dim) +
                          (static_cast<size_t>(args.head_idx) * args.head_dim);
+#if defined(__AVX2__) || defined(_MSC_VER)
         if (simd_ok) {
             // Weighted-V sum with the output kept in registers across all positions.
             constexpr size_t MAX_VVEC = 16;  // head_dim <= 128
@@ -839,7 +863,9 @@ static void compute_head_attention(const HeadAttentionArgs &args)
             for (size_t d = 0; d < nvec; ++d) {
                 _mm256_storeu_ps(out_ptr + d * AVX_FLOAT_STRIDE, vacc[d]);
             }
-        } else {
+        } else
+#endif
+        {
             std::memset(out_ptr, 0, args.head_dim * sizeof(float));
             std::vector<float> vrow;
             if (kv16) {

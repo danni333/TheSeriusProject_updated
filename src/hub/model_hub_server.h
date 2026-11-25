@@ -70,6 +70,9 @@ class ModelHubServer
     void log_access(const std::string &user_id, const std::string &action, const std::string &resource);
 
     // File-based user store: {sha256(api_key): {user_id, username, permissions[]}}
+    mutable std::mutex users_mutex_;
+    nlohmann::json load_users_locked() const;
+    bool save_users_locked(const nlohmann::json &users);
     nlohmann::json load_users() const;
     bool save_users(const nlohmann::json &users);
     // Fixed-window rate limiter for unauthenticated endpoints. `bucket` is a

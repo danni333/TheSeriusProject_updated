@@ -1,5 +1,6 @@
 #include <cstdlib>
 #include <stdexcept>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -18,7 +19,6 @@
 #include <dirent.h>
 #include <set>
 #include <string>
-#include <thread>
 #include <utility>
 #endif
 

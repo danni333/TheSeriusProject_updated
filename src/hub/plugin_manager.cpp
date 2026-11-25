@@ -146,25 +146,14 @@ bool PluginManager::create_sandbox(const PluginContext &context)
 
 bool PluginManager::setup_resource_limits(const std::string &plugin_id, const SandboxConfig &config)
 {
-#ifndef _WIN32
-    // Set memory limit
-    struct rlimit mem_limit;
-    mem_limit.rlim_cur = config.max_memory_mb * 1024 * 1024;  // Convert to bytes
-    mem_limit.rlim_max = mem_limit.rlim_cur;
-    if (setrlimit(RLIMIT_AS, &mem_limit) != 0) {
-        spdlog::warn("Failed to set memory limit for plugin: {}", plugin_id);
-    }
-
-    // Set file descriptor limit
-    struct rlimit fd_limit;
-    fd_limit.rlim_cur = config.max_file_descriptors;
-    fd_limit.rlim_max = config.max_file_descriptors;
-    if (setrlimit(RLIMIT_NOFILE, &fd_limit) != 0) {
-        spdlog::warn("Failed to set file descriptor limit for plugin: {}", plugin_id);
-    }
-#endif
-
-    return true;
+    // Do NOT call setrlimit(RLIMIT_AS / RLIMIT_NOFILE) here: in-process plugins
+    // share the host server's process, so lowering RLIMIT_AS or RLIMIT_NOFILE
+    // permanently throttles the entire server (breaking mmap, model loading,
+    // and sockets). Memory and CPU soft limits are enforced per-plugin by
+    // monitor_plugin_resources() via cleanup_resources().
+    spdlog::debug("Configured in-process sandbox limits for plugin '{}': mem={}MB, cpu={}%, fd_cap={}",
+                  plugin_id, config.max_memory_mb, config.max_cpu_percent, config.max_file_descriptors);
+    return config.max_memory_mb > 0 && config.max_file_descriptors > 0;
 }
 
 void PluginManager::start_monitoring(const std::string &plugin_id)
@@ -248,6 +237,8 @@ size_t PluginManager::get_process_memory_usage()
 
 double PluginManager::get_process_cpu_usage()
 {
+    static std::mutex cpu_usage_mu;
+    std::lock_guard<std::mutex> lk(cpu_usage_mu);
     static auto last_process_time = std::chrono::steady_clock::now();
     static double last_cpu_time = 0.0;
 

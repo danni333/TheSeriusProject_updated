@@ -272,7 +272,7 @@ void ModelHubServer::setup_routes()
 // Auth: file-based API keys. Empty users store => open mode (default_user).
 // ---------------------------------------------------------------------------
 
-nlohmann::json ModelHubServer::load_users() const
+nlohmann::json ModelHubServer::load_users_locked() const
 {
     std::ifstream in(users_path_);
     if (!in) {
@@ -288,14 +288,43 @@ nlohmann::json ModelHubServer::load_users() const
     }
 }
 
-bool ModelHubServer::save_users(const nlohmann::json &users)
+bool ModelHubServer::save_users_locked(const nlohmann::json &users)
 {
-    std::ofstream out(users_path_, std::ios::trunc);
-    if (!out) {
+    const fs::path target(users_path_);
+    const fs::path tmp = users_path_ + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc | std::ios::binary);
+        if (!out) {
+            return false;
+        }
+        out << users.dump(2);
+        out.flush();
+        if (!out) {
+            std::error_code rm_ec;
+            fs::remove(tmp, rm_ec);
+            return false;
+        }
+    }
+    std::error_code ec;
+    fs::rename(tmp, target, ec);
+    if (ec) {
+        std::error_code rm_ec;
+        fs::remove(tmp, rm_ec);
         return false;
     }
-    out << users.dump(2);
-    return static_cast<bool>(out);
+    return true;
+}
+
+nlohmann::json ModelHubServer::load_users() const
+{
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    return load_users_locked();
+}
+
+bool ModelHubServer::save_users(const nlohmann::json &users)
+{
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    return save_users_locked(users);
 }
 
 std::string ModelHubServer::resolve_user_id(const std::string &api_key) const
@@ -338,7 +367,8 @@ int ModelHubServer::register_user(const std::string &username, std::string &api_
     if (username.empty()) {
         return 1;
     }
-    auto users = load_users();
+    std::lock_guard<std::mutex> lk(users_mutex_);
+    auto users = load_users_locked();
     // An existing username is a conflict: never return the stored key, that
     // would allow account takeover by anyone who can reach /v1/auth/register.
     for (auto it = users.begin(); it != users.end(); ++it) {
@@ -353,7 +383,7 @@ int ModelHubServer::register_user(const std::string &username, std::string &api_
                        {"username", username},
                        {"permissions", {"read", "upload"}},
                        {"created_at", now_iso8601()}};
-    if (!save_users(users)) {
+    if (!save_users_locked(users)) {
         api_key.clear();
         return 1;
     }
@@ -542,8 +572,8 @@ void ModelHubServer::setup_model_routes()
             return;
         }
 
-        const auto model_file = req.form.get_file("model");
-        const auto metadata_file = req.form.get_file("metadata");
+        const auto &model_file = req.form.get_file("model");
+        const auto &metadata_file = req.form.get_file("metadata");
 
         try {
             ModelMetadata metadata = json_to_model(nlohmann::json::parse(metadata_file.content));
