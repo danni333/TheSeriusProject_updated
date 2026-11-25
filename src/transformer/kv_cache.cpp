@@ -65,20 +65,52 @@ void KVCache::update(const Tensor &key, const Tensor &value)
     }
 }
 
+Tensor KVCache::ordered_seq_(const Tensor &src) const
+{
+    const size_t effective_len = rolling_ ? std::min(current_len_, max_len_) : current_len_;
+    const auto &shape = src.shape();
+    const size_t batch = shape[0];
+    const size_t heads = shape[1];
+    const size_t phys_len = shape[2];
+    const size_t dim = shape[3];
+
+    // Not wrapped (or not rolling): physical order is already chronological.
+    if (!rolling_ || current_len_ <= max_len_) {
+        return src.slice(2, 0, effective_len);
+    }
+
+    // Wrapped circular buffer: the oldest slot is the next one to be
+    // overwritten, i.e. current_len_ % max_len_. Gather slots in order.
+    const size_t oldest = current_len_ % max_len_;
+    Tensor out({batch, heads, effective_len, dim});
+    const float *sdata = src.data();
+    float *odata = static_cast<float *>(out.raw_data());
+    const auto &sstr = src.strides();
+    for (size_t b = 0; b < batch; ++b) {
+        for (size_t h = 0; h < heads; ++h) {
+            for (size_t t = 0; t < effective_len; ++t) {
+                const size_t pos = (oldest + t) % phys_len;
+                const size_t src_off = b * sstr[0] + h * sstr[1] + pos * sstr[2];
+                const size_t dst_off = ((b * heads + h) * effective_len + t) * dim;
+                for (size_t d = 0; d < dim; ++d) {
+                    odata[dst_off + d] = sdata[src_off + d * sstr[3]];
+                }
+            }
+        }
+    }
+    return out;
+}
+
 Tensor KVCache::get_keys() const
 {
     if (keys_ == nullptr) return Tensor({0});
-    size_t effective_len = rolling_ ? std::min(current_len_, max_len_) : current_len_;
-    // Return a slice [batch, heads, 0:effective_len, head_dim]
-    return keys_->slice(2, 0, effective_len);
+    return ordered_seq_(*keys_);
 }
 
 Tensor KVCache::get_values() const
 {
     if (values_ == nullptr) return Tensor({0});
-    size_t effective_len = rolling_ ? std::min(current_len_, max_len_) : current_len_;
-    // Return a slice [batch, heads, 0:effective_len, head_dim]
-    return values_->slice(2, 0, effective_len);
+    return ordered_seq_(*values_);
 }
 
 void KVCache::reset()

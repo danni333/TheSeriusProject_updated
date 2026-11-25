@@ -1154,3 +1154,20 @@ Fix applicati in questa sessione:
 - **F7.54** `activation_hooks`: `std::atomic<ActivationHooks>` snapshot (fix race OpenMP writer/reader); `activation_hooks()` ritorna per valore.
 
 Da verificare/fix successivi: F7.46 (upload RAM), F7.49 (registration race), F7.35 (setrlimit), F7.63 (embed cache), F7b residui.
+
+### Verifiche extra (2026-11-24, remediation)
+
+- **F6.17 NON-BUG**: `general.file_type=1` in GGUF = `MOSTLY_F16` nell'enum ufficiale (0=F32, 1=F16, 2=Q4_0...). Coerente coi tensori F16 scritti. L'audit l'aveva interpretato come Q4_0 — errato.
+- **F7.1 già fixato**: `load_checkpoint` ha validazione completa (magic, version, bounds, overflow, size match, contiguity, stream state, GPU dirty).
+
+## Aggiornamento remediation (2026-11-25, secondo batch)
+
+- **F7.49** `register_user`: `users_mutex_` serializza check-then-write; `save_users` ora atomico (tmp + rename, con fallback remove+rename su Windows).
+- **F7.35** `setup_resource_limits`: `setrlimit` POSIX ora opt-in via `SERIUS_PLUGIN_SETRLIMIT=1` (era process-wide → DoS self-inflicted); warn esplicito di default.
+- **F7.44** download `content_provider`: clamp di `length` a `fsize-offset` (no allocazione enorme da range request).
+- **F7.47** `validate_model_file`: verifica reale magic — "GGUF" oppure header safetensors (uint64 len + '{').
+- **F7.63** `EmbeddingManager::compute_embedding`: cache bounded (8192, clear-on-full, mutex) in `compute_embedding_uncached` wrapper; invalidata in `unload_model`.
+- **F7.63-alt** (`save_checkpoint` syncToHost): verificato non-bug — `Tensor::data()` chiama già `syncToHost()`.
+- **F7.46** upload multipart in RAM: limitazione intrinseca di httplib (body già bufferizzata); fix reale richiede streaming upload — documentato, non fixato.
+
+Verifica: test_hub_server 2/2, test_hub_search 4/4, test_hub_downloader 5/5.

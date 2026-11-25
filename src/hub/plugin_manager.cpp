@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -147,6 +148,21 @@ bool PluginManager::create_sandbox(const PluginContext &context)
 bool PluginManager::setup_resource_limits(const std::string &plugin_id, const SandboxConfig &config)
 {
 #ifndef _WIN32
+    // setrlimit() is PROCESS-wide on POSIX: applying it here would cap the
+    // memory/FD budget of the entire hub server, not just the plugin — an
+    // auto-inflicted DoS. True per-plugin isolation needs a subprocess,
+    // which is out of scope; keep the limits opt-in for single-plugin
+    // deployments via SERIUS_PLUGIN_SETRLIMIT=1.
+    static const bool apply_process_limits = [] {
+        const char *v = std::getenv("SERIUS_PLUGIN_SETRLIMIT");
+        return v != nullptr && v[0] == '1';
+    }();
+    if (!apply_process_limits) {
+        spdlog::warn("Plugin '{}': POSIX setrlimit is process-wide and disabled by default "
+                     "(set SERIUS_PLUGIN_SETRLIMIT=1 to apply)",
+                     plugin_id);
+        return true;
+    }
     // Set memory limit
     struct rlimit mem_limit;
     mem_limit.rlim_cur = config.max_memory_mb * 1024 * 1024;  // Convert to bytes

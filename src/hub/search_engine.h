@@ -6,6 +6,7 @@
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <unordered_map>
 #include <vector>
 // #include <sqlite3.h>
 
@@ -155,12 +156,18 @@ class EmbeddingManager
     std::unique_ptr<NomicBertEmbedder> bert_;
     bool use_task_prefixes_ = false;  // nomic-bert: prepend search_query/document
 
+    // Bounded embedding cache: document embeddings dominate semantic search
+    // cost (one forward per model per query). Cleared on model (un)load.
+    std::mutex emb_mutex_;
+    std::unordered_map<std::string, std::vector<float>> emb_cache_;
+
     bool try_load_gguf(const std::string &path);
     bool try_load_nomic_gguf(const std::string &path);
     bool try_load_safetensors_dir(const std::string &dir);
 
     // Embedding computation (deterministic hashed bag-of-words fallback when
     // no embedding model file is provided to load_model()).
+    std::vector<float> compute_embedding_uncached(const std::string &text);
     std::vector<float> compute_with_simple_tokenizer(const std::string &text);
 };
 

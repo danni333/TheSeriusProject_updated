@@ -176,7 +176,7 @@ void q40_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
     size_t k = 0;
     size_t b = 0;
     for (; b + 8 <= full_blocks; b += 8, k += 256) {
-        _mm_prefetch(reinterpret_cast<const char *>(row + (b + 16) * 18), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char *>(row + (b + 16) * 18), _MM_HINT_NTA);
         for (int i = 0; i < 8; ++i) {
             const uint8_t *blk = row + (b + i) * 18;
             const __m512 d = _mm512_set1_ps(fp16_to_fp32_fast(load_fp16(blk)));
@@ -225,7 +225,7 @@ void q41_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
     size_t k = 0;
     size_t b = 0;
     for (; b + 8 <= full_blocks; b += 8, k += 256) {
-        _mm_prefetch(reinterpret_cast<const char *>(row + (b + 16) * 20), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char *>(row + (b + 16) * 20), _MM_HINT_NTA);
         for (int i = 0; i < 8; ++i) {
             const uint8_t *blk = row + (b + i) * 20;
             const __m512 d = _mm512_set1_ps(fp16_to_fp32_fast(load_fp16(blk)));
@@ -275,7 +275,7 @@ void q80_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
     size_t k = 0;
     size_t b = 0;
     for (; b + 8 <= full_blocks; b += 8, k += 256) {
-        _mm_prefetch(reinterpret_cast<const char *>(row + (b + 16) * 34), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char *>(row + (b + 16) * 34), _MM_HINT_NTA);
         for (int i = 0; i < 8; ++i) {
             const uint8_t *blk = row + (b + i) * 34;
             const __m512 d = _mm512_set1_ps(fp16_to_fp32_fast(load_fp16(blk)));
@@ -322,7 +322,7 @@ void q4k_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
     size_t k = 0;
     for (size_t s = 0; s < nsb; ++s, k += 256) {
         const uint8_t *blk = row + s * 144;
-        _mm_prefetch(reinterpret_cast<const char *>(blk + 144), _MM_HINT_T0);
+        _mm_prefetch(reinterpret_cast<const char *>(blk + 144), _MM_HINT_NTA);
         const float d = fp16_to_fp32_fast(load_fp16(blk));
         const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
         const uint8_t *sc = blk + 4;

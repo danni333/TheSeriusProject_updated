@@ -70,8 +70,10 @@ class ModelHubServer
     void log_access(const std::string &user_id, const std::string &action, const std::string &resource);
 
     // File-based user store: {sha256(api_key): {user_id, username, permissions[]}}
+    // users_mutex_ serializes the load-modify-save cycle in register_user.
     nlohmann::json load_users() const;
     bool save_users(const nlohmann::json &users);
+    std::mutex users_mutex_;
     // Fixed-window rate limiter for unauthenticated endpoints. `bucket` is a
     // logical name (e.g. "register") and `remote_addr` scopes the counter.
     bool rate_limit_ok(const std::string &bucket, const std::string &remote_addr, int max_per_minute);
