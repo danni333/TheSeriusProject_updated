@@ -1,3 +1,4 @@
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1127,7 +1128,7 @@ void q40vnni_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &
         w = _mm512_inserti32x4(w, hi0, 1);
         w = _mm512_inserti32x4(w, lo1, 2);
         w = _mm512_inserti32x4(w, hi1, 3);
-        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 64));
+        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 32));
         const __m512i prod = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, xqv);
         const __m256 plo = _mm256_cvtepi32_ps(_mm512_castsi512_si256(prod));
         const __m256 phi = _mm256_cvtepi32_ps(_mm512_extracti32x8_epi32(prod, 1));
@@ -1178,7 +1179,7 @@ void q41vnni_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &
         w = _mm512_inserti32x4(w, hi0, 1);
         w = _mm512_inserti32x4(w, lo1, 2);
         w = _mm512_inserti32x4(w, hi1, 3);
-        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 64));
+        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 32));
         const __m512i prod = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, xqv);
         const __m256 plo = _mm256_cvtepi32_ps(_mm512_castsi512_si256(prod));
         const __m256 phi = _mm256_cvtepi32_ps(_mm512_extracti32x8_epi32(prod, 1));
@@ -1219,7 +1220,7 @@ void q80vnni_row_avx512(const uint8_t *row, size_t in, const XQuant &xq, float &
         __m512i w = _mm512_castsi256_si512(w0);
         w = _mm512_inserti64x4(w, w1, 1);
         w = _mm512_xor_si512(w, sign_flip);
-        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 64));
+        const __m512i xqv = _mm512_loadu_si512(reinterpret_cast<const void *>(xq.q.data() + b * 32));
         const __m512i prod = _mm512_dpbusd_epi32(_mm512_setzero_si512(), w, xqv);
         const __m256 plo = _mm256_cvtepi32_ps(_mm512_castsi512_si256(prod));
         const __m256 phi = _mm256_cvtepi32_ps(_mm512_extracti32x8_epi32(prod, 1));
@@ -1611,10 +1612,20 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
     const size_t N = w.out;
 
     // Integer-dot path (ggml-style): Q4_0/Q4_1/Q8_0/Q4_K weights x int8-
-    // quantized activation. Fewer uops/byte than the fp dequant path, but
-    // on CPUs without AVX512-VNNI it measured parity-or-worse (DRAM-bound).
-    // Enable with SERIUS_INTDOT=1 to experiment.
+    // quantized activation. Default ON for AVX512-VNNI CPUs (vpdpbusd is
+    // ~17% faster than the fp dequant path on Rocket Lake, measured
+    // 2026-11-25); opt-in via SERIUS_INTDOT=1 elsewhere — on plain AVX2 it
+    // measured parity-or-worse (DRAM-bound). SERIUS_NO_INTDOT=1 disables.
 #if defined(__AVX2__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
+    static const bool no_intdot = [] {
+#if defined(_MSC_VER)
+        char buf[8];
+        size_t len = 0;
+        return getenv_s(&len, buf, sizeof(buf), "SERIUS_NO_INTDOT") == 0 && len > 0;
+#else
+        return std::getenv("SERIUS_NO_INTDOT") != nullptr;
+#endif
+    }();
     static const bool yes_intdot = [] {
 #if defined(_MSC_VER)
         char buf[8];
@@ -1624,12 +1635,26 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
         return std::getenv("SERIUS_INTDOT") != nullptr;
 #endif
     }();
+    static const bool no_vnni = [] {
+#if defined(_MSC_VER)
+        char buf[8];
+        size_t len = 0;
+        return getenv_s(&len, buf, sizeof(buf), "SERIUS_NO_VNNI") == 0 && len > 0;
+#else
+        return std::getenv("SERIUS_NO_VNNI") != nullptr;
+#endif
+    }();
+    const auto info = get_cpu_info();
+    const bool vnni_ok = info.has_avx512_vnni && !no_vnni;
+    // Q4_K excluded: q4ki_row_avx512 is mathematically correct (verified
+    // against scalar int math) but SLOWER than the fp dequant path on a
+    // real Q4_K_M model (12.7 vs 14.2 tok/s, 2026-11-25) and its int8
+    // activation quantization exceeds the MatvecQuantK test tolerance on
+    // synthetic data — keep Q4_K on the fp path.
     const bool intdot_type = (w.type == quant::QuantType::Q4_0 || w.type == quant::QuantType::Q4_1 ||
-                              w.type == quant::QuantType::Q8_0 || w.type == quant::QuantType::Q4_K);
-    const bool intdot_ok = intdot_type && (K % 32) == 0 && K >= 32 &&
-                           (w.type != quant::QuantType::Q4_K || (K % 256) == 0);
-    if (yes_intdot && intdot_ok) {
-        const auto info = get_cpu_info();
+                              w.type == quant::QuantType::Q8_0);
+    const bool intdot_ok = intdot_type && (K % 32) == 0 && K >= 32;
+    if (!no_intdot && intdot_ok && (yes_intdot || vnni_ok)) {
         using IRowFn = void (*)(const uint8_t *, size_t, const XQuant &, float &);
         IRowFn ifn = nullptr;
 #if defined(__AVX512F__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
@@ -1642,23 +1667,9 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
             return std::getenv("SERIUS_NO_AVX512") != nullptr;
 #endif
         }();
-#if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
-        // VNNI kernels measured SLOWER than the maddubs/madd_epi16 path on
-        // Rocket Lake (i9-11900H, 2026-11-24 micro-bench) — keep them behind
-        // an explicit opt-in for re-testing on other uarchs (e.g. SPR+).
-        static const bool yes_vnni = [] {
-#if defined(_MSC_VER)
-            char buf[8];
-            size_t len = 0;
-            return getenv_s(&len, buf, sizeof(buf), "SERIUS_VNNI") == 0 && len > 0;
-#else
-            return std::getenv("SERIUS_VNNI") != nullptr;
-#endif
-        }();
-#endif
         if (info.has_avx512f && !no_avx512) {
 #if defined(__AVX512VNNI__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
-            if (info.has_avx512_vnni && yes_vnni) {
+            if (vnni_ok) {
                 if (w.type == quant::QuantType::Q4_0) {
                     ifn = q40vnni_row_avx512;
                 } else if (w.type == quant::QuantType::Q4_1) {

@@ -385,16 +385,14 @@ TEST(KVCacheTest, RollingBufferOverwrite)
     EXPECT_EQ(cache.current_len(), (size_t)6);
     EXPECT_TRUE(cache.is_rolling());
 
+    // get_keys() returns slots in chronological order (oldest first):
+    // physical buffer holds [50, 51, 2, 3] but the oldest slot is pos 2,
+    // so the logical sequence is [2, 3, 50, 51].
     Tensor k_out = cache.get_keys();
-    // The buffer should hold: [50, 51, 2, 3] at positions [0, 1, 2, 3]
-    // Position 0 was overwritten with token t=0+50=50
-    EXPECT_NEAR(k_out.at({0, 0, 0, 0}), 50.0f, 1e-5f);
-    // Position 1 was overwritten with token t=1+50=51
-    EXPECT_NEAR(k_out.at({0, 0, 1, 0}), 51.0f, 1e-5f);
-    // Position 2 should still be original token 2
-    EXPECT_NEAR(k_out.at({0, 0, 2, 0}), 2.0f, 1e-5f);
-    // Position 3 should still be original token 3
-    EXPECT_NEAR(k_out.at({0, 0, 3, 0}), 3.0f, 1e-5f);
+    EXPECT_NEAR(k_out.at({0, 0, 0, 0}), 2.0f, 1e-5f);
+    EXPECT_NEAR(k_out.at({0, 0, 1, 0}), 3.0f, 1e-5f);
+    EXPECT_NEAR(k_out.at({0, 0, 2, 0}), 50.0f, 1e-5f);
+    EXPECT_NEAR(k_out.at({0, 0, 3, 0}), 51.0f, 1e-5f);
 }
 
 TEST(KVCacheTest, NonRollingOverflow)
