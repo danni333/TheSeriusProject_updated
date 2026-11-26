@@ -57,11 +57,10 @@ void transpose_hf_to_cpp(const float *src_buffer, float *dst_buffer, size_t num_
 
 /**
  * @brief GGUF (llama arch) stores attn_q/attn_k output dims permuted for RoPE:
- * within each head, order is [even indices | odd indices] of the HF
- * head_dim layout, while HF uses plain [0..head_dim). This reorders each
- * row's out-features back to HF ordering (inverse of the llama.cpp
- * convert-time permute: reshape (n_head, head_dim/2, 2, n_embd) then
- * transpose(0,2,1,3)).
+ * within each head, RoPE pairs sit adjacent - GGUF[2j] = HF[j],
+ * GGUF[2j+1] = HF[j + head_dim/2] - while HF uses rotate-half pairs
+ * (j, j + head_dim/2). This reorders each row's out-features back to HF
+ * ordering (inverse of the llama.cpp convert-time permute).
  * Buffer layout: [in_dim][out_dim] row-major; out_dim = n_heads * head_dim.
  */
 void unpermute_gguf_rope_heads(float *weights, size_t in_dim, size_t out_dim, size_t head_dim)
@@ -77,8 +76,9 @@ void unpermute_gguf_rope_heads(float *weights, size_t in_dim, size_t out_dim, si
         for (size_t h = 0; h < n_heads; ++h) {
             float *seg = row + (h * head_dim);
             for (size_t s = 0; s < head_dim; ++s) {
-                // HF position s <- GGUF slot: evens at s/2, odds at (s-1)/2 + half
-                const size_t src = ((s & 1) == 0) ? (s / 2) : ((s - 1) / 2 + half);
+                // HF position s <- GGUF slot: first half reads even slots,
+                // second half reads odd slots (adjacent RoPE pairs).
+                const size_t src = (s < half) ? (2 * s) : (2 * (s - half) + 1);
                 tmp[s] = seg[src];
             }
             std::copy(tmp.begin(), tmp.end(), seg);
@@ -610,8 +610,8 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
             std::vector<uint8_t> perm(w.bytes.size());
             for (size_t h = 0; h < nh; ++h) {
                 for (size_t s = 0; s < head_dim; ++s) {
-                    // HF row s <- GGUF row: evens at s/2, odds at (s-1)/2 + half
-                    const size_t src_local = ((s & 1) == 0) ? (s / 2) : ((s - 1) / 2 + half);
+                    // HF row s <- GGUF row: first half even slots, second half odd.
+                    const size_t src_local = (s < half) ? (2 * s) : (2 * (s - half) + 1);
                     const size_t dst = (h * head_dim + s) * rb;
                     const size_t src = (h * head_dim + src_local) * rb;
                     std::memcpy(perm.data() + dst, w.bytes.data() + src, rb);
