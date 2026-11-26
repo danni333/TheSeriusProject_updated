@@ -1,4 +1,4 @@
-# soak_nightly.ps1 — launch a supervised soak stress test.
+# soak_nightly.ps1 - launch a supervised soak stress test.
 #
 # Starts `serius serve` (with dedicated ops port for /health + /metrics),
 # waits until the model is loaded, runs `serius stress -t soak` against it,
@@ -36,7 +36,7 @@ if (Test-Path $vcvars) {
     cmd /c "call `"$vcvars`" >nul && ninja -C build-ninja src/serius.exe" `
         *> 'stress_results\soak_build.log'
     if ($LASTEXITCODE -ne 0) {
-        Add-Content 'stress_results\soak_build.log' "`n[soak] WARNING: rebuild failed (exit $LASTEXITCODE) — using existing binary"
+        Add-Content 'stress_results\soak_build.log' "`n[soak] WARNING: rebuild failed (exit $LASTEXITCODE) - using existing binary"
     }
 }
 
@@ -82,19 +82,21 @@ if (-not $ready) {
     if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
     exit 1
 }
-Write-Output "[soak] model loaded — starting stress run (${durationSec}s, $Users users)"
+Write-Output "[soak] model loaded - starting stress run (${durationSec}s, $Users users)"
 
 # --- 4) Run the soak ------------------------------------------------------
+$outJson = "stress_results\soak_$Tag.json"
+$outLog  = "stress_results\soak_$Tag.log"
 & $serius stress -t soak `
     -s "http://localhost:$port" `
     --health-url "http://localhost:$opsPort/health" `
     -u $Users -d $durationSec -n $maxTokens `
-    -o 'stress_results\soak_$Tag.json' -f json `
-    *> 'stress_results\soak_$Tag.log'
+    -o $outJson -f json `
+    *> $outLog
 $rc = $LASTEXITCODE
 Write-Output "[soak] stress finished rc=$rc"
 
 # --- 5) Stop the server ---------------------------------------------------
 if (-not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-Write-Output "SOAK_DONE rc=$rc out=stress_results\soak_$Tag.json"
+Write-Output "SOAK_DONE rc=$rc out=$outJson"
 exit $rc
