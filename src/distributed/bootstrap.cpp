@@ -48,7 +48,10 @@ int env_int(const std::function<const char *(const char *)> &fn, const char *pri
     }
     char *end = nullptr;
     const long parsed = std::strtol(v, &end, 10);
-    if (end == v || *end != '\0' || parsed < 0 || parsed > 0x7FFFFFFF) {
+    // Negative values are only meaningful for fields whose unset sentinel is
+    // negative (e.g. SERIUS_LOCAL_RANK=-1): allow -1 there, reject elsewhere.
+    const long min_allowed = dflt < 0 ? -1 : 0;
+    if (end == v || *end != '\0' || parsed < min_allowed || parsed > 0x7FFFFFFF) {
         throw std::invalid_argument(std::string("Invalid ") + what + " environment value: '" + v + "'");
     }
     return static_cast<int>(parsed);

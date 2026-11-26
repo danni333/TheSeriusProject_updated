@@ -1171,3 +1171,18 @@ Da verificare/fix successivi: F7.46 (upload RAM), F7.49 (registration race), F7.
 - **F7.46** upload multipart in RAM: limitazione intrinseca di httplib (body già bufferizzata); fix reale richiede streaming upload — documentato, non fixato.
 
 Verifica: test_hub_server 2/2, test_hub_search 4/4, test_hub_downloader 5/5.
+
+## Aggiornamento remediation (2026-11-25, terzo batch)
+
+- **F7.13** audit log MCP: args scrubbati via `Scrubber` prima di `audit_->log` e nel log stdout del guard.
+- **F7.14** `MCPGuard::tool_risk_`: da static condiviso a map per-istanza + mutex; `risk_level` ora metodo di istanza.
+- **F7.39** stdio transport: read loop con timeout (handle non-blocking via `_open_osfhandle` + poll) — niente più hang eterno su stdin silenzioso.
+- **F7.40** stdio transport: cap sulla lunghezza riga (rifiuta frame >64KB prima di allocare).
+- **F7.41/F7.42** HTTP transport: id della request/response validato — mismatch rifiutato in entrambi i transport.
+- **F7.36** `get_process_cpu_usage`: static condivisi protetti da mutex (nessuna race tra plugin).
+- **F7.45/F7.48** hub: `load_users` ora cache keyed su mtime del file (auth non ri-parsa JSON a ogni request; save invalida via mtime).
+- **F7.32** `ExecutionPlan::compile()`: non alloca più `workspace_` inutilizzato (JIT rimosso; `workspace_size_` ancora calcolato per sizing).
+- **F7.43** `env_int` in `distributed/bootstrap.cpp`: parametro `min_value` — `SERIUS_LOCAL_RANK=-1` ora accettato correttamente.
+- **F7.34** LoadLibrary sotto mutex: deferred-design (lock globale durante dlopen bloccherebbe tutti i plugin; rischio accettato, documentato).
+
+Verifica: test_guard 11/11, test_mcp_client 11/11, test_mcp_server 11/11, test_graph_compiler 16/16, test_distributed 30/30, test_hub_server 2/2, test_hub_search 4/4, test_hub_downloader 5/5.

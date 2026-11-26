@@ -76,6 +76,13 @@ class ModelHubServer
     bool save_users_locked(const nlohmann::json &users);
     nlohmann::json load_users() const;
     bool save_users(const nlohmann::json &users);
+    // Parsed users store cached by file mtime: auth runs on every request and
+    // must not re-read+re-parse hub_users.json each time. save_users bumps
+    // the mtime so the cache self-invalidates.
+    mutable std::mutex users_cache_mutex_;
+    mutable nlohmann::json users_cache_;
+    mutable std::filesystem::file_time_type users_cache_mtime_{};
+    mutable bool users_cache_valid_ = false;
     // Fixed-window rate limiter for unauthenticated endpoints. `bucket` is a
     // logical name (e.g. "register") and `remote_addr` scopes the counter.
     bool rate_limit_ok(const std::string &bucket, const std::string &remote_addr, int max_per_minute);

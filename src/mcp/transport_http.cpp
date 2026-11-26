@@ -97,9 +97,15 @@ json HttpTransport::send_request(const std::string &method, const json &params)
     }
     try {
         json resp = json::parse(res->body);
-        if (resp.value("id", -1) != id && !resp.contains("id")) {
-            resp["id"] = id;
+        // A response carrying a DIFFERENT id is not ours: returning it would
+        // silently deliver the wrong result. Missing/null id is tolerated
+        // (some servers omit it on errors) and stamped with ours.
+        if (resp.contains("id") && !resp["id"].is_null() && resp["id"] != id) {
+            return json{{"jsonrpc", "2.0"},
+                        {"id", id},
+                        {"error", {{"code", -32006}, {"message", "response id mismatch"}}}};
         }
+        resp["id"] = id;
         return resp;
     }
     catch (...) {

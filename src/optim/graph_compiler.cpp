@@ -502,14 +502,12 @@ std::unique_ptr<ExecutionPlan> GraphCompiler::compile()
     plan->workspace_size_ = peak_workspace_bytes_ > 0 ? peak_workspace_bytes_
                                                     : total_size;
 
-    // Reserve the workspace through the same aligned allocator Tensor uses
-    // (hal CPU backend). Op outputs still allocate via Tensor/hal backend —
-    // the workspace is the plan's scratch reservation sized by the liveness
-    // analysis for fused kernels and future in-place execution.
-    if (plan->workspace_size_ > 0) {
-        plan->workspace_ =
-            hal::get_backend(hal::DeviceType::CPU)->malloc(plan->workspace_size_);
-    }
+    // workspace_size_ stays as metadata (liveness peak or conservative sum).
+    // The buffer itself is NOT allocated here: execute() never references
+    // workspace_ — op outputs allocate via Tensor/hal backend — so an eager
+    // malloc would reserve (potentially GBs of) memory that is never touched.
+    // If a fused kernel later needs scratch it can allocate on demand.
+    plan->workspace_ = nullptr;
 
     return plan;
 }

@@ -6,6 +6,7 @@
 #include <iostream>
 
 #include "audit.h"
+#include "scrubber.h"
 
 namespace serius {
 namespace mcp {
@@ -13,6 +14,14 @@ namespace mcp {
 using json = nlohmann::json;
 
 namespace {
+
+// Secrets must never reach the audit log: tool arguments routinely carry
+// api_key/token/password fields.
+const Scrubber &audit_scrubber()
+{
+    static const Scrubber s;
+    return s;
+}
 
 json make_error(const json &id, int code, const std::string &message)
 {
@@ -76,7 +85,7 @@ json MCPServer::handle_tools_call(const json &params, const json &id)
     }
 
     if (audit_) {
-        audit_->log("tools/call:" + name, args.dump(), outcome);
+        audit_->log("tools/call:" + name, audit_scrubber().scrub(args.dump()), audit_scrubber().scrub(outcome));
     }
 
     return make_result(id, json{{"content", json::array({json{{"type", "text"}, {"text", result.dump()}}})},

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <numeric>
 #include <sstream>
 #include <thread>
@@ -27,9 +28,26 @@ namespace {
 
 /// Base URL used for /health memory sampling: the dedicated ops port when
 /// configured, otherwise the main server URL.
+/// httplib may resolve "localhost" to ::1 (IPv6) first while the server
+/// binds IPv4-only (0.0.0.0); the connect then fails with Error::Connection
+/// and every request errors out. Map localhost to 127.0.0.1 so stress
+/// clients always reach an IPv4 listener.
+std::string canonical_url(const std::string &url)
+{
+    constexpr const char *kFrom = "://localhost";
+    constexpr const char *kTo = "://127.0.0.1";
+    const size_t pos = url.find(kFrom);
+    if (pos == std::string::npos) {
+        return url;
+    }
+    std::string out = url;
+    out.replace(pos, std::strlen(kFrom), kTo);
+    return out;
+}
+
 std::string health_base(const StressConfig &cfg)
 {
-    return cfg.health_url.empty() ? cfg.server_url : cfg.health_url;
+    return canonical_url(cfg.health_url.empty() ? cfg.server_url : cfg.health_url);
 }
 
 /// Spawn `count` worker threads running StressWorker with the given config.
@@ -39,8 +57,8 @@ void spawn_workers(int count, const StressConfig &cfg, std::atomic<bool> &runnin
     workers.reserve(workers.size() + static_cast<size_t>(count));
     for (int i = 0; i < count; ++i) {
         workers.emplace_back([&cfg, &running, &result, &mtx]() {
-            StressWorker worker(cfg.server_url, cfg.prompt, cfg.max_tokens, cfg.model_name, cfg.endpoint,
-                                cfg.http_timeout_seconds, cfg.request_interval_ms);
+            StressWorker worker(canonical_url(cfg.server_url), cfg.prompt, cfg.max_tokens, cfg.model_name,
+                                cfg.endpoint, cfg.http_timeout_seconds, cfg.request_interval_ms);
             worker.run(running, result, mtx);
         });
     }

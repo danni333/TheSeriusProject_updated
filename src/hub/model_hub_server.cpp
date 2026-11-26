@@ -323,8 +323,32 @@ bool ModelHubServer::save_users_locked(const nlohmann::json &users)
 
 nlohmann::json ModelHubServer::load_users() const
 {
+    // mtime-keyed cache: auth resolves a user on every request, so avoid
+    // re-reading and re-parsing hub_users.json when it hasn't changed.
+    std::error_code ec;
+    const auto mtime = fs::last_write_time(users_path_, ec);
+    {
+        std::lock_guard<std::mutex> clk(users_cache_mutex_);
+        if (users_cache_valid_ && !ec && mtime == users_cache_mtime_) {
+            return users_cache_;
+        }
+    }
     std::lock_guard<std::mutex> lk(users_mutex_);
-    return load_users_locked();
+    // Re-check under the write lock: another thread may have refreshed it.
+    {
+        std::lock_guard<std::mutex> clk(users_cache_mutex_);
+        if (users_cache_valid_ && !ec && mtime == users_cache_mtime_) {
+            return users_cache_;
+        }
+    }
+    auto fresh = load_users_locked();
+    {
+        std::lock_guard<std::mutex> clk(users_cache_mutex_);
+        users_cache_ = fresh;
+        users_cache_mtime_ = mtime;
+        users_cache_valid_ = !ec;
+    }
+    return fresh;
 }
 
 bool ModelHubServer::save_users(const nlohmann::json &users)

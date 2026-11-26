@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <map>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -33,7 +34,12 @@ class MCPGuard
     void set_risk(const std::string &tool, RiskLevel level);
 
    private:
+    // Shared risk table across instances (API compatibility: risk_level is
+    // static). Guarded by risk_mutex_; initialized once from kDefaultRisks —
+    // constructors must NOT reset it (that would wipe other instances'
+    // custom set_risk() entries).
     static std::map<std::string, RiskLevel> tool_risk_;
+    static std::mutex risk_mutex_;
 };
 
 }  // namespace mcp

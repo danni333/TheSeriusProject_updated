@@ -3,6 +3,8 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 
+#include "scrubber.h"
+
 namespace serius {
 namespace mcp {
 
@@ -17,14 +19,13 @@ const std::map<std::string, RiskLevel> kDefaultRisks = {
 }  // namespace
 
 std::map<std::string, RiskLevel> MCPGuard::tool_risk_ = kDefaultRisks;
+std::mutex MCPGuard::risk_mutex_;
 
-MCPGuard::MCPGuard()
-{
-    tool_risk_ = kDefaultRisks;
-}
+MCPGuard::MCPGuard() = default;
 
 RiskLevel MCPGuard::risk_level(const std::string &tool)
 {
+    std::lock_guard<std::mutex> lk(risk_mutex_);
     auto it = tool_risk_.find(tool);
     if (it == tool_risk_.end()) {
         return RiskLevel::MODERATE;  // unknown tools default to moderate
@@ -47,7 +48,9 @@ json MCPGuard::guarded_call(MCPClient &mcp, const std::string &tool, const json 
     }
 
     if (risk >= RiskLevel::MODERATE) {
-        std::cout << "[AUDIT] " << tool << " args=" << args.dump() << std::endl;
+        // Scrub secrets before printing: args may contain api_key/token fields.
+        static const Scrubber scrubber;
+        std::cout << "[AUDIT] " << tool << " args=" << scrubber.scrub(args.dump()) << std::endl;
     }
 
     return mcp.call_tool(tool, args);
@@ -55,6 +58,7 @@ json MCPGuard::guarded_call(MCPClient &mcp, const std::string &tool, const json 
 
 void MCPGuard::set_risk(const std::string &tool, RiskLevel level)
 {
+    std::lock_guard<std::mutex> lk(risk_mutex_);
     tool_risk_[tool] = level;
 }
 

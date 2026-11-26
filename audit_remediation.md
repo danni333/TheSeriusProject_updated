@@ -32,3 +32,15 @@ Nota: fix applicati dall'utente manualmente segnati come [user].
 | downloader traversal | is_safe_repo_path | src/hub/downloader.cpp | [user] done |
 | GGUF nested KV depth cap | skip_gguf_value | src/io/gguf_loader.cpp + test | [user] done |
 | server payload max + embeddings cap | server.cpp | src/server/server.cpp | [user] done |
+| F7.13-14,39-42 | MCP: scrub args, per-instance risk map, stdio timeout+line cap, HTTP id match | src/mcp/* | done |
+| F7.32 | ExecutionPlan: no unused workspace alloc | src/optim/graph_compiler.cpp | done |
+| F7.35 | setrlimit opt-in SERIUS_PLUGIN_SETRLIMIT | src/hub/plugin_manager.cpp | done |
+| F7.36 | plugin CPU% statics mutex | src/hub/plugin_manager.cpp | done |
+| F7.43 | env_int min_value (LOCAL_RANK=-1) | src/distributed/bootstrap.cpp | done |
+| F7.44/47 | download length clamp + model magic check | src/hub/model_hub_server.cpp | done |
+| F7.45/48 | users store mtime cache | src/hub/model_hub_server.{h,cpp} | done |
+| F7.49 | register mutex + atomic save | src/hub/model_hub_server.cpp | done |
+| F7.63 | embedding cache bounded 8192 | src/hub/embedder.cpp | done |
+| F7.46 | multipart upload in RAM | - | deferred (httplib limit) |
+| F7.34 | LoadLibrary under mutex | - | deferred-design |
+| F7b | experimental deep review (~30 file, F7b.29 PPO no-op) | experimental/ | open |
