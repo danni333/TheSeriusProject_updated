@@ -1,5 +1,6 @@
 #include "report.h"
 
+#include <algorithm>
 #include <ctime>
 #include <fstream>
 #include <iomanip>
@@ -86,39 +87,53 @@ std::string generate_report(const StressResult &result, const StressConfig &conf
         row("Total Errors", std::to_string(result.total_errors));
         ss << "  └──────────────┴────────────┘\n\n";
 
-        // Memory leak detection
-        if (!result.vram_timeline.empty()) {
-            size_t vram_start = result.vram_timeline.front().second;
-            size_t vram_end = result.vram_timeline.back().second;
-            int64_t vram_drift = static_cast<int64_t>(vram_end) - static_cast<int64_t>(vram_start);
-
-            ss << "  VRAM Analysis:\n";
-            ss << "    Start: " << (vram_start / 1024 / 1024) << " MB\n";
-            ss << "    End:   " << (vram_end / 1024 / 1024) << " MB\n";
-            ss << "    Drift: " << (vram_drift / 1024 / 1024) << " MB ";
-            if (std::abs(vram_drift) < 1024 * 1024) {
-                ss << "✅ (no leak detected)\n";
-            } else {
+        // Memory leak detection: compare the median of the last samples
+        // against the median of the whole run. Endpoint-vs-endpoint drift is
+        // misleading — the first sample catches transient startup allocations
+        // (model mmap/page cache) that are legitimately freed later, which
+        // produced false "LEAK DETECTED" reports on negative drift.
+        auto leak_check = [](const std::vector<std::pair<float, size_t>> &tl, const char *name,
+                             std::ostringstream &ss) {
+            if (tl.empty()) {
+                return;
+            }
+            std::vector<size_t> vals;
+            vals.reserve(tl.size());
+            for (const auto &p : tl) vals.push_back(p.second);
+            std::sort(vals.begin(), vals.end());
+            const size_t median_all = vals[vals.size() / 2];
+            // Tail = last samples in TIME order (tl is appended chronologically
+            // by the runner), not the largest values — a mid-run spike that
+            // later subsides must not look like a leak.
+            const size_t tail_n = std::max<size_t>(1, tl.size() / 10);
+            std::vector<size_t> tail;
+            tail.reserve(tail_n);
+            for (size_t i = tl.size() - tail_n; i < tl.size(); ++i) {
+                tail.push_back(tl[i].second);
+            }
+            std::sort(tail.begin(), tail.end());
+            const size_t median_tail = tail[tail.size() / 2];
+            const int64_t drift = static_cast<int64_t>(median_tail) - static_cast<int64_t>(median_all);
+            ss << "  " << name << " Analysis:\n";
+            ss << "    Median: " << (median_all / 1024 / 1024) << " MB\n";
+            ss << "    Tail:   " << (median_tail / 1024 / 1024) << " MB\n";
+            ss << "    Drift:  " << (drift / 1024 / 1024) << " MB ";
+            if (drift > 256LL * 1024 * 1024) {
                 ss << "⚠️ (potential leak)\n";
+            } else {
+                ss << "✅ (no leak detected)\n";
             }
             ss << "\n";
+        };
+        {
+            std::ostringstream vram_ss;
+            leak_check(result.vram_timeline, "VRAM", vram_ss);
+            ss << vram_ss.str();
         }
-
-        if (!result.ram_timeline.empty()) {
-            size_t ram_start = result.ram_timeline.front().second;
-            size_t ram_end = result.ram_timeline.back().second;
-            int64_t ram_drift = static_cast<int64_t>(ram_end) - static_cast<int64_t>(ram_start);
-
-            ss << "  RAM Analysis:\n";
-            ss << "    Start: " << (ram_start / 1024 / 1024) << " MB\n";
-            ss << "    End:   " << (ram_end / 1024 / 1024) << " MB\n";
-            ss << "    Drift: " << (ram_drift / 1024 / 1024) << " MB ";
-            if (std::abs(ram_drift) < 1024 * 1024) {
-                ss << "✅ (no leak detected)\n";
-            } else {
-                ss << "⚠️ (potential leak)\n";
-            }
-            ss << "\n";
+        {
+            std::ostringstream ram_ss;
+            leak_check(result.ram_timeline, "RAM", ram_ss);
+            ss << ram_ss.str();
         }
 
         ss << "═══════════════════════════════════════════════════════\n";

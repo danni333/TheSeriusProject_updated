@@ -37,6 +37,9 @@ struct StressConfig
     int soak_sample_interval_seconds = 60;
     int chaos_max_tokens = 10;
     size_t chaos_long_prompt_chars = 100000;
+    /// Send "stream": true and read SSE responses instead of a single
+    /// JSON body. Exercises the streaming code path under load.
+    bool stream = false;
 };
 
 struct StressResult

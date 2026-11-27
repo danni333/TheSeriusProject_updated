@@ -58,7 +58,7 @@ void spawn_workers(int count, const StressConfig &cfg, std::atomic<bool> &runnin
     for (int i = 0; i < count; ++i) {
         workers.emplace_back([&cfg, &running, &result, &mtx]() {
             StressWorker worker(canonical_url(cfg.server_url), cfg.prompt, cfg.max_tokens, cfg.model_name,
-                                cfg.endpoint, cfg.http_timeout_seconds, cfg.request_interval_ms);
+                                cfg.endpoint, cfg.http_timeout_seconds, cfg.request_interval_ms, cfg.stream);
             worker.run(running, result, mtx);
         });
     }
@@ -198,7 +198,7 @@ StressResult StressRunner::run_spike(const StressConfig &cfg)
 ChaosResult StressRunner::run_chaos(const StressConfig &cfg)
 {
     ChaosResult result;
-    httplib::Client cli(cfg.server_url);
+    httplib::Client cli(canonical_url(cfg.server_url));
     cli.set_connection_timeout(cfg.http_timeout_seconds);
     cli.set_read_timeout(cfg.http_timeout_seconds);
 
@@ -240,6 +240,42 @@ ChaosResult StressRunner::run_chaos(const StressConfig &cfg)
 
     // Malformed JSON -> client error, not segfault.
     probe("malformed JSON", "invalid json", true);
+
+    // Unknown model name -> 404, not a crash or silent fallback.
+    {
+        nlohmann::json body;
+        body["model"] = "definitely-not-a-real-model";
+        body["messages"] = {{{"role", "user"}, {"content", "hi"}}};
+        body["max_tokens"] = cfg.chaos_max_tokens;
+        body["stream"] = false;
+        probe("unknown model", body.dump(), true);
+    }
+
+    // Wrong HTTP method on the endpoint -> client error or graceful 404/405.
+    {
+        auto res = cli.Get(cfg.endpoint);
+        const bool ok = res && res->status < 500;
+        if (ok) {
+            ++result.checks_passed;
+        } else {
+            ++result.checks_failed;
+        }
+    }
+
+    // Non-JSON content-type with a JSON body -> client error, not crash.
+    {
+        nlohmann::json body;
+        body["model"] = cfg.model_name;
+        body["messages"] = {{{"role", "user"}, {"content", "hi"}}};
+        body["max_tokens"] = cfg.chaos_max_tokens;
+        auto res = cli.Post(cfg.endpoint, body.dump(), "text/plain");
+        const bool ok = res && res->status < 500;
+        if (ok) {
+            ++result.checks_passed;
+        } else {
+            ++result.checks_failed;
+        }
+    }
 
     // Server must still be alive afterwards.
     if (auto res = cli.Get("/health"); res && res->status == 200) {

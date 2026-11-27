@@ -29,6 +29,7 @@ int cmd_stress(int argc, char **argv)
     parser.add_flag({"max-tokens", "n", "Maximum tokens to generate", true, "256"});
     parser.add_flag({"output", "o", "Output file path for report", true, "stress_report.txt"});
     parser.add_flag({"format", "f", "Report format (ascii, json)", true, "ascii"});
+    parser.add_flag({"stream", "", "Send stream:true (SSE) requests", false, ""});
 
     if (!parser.parse(argc, argv)) {
         std::cerr << "Error: " << parser.error() << "\n";
@@ -70,6 +71,7 @@ int cmd_stress(int argc, char **argv)
     config.prompt = prompt;
     config.max_tokens = max_tokens;
     config.model_name = model_name;
+    config.stream = parser.has("stream");
 
     std::cout << "Serius Stress Testing\n";
     std::cout << "=====================\n";

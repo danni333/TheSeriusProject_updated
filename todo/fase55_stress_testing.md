@@ -233,7 +233,17 @@ serius stress --type chaos --server http://localhost:8080
   arch=llama (`hf_llama_loader.cpp`) — tutti i GGUF Llama/Mistral
   producevano gibberish; fix verificato contro safetensors.
 
+**Copertura aggiuntiva (2026-11-27):**
+
+- `--stream` flag: worker invia `stream:true` e conta i chunk SSE
+  `"content"` come proxy dei token — la run può stressare il path
+  streaming end-to-end.
+- Chaos esteso a 6 probe: messaggi vuoti, contesto lungo, JSON malformato,
+  model sconosciuto (404), metodo HTTP errato, content-type errato.
+- Fix: `run_chaos` ora usa `canonical_url()` (prima `localhost`→::1
+  faceva fallire tutti i probe su macchine IPv4-only).
+
 **Rimasto (opzionale):**
 
-- Spike test e chaos esteso (rate-limit/auth non implementati — Fase 48).
-- SSE/streaming non stressato (il worker usa solo richieste non-stream).
+- Rate-limit/auth non testabili (non implementati — Fase 48).
+- TTFT non misurato (httplib bufferizza l'intera risposta SSE).

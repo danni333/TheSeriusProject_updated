@@ -19,14 +19,15 @@ namespace stress {
 
 StressWorker::StressWorker(const std::string &server_url, const std::string &prompt, int max_tokens,
                            const std::string &model_name, const std::string &endpoint, int timeout_seconds,
-                           int interval_ms)
+                           int interval_ms, bool stream)
     : server_url_(server_url),
       prompt_(prompt),
       max_tokens_(max_tokens),
       model_name_(model_name),
       endpoint_(endpoint),
       timeout_seconds_(timeout_seconds),
-      interval_ms_(interval_ms)
+      interval_ms_(interval_ms),
+      stream_(stream)
 {
 }
 
@@ -67,7 +68,7 @@ bool StressWorker::send_request(float &latency_ms, int &completion_tokens)
     body["model"] = model_name_;
     body["messages"] = {{{"role", "user"}, {"content", prompt_}}};
     body["max_tokens"] = max_tokens_;
-    body["stream"] = false;
+    body["stream"] = stream_;
 
     auto start = std::chrono::steady_clock::now();
     auto res = cli.Post(endpoint_, body.dump(), "application/json");
@@ -80,8 +81,20 @@ bool StressWorker::send_request(float &latency_ms, int &completion_tokens)
         return false;
     }
     try {
-        const auto j = nlohmann::json::parse(res->body);
-        completion_tokens = j.value("usage", nlohmann::json::object()).value("completion_tokens", 0);
+        if (stream_) {
+            // SSE body: count content-bearing chunks as a token proxy (the
+            // stream does not carry a usage object). Each emitted token
+            // produces one "delta":{"content":...} chunk.
+            const std::string &sse = res->body;
+            size_t pos = 0;
+            while ((pos = sse.find("\"content\"", pos)) != std::string::npos) {
+                ++completion_tokens;
+                pos += 9;
+            }
+        } else {
+            const auto j = nlohmann::json::parse(res->body);
+            completion_tokens = j.value("usage", nlohmann::json::object()).value("completion_tokens", 0);
+        }
     }
     catch (...) {
     }
