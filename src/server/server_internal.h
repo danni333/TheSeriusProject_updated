@@ -46,12 +46,14 @@ core::Tensor prefill_llama(const model::LLaMAModel &model, const std::vector<Tok
 
 GenerationResult generate_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const std::string &prompt,
                                 size_t max_new_tokens, const infer::Sampler &sampler, infer::KVCache &cache,
-                                InferenceMetrics *metrics, std::vector<TokenId> *kv_ids = nullptr);
+                                InferenceMetrics *metrics, std::vector<TokenId> *kv_ids = nullptr,
+                                bool prepend_bos = true);
 
 void stream_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const std::string &prompt,
                   size_t max_new_tokens, const infer::Sampler &sampler, infer::KVCache &cache,
                   const std::string &req_id, const std::string &model_name, httplib::DataSink &sink,
-                  InferenceMetrics *metrics, std::vector<TokenId> *kv_ids = nullptr);
+                  InferenceMetrics *metrics, std::vector<TokenId> *kv_ids = nullptr,
+                  bool prepend_bos = true);
 
 GenerationResult generate_transformer(const model::TransformerModel &model, BPETokenizer &tokenizer,
                                       const std::string &prompt, size_t max_new_tokens, const infer::Sampler &sampler,

@@ -17,24 +17,6 @@
 namespace serius {
 namespace server {
 
-namespace {
-
-/// Delete every node reachable from \p root except the model's parameter
-/// nodes. TransformerModel::forward() builds a fresh autograd graph per call;
-/// without this the whole activation graph leaks on every generated token.
-void free_graph(core::autograd::Node *root,
-                const std::unordered_set<core::autograd::Node *> &params)
-{
-    if (!root) return;
-    for (core::autograd::Node *n : core::autograd::topological_sort(root)) {
-        if (n && params.find(n) == params.end()) {
-            delete n;
-        }
-    }
-}
-
-}  // namespace
-
 /// j.value(key, "") throws nlohmann::json::type_error when the key holds a
 /// non-string JSON type (e.g. {"role": 42}). Tolerate it as the fallback —
 /// prompt-building helpers must never turn a malformed message into a 500.
@@ -293,6 +275,21 @@ std::string build_chat_prompt(const nlohmann::json &body, bool chatml)
 
     std::string prompt;
     if (chatml) {
+        // ChatML instruct models (SmolLM2, Qwen, ...) are trained with a
+        // system turn; without one a small model can collapse to an
+        // immediate <|im_end|>. Inject the same default the CLI uses when
+        // the caller did not supply a system message.
+        bool has_system = false;
+        for (const auto &msg : messages) {
+            if (msg.is_object() && json_str_or(msg, "role", "") == "system" &&
+                !message_text(msg).empty()) {
+                has_system = true;
+                break;
+            }
+        }
+        if (!has_system) {
+            prompt = "<|im_start|>system\nYou are a helpful AI assistant.<|im_end|>\n";
+        }
         for (const auto &msg : messages) {
             if (!msg.is_object()) {
                 continue;
@@ -336,11 +333,13 @@ std::string build_chat_prompt(const nlohmann::json &body, bool chatml)
 
 GenerationResult generate_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const std::string &prompt,
                                 size_t max_new_tokens, const infer::Sampler &sampler, infer::KVCache &cache,
-                                InferenceMetrics *metrics, std::vector<TokenId> *kv_ids)
+                                InferenceMetrics *metrics, std::vector<TokenId> *kv_ids, bool prepend_bos)
 {
     GenerationResult res;
     std::vector<TokenId> ids = tokenizer.encode(prompt);
-    if (ids.empty() || ids[0] != tokenizer.bos_id()) {
+    // ChatML prompts already start with <|im_start|>: prepending BOS shifts
+    // the whole transcript and instruct models answer with an immediate EOS.
+    if (prepend_bos && (ids.empty() || ids[0] != tokenizer.bos_id())) {
         ids.insert(ids.begin(), tokenizer.bos_id());
     }
     res.prompt_tokens = ids.size();
@@ -352,7 +351,6 @@ GenerationResult generate_llama(const model::LLaMAModel &model, BPETokenizer &to
     if (!infer::sample_gpu_candidates(logits, 0, sampler, next_id)) {
         next_id = sampler.sample(logits);
     }
-
     bool stopped = false;
     for (size_t gen = 0; gen < max_new_tokens; ++gen) {
         std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
@@ -391,10 +389,10 @@ GenerationResult generate_llama(const model::LLaMAModel &model, BPETokenizer &to
 void stream_llama(const model::LLaMAModel &model, BPETokenizer &tokenizer, const std::string &prompt,
                   size_t max_new_tokens, const infer::Sampler &sampler, infer::KVCache &cache,
                   const std::string &req_id, const std::string &model_name, httplib::DataSink &sink,
-                  InferenceMetrics *metrics, std::vector<TokenId> *kv_ids)
+                  InferenceMetrics *metrics, std::vector<TokenId> *kv_ids, bool prepend_bos)
 {
     std::vector<TokenId> ids = tokenizer.encode(prompt);
-    if (ids.empty() || ids[0] != tokenizer.bos_id()) {
+    if (prepend_bos && (ids.empty() || ids[0] != tokenizer.bos_id())) {
         ids.insert(ids.begin(), tokenizer.bos_id());
     }
 
@@ -525,7 +523,7 @@ GenerationResult generate_transformer(const model::TransformerModel &model, BPET
         for (size_t i = 0; i < vocab_size; ++i) {
             last_logits[i] = src[i];
         }
-        free_graph(logits_node, params);
+        core::autograd::free_graph(logits_node, params);
 
         int next_id = sampler.sample(last_logits);
         std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});
@@ -599,7 +597,7 @@ void stream_transformer(const model::TransformerModel &model, BPETokenizer &toke
         for (size_t i = 0; i < vocab_size; ++i) {
             last_logits[i] = src[i];
         }
-        free_graph(logits_node, params);
+        core::autograd::free_graph(logits_node, params);
 
         int next_id = sampler.sample(last_logits);
         std::string tok_str = tokenizer.decode({static_cast<TokenId>(next_id)});

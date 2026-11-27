@@ -1,5 +1,8 @@
 #include "engine.h"
 
+#include <algorithm>
+#include <unordered_set>
+
 namespace serius {
 namespace core {
 namespace autograd {
@@ -45,6 +48,36 @@ void backward(Node *loss_node)
         if (node->backward_fn) {
             node->backward_fn();
         }
+    }
+}
+
+void free_graph(Node *root, const std::unordered_set<Node *> &params)
+{
+    if (!root) {
+        return;
+    }
+    const auto order = topological_sort(root);
+    std::unordered_set<Node *> deleted;
+    deleted.reserve(order.size());
+    // Delete in REVERSE topological order (root first, operands last).
+    // Several ops store non-owning views (reshape/transpose/permute/slice/
+    // contiguous) of an operand's buffer; tearing down consumers before
+    // producers guarantees no node is destroyed while a still-live node
+    // aliases its storage.
+    for (auto it = order.rbegin(); it != order.rend(); ++it) {
+        Node *n = *it;
+        if (n && params.find(n) == params.end()) {
+            deleted.insert(n);
+            delete n;
+        }
+    }
+    for (Node *p : params) {
+        if (!p) {
+            continue;
+        }
+        p->children.erase(std::remove_if(p->children.begin(), p->children.end(),
+                                         [&](Node *c) { return deleted.count(c) > 0; }),
+                          p->children.end());
     }
 }
 

@@ -35,6 +35,7 @@ class SpeculativeDecoder
     struct Metrics
     {
         std::size_t draft_steps = 0;
+        std::size_t drafted_tokens = 0;
         std::size_t accepted_tokens = 0;
         std::size_t rejected_tokens = 0;
         float acceptance_rate = 0.0f;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <set>
+#include <unordered_set>
 #include <vector>
 
 #include "node.h"
@@ -17,6 +18,14 @@ void backward(Node *loss_node);
 
 // Helper function to recursively perform topological sorting
 void topo_sort(Node *node, std::set<Node *> &visited, std::vector<Node *> &order);
+
+// Delete every node reachable from `root` except the parameter nodes listed
+// in `params` (owned by the model/module and shared across calls). After a
+// forward()-style inference that returns plain Tensors, call this on the
+// result node to avoid leaking the whole activation graph. Deleted operands
+// are also pruned from kept params' children lists so future traversals
+// cannot follow dangling pointers.
+void free_graph(Node *root, const std::unordered_set<Node *> &params);
 
 }  // namespace autograd
 }  // namespace core

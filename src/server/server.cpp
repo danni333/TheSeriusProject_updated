@@ -1012,8 +1012,8 @@ void Server::setup_routes()
             res.set_header("Connection", "keep-alive");
             res.set_chunked_content_provider(
                 "text/event-stream",
-                [this, prompt, max_new, sampler, req_id, requested_model](size_t offset,
-                                                                          httplib::DataSink &sink) -> bool {
+                [this, prompt, max_new, sampler, req_id, requested_model, is_chatml](size_t offset,
+                                                                                      httplib::DataSink &sink) -> bool {
                     if (offset > 0) {
                         sink.done();
                         return true;
@@ -1027,7 +1027,7 @@ void Server::setup_routes()
                         LoadedModel *lm = find_model(requested_model);
                         if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
                             stream_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache, req_id,
-                                         requested_model, sink, metrics_.get(), &lm->cached_token_ids);
+                                         requested_model, sink, metrics_.get(), &lm->cached_token_ids, !is_chatml);
                         } else if (lm && lm->transformer && lm->tokenizer) {
                             stream_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, req_id,
                                                requested_model, sink, metrics_.get());
@@ -1062,7 +1062,7 @@ void Server::setup_routes()
         LoadedModel *lm = find_model(requested_model);
         if (lm && lm->llama && lm->tokenizer && lm->kv_cache) {
             gen_res = generate_llama(*lm->llama, *lm->tokenizer, prompt, max_new, sampler, *lm->kv_cache,
-                                     metrics_.get(), &lm->cached_token_ids);
+                                     metrics_.get(), &lm->cached_token_ids, !is_chatml);
         } else if (lm && lm->transformer && lm->tokenizer) {
             gen_res = generate_transformer(*lm->transformer, *lm->tokenizer, prompt, max_new, sampler, metrics_.get());
         } else {

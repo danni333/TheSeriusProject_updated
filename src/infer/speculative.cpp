@@ -164,13 +164,16 @@ std::vector<int> SpeculativeDecoder::generate(const std::vector<int> &prompt, st
         }
 
         metrics_.draft_steps += 1;
+        metrics_.drafted_tokens += draft_tokens.size();
         int accepted_count = 0;
-        bool rejected = false;
 
         for (std::size_t i = 0; i < draft_tokens.size(); ++i) {
+            // Verify x̂_i against p_target(· | sequence, x̂_0..x̂_{i-1}): the
+            // prefix must NOT include x̂_i itself — the last logit row then
+            // predicts the position x̂_i occupies.
             std::vector<int> prefix = sequence;
             prefix.insert(prefix.end(), draft_tokens.begin(),
-                          draft_tokens.begin() + static_cast<std::ptrdiff_t>(i + 1));
+                          draft_tokens.begin() + static_cast<std::ptrdiff_t>(i));
 
             auto target_logits = target_model_(prefix);
             auto target_probs = softmax_distribution(logits_to_last_row(target_logits));
@@ -209,13 +212,8 @@ std::vector<int> SpeculativeDecoder::generate(const std::vector<int> &prompt, st
                 }
 
                 sequence.push_back(sample_from_distribution(corrected, rng_));
-                rejected = true;
                 break;
             }
-        }
-
-        if (rejected) {
-            break;
         }
 
         if (accepted_count == static_cast<int>(draft_tokens.size())) {
@@ -233,9 +231,9 @@ std::vector<int> SpeculativeDecoder::generate(const std::vector<int> &prompt, st
         }
     }
 
-    if (metrics_.draft_steps > 0) {
+    if (metrics_.drafted_tokens > 0) {
         metrics_.acceptance_rate =
-            static_cast<float>(metrics_.accepted_tokens) / static_cast<float>(metrics_.draft_steps);
+            static_cast<float>(metrics_.accepted_tokens) / static_cast<float>(metrics_.drafted_tokens);
     }
 
     return sequence;

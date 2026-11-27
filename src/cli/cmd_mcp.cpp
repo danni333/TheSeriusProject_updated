@@ -13,6 +13,10 @@
 #include "../mcp/audit.h"
 #include "../mcp/server.h"
 
+#ifndef SERIUS_VERSION
+#define SERIUS_VERSION "unknown"
+#endif
+
 namespace serius {
 namespace cli {
 
@@ -42,7 +46,7 @@ void register_builtin_tools(mcp::MCPServer &server)
 
     server.register_tool(
         "serius_info", "Return Serius engine version and MCP server info", mcp::json::object(), [](const mcp::json &) {
-            return mcp::json{{"engine", "TheSeriusProject"}, {"version", "0.1.0"}, {"protocol", "2024-11-05"}};
+            return mcp::json{{"engine", "TheSeriusProject"}, {"version", SERIUS_VERSION}, {"protocol", "2024-11-05"}};
         });
 }
 

@@ -53,3 +53,21 @@ TEST(SpeculativeDecoder, AcceptsWhenDraftAndTargetMatch)
     EXPECT_GT(result.size(), prompt.size());
     EXPECT_GT(decoder.metrics().accepted_tokens, 0u);
 }
+
+TEST(SpeculativeDecoder, ContinuesAfterRejection)
+{
+    // Draft proposes token 7, target strongly prefers token 9 — every draft
+    // is rejected. Generation must still reach max_tokens (previously it
+    // stopped after the first rejection).
+    auto draft = [](const std::vector<int> &) { return make_logits(16, 7); };
+    auto target = [](const std::vector<int> &) { return make_logits(16, 9); };
+
+    serius::infer::SpeculativeDecoder decoder(draft, target, serius::infer::Sampler(1.0f, 0, 1.0f, 7u), 3, 2, 7u);
+
+    std::vector<int> prompt = {1};
+    auto result = decoder.generate(prompt, 6);
+
+    EXPECT_EQ(result.size(), prompt.size() + 6);
+    EXPECT_GT(decoder.metrics().rejected_tokens, 0u);
+    EXPECT_LE(decoder.metrics().acceptance_rate, 1.0f);
+}
