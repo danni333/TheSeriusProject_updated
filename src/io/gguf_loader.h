@@ -125,5 +125,16 @@ quant::QuantWeight quant_weight_q4k_to_q41(const quant::QuantWeight &w);
 /// with Q4_1 q/k). Returns an invalid QuantWeight on mismatch.
 quant::QuantWeight quant_weight_q80_to_q41(const quant::QuantWeight &w);
 
+/// True when `w`'s packed bytes can be expanded to dense FP32 by
+/// dequantize_quant_weight_dense (Q4_0/Q4_1/Q8_0/Q4_K/Q5_K GGUF row
+/// layouts with block-aligned `in`).
+bool quant_weight_dequantizable(const quant::QuantWeight &w);
+
+/// Dequantize a packed QuantWeight to dense FP32 in GGUF row order
+/// ([out][in] row-major — the same element order load_all_tensors produces
+/// before the HF→CPP transpose). `out` must hold in*out floats.
+/// Returns false on unsupported type or size mismatch.
+bool dequantize_quant_weight_dense(const quant::QuantWeight &w, float *out);
+
 }  // namespace io
 }  // namespace serius

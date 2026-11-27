@@ -35,8 +35,7 @@ size_t quant_weight_bytes(const quant::QuantWeight &qw)
 }
 
 /// Whether a packed weight can live on the GPU: valid, 32-aligned inner dim,
-/// and a type the repack/GEMV kernels support (Q5_K has no GPU path — the
-/// offload skips its upload and decode falls back to dense weights).
+/// and a type the repack/GEMV kernels support.
 bool qw_gpu_supported(const quant::QuantWeight &qw)
 {
     if (!qw.valid() || (qw.in % 32) != 0) {
@@ -48,6 +47,7 @@ bool qw_gpu_supported(const quant::QuantWeight &qw)
         case quant::QuantType::Q8_0:
             return true;
         case quant::QuantType::Q4_K:
+        case quant::QuantType::Q5_K:
             return (qw.in % 256) == 0;
         default:
             return false;

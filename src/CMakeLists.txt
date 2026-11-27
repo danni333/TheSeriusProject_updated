@@ -10,6 +10,7 @@ add_library(serius_core
     blas/matmul_avx2.cpp
     blas/matmul_avx512.cpp
     blas/matvec_quant.cpp
+    common/spin_pool.cpp
     autograd/node.cpp
     autograd/engine.cpp
     autograd/ops_basic.cpp

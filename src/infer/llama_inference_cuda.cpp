@@ -10,6 +10,7 @@
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "llama_inference.h"
@@ -864,6 +865,38 @@ GraphDisabledKey &graph_disabled()
     return k;
 }
 
+// (model, cache-instance) pairs already warned about graph ineligibility —
+// one stderr line per pair instead of one per token.
+struct GraphWarnedKey
+{
+    const void *model;
+    uint64_t cache_inst;
+    bool operator==(const GraphWarnedKey &o) const
+    {
+        return model == o.model && cache_inst == o.cache_inst;
+    }
+};
+struct GraphWarnedKeyHash
+{
+    size_t operator()(const GraphWarnedKey &k) const
+    {
+        return std::hash<const void *>()(k.model) ^ (std::hash<uint64_t>()(k.cache_inst) << 1);
+    }
+};
+std::unordered_set<GraphWarnedKey, GraphWarnedKeyHash> &graph_warned()
+{
+    static std::unordered_set<GraphWarnedKey, GraphWarnedKeyHash> s;
+    return s;
+}
+
+void log_graph_ineligible_once(const model::LLaMAModel &model, const KVCache *cache, const char *reason)
+{
+    GraphWarnedKey k{&model, cache ? cache->instance_id : 0};
+    if (graph_warned().insert(k).second) {
+        std::fprintf(stderr, "[cuda-graph] ineligible for this model (%s) — eager decode\n", reason);
+    }
+}
+
 void graph_ctx_destroy(GraphDecodeCtx &c)
 {
     if (c.exec) {
@@ -1031,10 +1064,17 @@ void issue_decode_graph(GraphDecodeCtx &ctx, const model::LLaMAModel &model, KVC
 // immediately (sample, don't store).
 Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int token_id, size_t pos, KVCache *cache)
 {
-    if (cache == nullptr || pos + 1 > 4096) return Tensor();
+    if (cache == nullptr || pos + 1 > 4096) {
+        if (cache != nullptr && pos + 1 > 4096)
+            log_graph_ineligible_once(model, cache, "context length exceeds 4096");
+        return Tensor();
+    }
     // Captured graphs can't emit activation hooks — fall back to the eager
     // path while interpretability hooks are installed.
-    if (activation_hooks_enabled()) return Tensor();
+    if (activation_hooks_enabled()) {
+        if (cache) log_graph_ineligible_once(model, cache, "activation hooks enabled");
+        return Tensor();
+    }
     {
         if (env_nonempty("SERIUS_NO_GRAPH")) return Tensor();
     }
@@ -1051,9 +1091,21 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
 
     // Eligibility: FP16 activations, every projection packed on GPU, quantized
     // lm_head — anything else falls back to the eager path.
-    if (dtype != hal::DType::Float16 || model.embed_tokens()->data.raw_data_gpu() == nullptr ||
-        model.lm_head_q() == nullptr || model.lm_head_q()->gpu_data == nullptr || model.lm_head_q()->dev_stride == 0 ||
-        model.lm_head_q()->out != cfg.vocab_size) {
+    if (dtype != hal::DType::Float16) {
+        log_graph_ineligible_once(model, cache, "activations not FP16");
+        return Tensor();
+    }
+    if (model.embed_tokens()->data.raw_data_gpu() == nullptr) {
+        log_graph_ineligible_once(model, cache, "embed_tokens not on GPU");
+        return Tensor();
+    }
+    if (model.lm_head_q() == nullptr || model.lm_head_q()->gpu_data == nullptr ||
+        model.lm_head_q()->dev_stride == 0) {
+        log_graph_ineligible_once(model, cache, "lm_head not quantized on GPU");
+        return Tensor();
+    }
+    if (model.lm_head_q()->out != cfg.vocab_size) {
+        log_graph_ineligible_once(model, cache, "lm_head output dim mismatch");
         return Tensor();
     }
     for (const auto &blk : model.layers()) {
@@ -1061,6 +1113,7 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
         if (!b->qkv_w.gpu_data || !b->gate_up_w.gpu_data || !b->o_w.gpu_data || !b->down_w.gpu_data ||
             b->qkv_w.dev_stride == 0 || b->gate_up_w.dev_stride == 0 || b->o_w.dev_stride == 0 ||
             b->down_w.dev_stride == 0) {
+            log_graph_ineligible_once(model, cache, "a projection is not fully packed on GPU");
             return Tensor();
         }
     }
@@ -1167,6 +1220,7 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
             cudaGetLastError();
             graph_ctx_destroy(ctx);
             graph_disabled() = {&model, cache->instance_id};
+            log_graph_ineligible_once(model, cache, "graph capture threw");
             return Tensor();
         }
         if (cap_err != cudaSuccess || ctx.graph == nullptr ||
@@ -1174,6 +1228,7 @@ Tensor llama_forward_single_token_cuda_graph(const model::LLaMAModel &model, int
             cudaGetLastError();
             graph_ctx_destroy(ctx);
             graph_disabled() = {&model, cache->instance_id};
+            log_graph_ineligible_once(model, cache, "graph capture/instantiate failed");
             return Tensor();
         }
         ctx.captured = true;

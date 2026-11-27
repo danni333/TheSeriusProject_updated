@@ -4,6 +4,7 @@
 #include <cstring>
 
 #include "../quant/quant_weight.h"
+#include "../common/spin_pool.h"
 #include "blas.h"
 
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
@@ -28,6 +29,10 @@ namespace blas {
 
 namespace {
 
+// SERIUS_SPINPOOL=1 (SpinPool::enabled): route hot parallel regions
+// through the persistent pool (Fase 73e) instead of per-call OpenMP
+// regions. Default off until the end-to-end A/B proves a win.
+
 // Branchless fp16 -> fp32. Correct for normal values (the only case that
 // occurs for quantization scales); subnormals flush to ~0 and inf/nan are
 // not produced by ggml quantizers.
@@ -48,6 +53,31 @@ inline uint16_t load_fp16(const uint8_t *p)
 }
 
 void q4k_scale_min(const uint8_t *sc, int j, int &d6, int &m6);
+
+#if defined(SERIUS_SIMD_X86)
+// Unpack the eight 6-bit (scale,min) pairs of a K-quant superblock (Q4_K and
+// Q5_K share the packing) into byte arrays — same result as 8x
+// q4k_scale_min but with a handful of SIMD shifts instead of ~80 scalar ops.
+// Only sc[0..11] are read.
+inline void kquant_d6m6(const uint8_t *sc, uint8_t d6[8], uint8_t m6[8])
+{
+    const __m128i s = _mm_loadu_si128(reinterpret_cast<const __m128i *>(sc));
+    const __m128i m63 = _mm_set1_epi8(0x3F);
+    const __m128i m0F = _mm_set1_epi8(0x0F);
+    const __m128i mF0 = _mm_set1_epi16(0x0F0F);  // per-byte (b & 0xF0) >> 4
+    const __m128i mC0 = _mm_set1_epi16(0x3030);  // per-byte (b & 0xC0) >> 2
+    const __m128i lo = _mm_and_si128(s, m63);    // sc[0..7] & 63
+    // d6[4..7] = (sc[8..11] & 15) | ((sc[0..3] & 0xC0) >> 2)
+    const __m128i d6hi = _mm_or_si128(_mm_and_si128(_mm_srli_si128(s, 8), m0F),
+                                      _mm_and_si128(_mm_srli_epi16(s, 2), mC0));
+    _mm_storel_epi64(reinterpret_cast<__m128i *>(d6), _mm_unpacklo_epi32(lo, d6hi));
+    // m6[0..3] = sc[4..7] & 63 ; m6[4..7] = (sc[8..11] >> 4) | ((sc[4..7] & 0xC0) >> 2)
+    const __m128i cpart = _mm_srli_si128(s, 8);
+    const __m128i m6hi = _mm_or_si128(_mm_and_si128(_mm_srli_epi16(cpart, 4), mF0),
+                                      _mm_and_si128(_mm_srli_epi16(_mm_srli_si128(s, 4), 2), mC0));
+    _mm_storel_epi64(reinterpret_cast<__m128i *>(m6), _mm_unpacklo_epi32(_mm_srli_si128(lo, 4), m6hi));
+}
+#endif
 
 // Scalar dequant+dot helpers for row tails (in % 32 != 0).
 // Element e of a block: e<16 -> low nibble of qs[e]; e>=16 -> high nibble of qs[e-16].
@@ -328,6 +358,8 @@ void q4k_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
         const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
         const uint8_t *sc = blk + 4;
         const uint8_t *qs = blk + 16;
+        uint8_t d6b[8], m6b[8];
+        kquant_d6m6(sc, d6b, m6b);
         for (int g = 0; g < 4; ++g) {
             // One 32B group -> lo/hi nibble pairs, each expanded to two
             // __m512i of 16 i32 lanes (weights 0..15, 16..31 of the sub-block).
@@ -342,10 +374,8 @@ void q4k_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
             for (int half = 0; half < 2; ++half) {
                 // half=0 -> sub-block sb=2g (lo nibbles), half=1 -> sb=2g+1 (hi)
                 const int sb = 2 * g + half;
-                int d6, m6;
-                q4k_scale_min(sc, sb, d6, m6);
-                const __m512 D = _mm512_set1_ps(d * static_cast<float>(d6));
-                const __m512 M = _mm512_set1_ps(-dmin * static_cast<float>(m6));
+                const __m512 D = _mm512_set1_ps(d * static_cast<float>(d6b[sb]));
+                const __m512 M = _mm512_set1_ps(-dmin * static_cast<float>(m6b[sb]));
                 const __m512i n0 = half ? hi0 : lo0;
                 const __m512i n1 = half ? hi1 : lo1;
                 const size_t xoff = xo + half * 32;
@@ -375,6 +405,85 @@ void q4k_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
         const float d = fp16_to_fp32_fast(load_fp16(blk));
         const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
         out += (d * d6 * nib - dmin * m6) * x[e];
+    }
+}
+
+// Q5_K superblock: 256 weights / 176B. Same 6-bit scale packing as Q4_K.
+// ql holds the low 4 bits (lo nibble -> even sub-block, hi -> odd) and qh
+// carries one high bit per weight: bit (2g+half) of qh[l], l = position
+// within the 32-weight sub-block. q5 = nib + 16*hb, so the packed byte
+// nib | hb<<4 is the full 5-bit value — expanded to i32 lanes exactly like
+// Q4_K, then w = D*q5 + M with D = d*d6, M = -dmin*m6.
+void q5k_row_avx512(const uint8_t *row, size_t in, const float *x, float &out)
+{
+    const size_t nsb = in / 256;
+    __m512 acc[16];
+    for (int i = 0; i < 16; ++i) { acc[i] = _mm512_setzero_ps(); }
+    const __m256i nib8 = _mm256_set1_epi8(0x0F);
+    const __m256i one8 = _mm256_set1_epi8(0x01);
+
+    size_t k = 0;
+    for (size_t s = 0; s < nsb; ++s, k += 256) {
+        const uint8_t *blk = row + s * 176;
+        _mm_prefetch(reinterpret_cast<const char *>(blk + 176), _MM_HINT_NTA);
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        const uint8_t *sc = blk + 4;
+        const __m256i qh = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(blk + 16));
+        const uint8_t *ql = blk + 48;
+        uint8_t d6b[8], m6b[8];
+        kquant_d6m6(sc, d6b, m6b);
+        for (int g = 0; g < 4; ++g) {
+            // High bits for the two sub-blocks of this 64-weight group, kept
+            // in byte lane 4 (value 0/16) so they OR directly into the nibbles.
+            const __m256i hb_lo = _mm256_slli_epi16(
+                _mm256_and_si256(_mm256_srli_epi16(qh, 2 * g), one8), 4);
+            const __m256i hb_hi = _mm256_slli_epi16(
+                _mm256_and_si256(_mm256_srli_epi16(qh, 2 * g + 1), one8), 4);
+            const __m256i by = _mm256_loadu_si256(reinterpret_cast<const __m256i *>(ql + g * 32));
+            const __m256i lo_b = _mm256_or_si256(_mm256_and_si256(by, nib8), hb_lo);
+            const __m256i hi_b = _mm256_or_si256(
+                _mm256_and_si256(_mm256_srli_epi16(by, 4), nib8), hb_hi);
+            const __m512i lo0 = _mm512_cvtepu8_epi32(_mm256_castsi256_si128(lo_b));
+            const __m512i lo1 = _mm512_cvtepu8_epi32(_mm256_extracti128_si256(lo_b, 1));
+            const __m512i hi0 = _mm512_cvtepu8_epi32(_mm256_castsi256_si128(hi_b));
+            const __m512i hi1 = _mm512_cvtepu8_epi32(_mm256_extracti128_si256(hi_b, 1));
+            const size_t xo = k + g * 64;  // group covers weights [64g, 64g+64)
+            for (int half = 0; half < 2; ++half) {
+                const int sb = 2 * g + half;
+                const __m512 D = _mm512_set1_ps(d * static_cast<float>(d6b[sb]));
+                const __m512 M = _mm512_set1_ps(-dmin * static_cast<float>(m6b[sb]));
+                const __m512i n0 = half ? hi0 : lo0;
+                const __m512i n1 = half ? hi1 : lo1;
+                const size_t xoff = xo + half * 32;
+                const __m512 w0 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(n0), D, M);
+                const __m512 w1 = _mm512_fmadd_ps(_mm512_cvtepi32_ps(n1), D, M);
+                acc[sb * 2]     = _mm512_fmadd_ps(w0, _mm512_loadu_ps(x + xoff),      acc[sb * 2]);
+                acc[sb * 2 + 1] = _mm512_fmadd_ps(w1, _mm512_loadu_ps(x + xoff + 16), acc[sb * 2 + 1]);
+            }
+        }
+    }
+    __m512 s01 = _mm512_add_ps(_mm512_add_ps(acc[0], acc[1]), _mm512_add_ps(acc[2], acc[3]));
+    __m512 s23 = _mm512_add_ps(_mm512_add_ps(acc[4], acc[5]), _mm512_add_ps(acc[6], acc[7]));
+    __m512 s45 = _mm512_add_ps(_mm512_add_ps(acc[8], acc[9]), _mm512_add_ps(acc[10], acc[11]));
+    __m512 s67 = _mm512_add_ps(_mm512_add_ps(acc[12], acc[13]), _mm512_add_ps(acc[14], acc[15]));
+    out = _mm512_reduce_add_ps(_mm512_add_ps(_mm512_add_ps(s01, s23), _mm512_add_ps(s45, s67)));
+    for (size_t e = in - (in % 256); e < in; ++e) {
+        const size_t s = e / 256;
+        const size_t sb = (e % 256) / 32;
+        const uint8_t *blk = row + s * 176;
+        const uint8_t *sc = blk + 4;
+        const int g = static_cast<int>(sb >> 1);
+        const bool hi = (sb & 1) != 0;
+        const uint8_t *qb = blk + 48 + g * 32;
+        const int l = static_cast<int>(e % 32);
+        const int q4 = hi ? (qb[l] >> 4) : (qb[l] & 0xF);
+        const int hb = (blk[16 + l] >> (2 * g + (hi ? 1 : 0))) & 1;
+        int d6, m6;
+        q4k_scale_min(sc, static_cast<int>(sb), d6, m6);
+        const float d = fp16_to_fp32_fast(load_fp16(blk));
+        const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
+        out += (d * d6 * (q4 + 16 * hb) - dmin * m6) * x[e];
     }
 }
 
@@ -572,11 +681,11 @@ void q4k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
         const float dmin = fp16_to_fp32_fast(load_fp16(blk + 2));
         const uint8_t *sc = blk + 4;
         const uint8_t *qs = blk + 16;
+        uint8_t d6b[8], m6b[8];
+        kquant_d6m6(sc, d6b, m6b);
         for (int sb = 0; sb < 8; ++sb) {
-            int d6, m6;
-            q4k_scale_min(sc, sb, d6, m6);
-            const __m256 D = _mm256_set1_ps(d * static_cast<float>(d6));
-            const __m256 M = _mm256_set1_ps(-dmin * static_cast<float>(m6));
+            const __m256 D = _mm256_set1_ps(d * static_cast<float>(d6b[sb]));
+            const __m256 M = _mm256_set1_ps(-dmin * static_cast<float>(m6b[sb]));
             const uint8_t *qb = qs + (sb >> 1) * 32;
             __m256i nib[4];
             nibbles32_to_i32x8(qb, (sb & 1) != 0, nib);
@@ -644,19 +753,13 @@ void q5k_row_avx2(const uint8_t *row, size_t in, const float *x, float &out)
         // High bits for all 32 qh bytes, expanded once per superblock.
         __m256i hb_all[4];
         bytes32_to_i32x8(qh, hb_all);
+        uint8_t d6b[8], m6b[8];
+        kquant_d6m6(scales, d6b, m6b);
         for (int sb = 0; sb < 8; ++sb) {
             const int g = sb >> 1;
             const bool hi = (sb & 1) != 0;
-            uint8_t sc8, m8;
-            if (sb < 4) {
-                sc8 = scales[sb] & 63;
-                m8 = scales[sb + 4] & 63;
-            } else {
-                sc8 = (scales[sb + 4] & 0xF) | ((scales[sb - 4] >> 6) << 4);
-                m8 = (scales[sb + 4] >> 4) | ((scales[sb] >> 6) << 4);
-            }
-            const __m256 D = _mm256_set1_ps(d * static_cast<float>(sc8));
-            const __m256 M = _mm256_set1_ps(-dmin * static_cast<float>(m8));
+            const __m256 D = _mm256_set1_ps(d * static_cast<float>(d6b[sb]));
+            const __m256 M = _mm256_set1_ps(-dmin * static_cast<float>(m6b[sb]));
             const uint8_t *qb = ql + g * 32;
             const int bitpos = 2 * g + (hi ? 1 : 0);
             __m256i nib[4];
@@ -1548,6 +1651,8 @@ RowFn pick_row_fn(quant::QuantType type)
                 return q80_row_avx512;
             case quant::QuantType::Q4_K:
                 return q4k_row_avx512;
+            case quant::QuantType::Q5_K:
+                return q5k_row_avx512;
             default:
                 break;
         }
@@ -1709,12 +1814,22 @@ void matvec_q(const quant::QuantWeight &w, const float *x, float *y)
             quantize_x_q8_avx2(x, K, xq);
             const size_t row_bytes = w.row_bytes();
             const uint8_t *base = w.bytes.data();
+            if (SpinPool::enabled() && N >= 256) {
+                SpinPool::instance().parallel_for(N, 1, [&](size_t lo, size_t hi) {
+                    for (size_t r = lo; r < hi; ++r) {
+                        float sum = 0.0F;
+                        ifn(base + r * row_bytes, K, xq, sum);
+                        y[r] = sum;
+                    }
+                });
+            } else {
 #pragma omp parallel for schedule(static) if (N >= 256)
-            for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
-                const size_t r = static_cast<size_t>(j);
-                float sum = 0.0F;
-                ifn(base + r * row_bytes, K, xq, sum);
-                y[r] = sum;
+                for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
+                    const size_t r = static_cast<size_t>(j);
+                    float sum = 0.0F;
+                    ifn(base + r * row_bytes, K, xq, sum);
+                    y[r] = sum;
+                }
             }
         }
         return;
@@ -1734,11 +1849,21 @@ fp_path:
 #if defined(__AVX512F__) || (defined(_MSC_VER) && defined(SERIUS_SIMD_X86))
     if (fn == q40_row_avx512) {
         const int64_t pairs = static_cast<int64_t>(N / 2);
+        if (SpinPool::enabled() && pairs >= 128) {
+            SpinPool::instance().parallel_for(static_cast<size_t>(pairs), 1, [&](size_t lo, size_t hi) {
+                for (size_t p = lo; p < hi; ++p) {
+                    const size_t r0 = 2 * p;
+                    const size_t r1 = r0 + 1;
+                    q40_row2_avx512(base + r0 * row_bytes, base + r1 * row_bytes, K, x, y[r0], y[r1]);
+                }
+            });
+        } else {
 #pragma omp parallel for schedule(static) if (pairs >= 128)
-        for (int64_t p = 0; p < pairs; ++p) {
-            const size_t r0 = static_cast<size_t>(2 * p);
-            const size_t r1 = r0 + 1;
-            q40_row2_avx512(base + r0 * row_bytes, base + r1 * row_bytes, K, x, y[r0], y[r1]);
+            for (int64_t p = 0; p < pairs; ++p) {
+                const size_t r0 = static_cast<size_t>(2 * p);
+                const size_t r1 = r0 + 1;
+                q40_row2_avx512(base + r0 * row_bytes, base + r1 * row_bytes, K, x, y[r0], y[r1]);
+            }
         }
         if ((N & 1) != 0) {
             const size_t r = N - 1;
@@ -1750,12 +1875,22 @@ fp_path:
     }
 #endif
 
+    if (SpinPool::enabled() && N >= 256) {
+        SpinPool::instance().parallel_for(N, 1, [&](size_t lo, size_t hi) {
+            for (size_t r = lo; r < hi; ++r) {
+                float sum = 0.0f;
+                fn(base + r * row_bytes, K, x, sum);
+                y[r] = sum;
+            }
+        });
+    } else {
 #pragma omp parallel for schedule(static) if (N >= 256)
-    for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
-        const size_t r = static_cast<size_t>(j);
-        float sum = 0.0f;
-        fn(base + r * row_bytes, K, x, sum);
-        y[r] = sum;
+        for (int64_t j = 0; j < static_cast<int64_t>(N); ++j) {
+            const size_t r = static_cast<size_t>(j);
+            float sum = 0.0f;
+            fn(base + r * row_bytes, K, x, sum);
+            y[r] = sum;
+        }
     }
 }
 
@@ -1770,9 +1905,17 @@ void prefetch_quant_weight(const quant::QuantWeight &w)
     const uint8_t *p = w.bytes.data();
     const size_t n = w.bytes.size();
     const int64_t lines = static_cast<int64_t>((n + 63) / 64);
+    if (SpinPool::enabled() && lines >= 256) {
+        SpinPool::instance().parallel_for(static_cast<size_t>(lines), 1, [&](size_t lo, size_t hi) {
+            for (size_t i = lo; i < hi; ++i) {
+                _mm_prefetch(reinterpret_cast<const char *>(p) + i * 64, _MM_HINT_T0);
+            }
+        });
+    } else {
 #pragma omp parallel for schedule(static) if (lines >= 256)
-    for (int64_t i = 0; i < lines; ++i) {
-        _mm_prefetch(reinterpret_cast<const char *>(p) + i * 64, _MM_HINT_T0);
+        for (int64_t i = 0; i < lines; ++i) {
+            _mm_prefetch(reinterpret_cast<const char *>(p) + i * 64, _MM_HINT_T0);
+        }
     }
 }
 

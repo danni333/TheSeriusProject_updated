@@ -5,6 +5,8 @@
 #include <cstring>
 #include <vector>
 
+#include "conversions.h"
+
 namespace serius {
 namespace quant {
 
@@ -140,6 +142,66 @@ inline void repack_quant_for_gpu(QuantWeight &w)
         w.dev_d = pay;  // header section offset (reuses d_off kernel arg)
         w.dev_m = 0;
         w.dev_kind = 6;
+        return;
+    }
+
+    // Q5_K: no packed 5-bit payload kernel exists, so expand each q5 value
+    // (0..31) to one byte per weight — same [payload | d | m] row layout as
+    // Q8_0-with-min, consumed by the generic GEMV path as kind 7
+    // (w = q*d + m, no nibble split, no block sums needed).
+    if (w.type == quant::QuantType::Q5_K) {
+        if (w.in % 256 != 0) {
+            return;
+        }
+        const size_t bpr = w.in / 32;   // 32-weight sub-blocks per row
+        const size_t nsb = w.in / 256;  // superblocks per row
+        const size_t qs = 32;
+        const size_t d_off = bpr * qs;
+        const size_t m_off = d_off + bpr * 2;
+        const size_t stride = (m_off + bpr * 2 + 15) & ~size_t(15);
+        w.dev_bytes.assign(w.out * stride, 0);
+        const uint8_t *src = w.bytes.data();
+        for (size_t r = 0; r < w.out; ++r) {
+            uint8_t *dst = w.dev_bytes.data() + r * stride;
+            uint8_t *dd = dst + d_off;
+            uint8_t *mm = dst + m_off;
+            for (size_t sb = 0; sb < bpr; ++sb) {
+                const size_t s = sb >> 3;
+                const int j = static_cast<int>(sb & 7);
+                const uint8_t *blk = src + (r * nsb + s) * 176;
+                const float d = half_to_float(static_cast<uint16_t>(blk[0] | (blk[1] << 8)));
+                const float dmin = half_to_float(static_cast<uint16_t>(blk[2] | (blk[3] << 8)));
+                const uint8_t *sc = blk + 4;
+                const uint8_t *qh = blk + 16;
+                const uint8_t *ql = blk + 48 + (j >> 1) * 32;
+                // 6-bit scale/min, same packing as Q4_K.
+                uint8_t sc8, m8;
+                if (j < 4) {
+                    sc8 = sc[j] & 63;
+                    m8 = sc[j + 4] & 63;
+                } else {
+                    sc8 = (sc[j + 4] & 0xF) | ((sc[j - 4] >> 6) << 4);
+                    m8 = (sc[j + 4] >> 4) | ((sc[j] >> 6) << 4);
+                }
+                const int bit = static_cast<int>(2 * (j >> 1) + ((j & 1) ? 1 : 0));
+                const bool hi = (j & 1) != 0;
+                uint8_t *pay = dst + sb * qs;
+                for (int l = 0; l < 32; ++l) {
+                    const int q4 = hi ? (ql[l] >> 4) : (ql[l] & 0xF);
+                    const int hb = (qh[l] >> bit) & 1;
+                    pay[l] = static_cast<uint8_t>(q4 + 16 * hb);
+                }
+                const uint16_t Dh = float_to_half(d * static_cast<float>(sc8));
+                const uint16_t Mh = float_to_half(-dmin * static_cast<float>(m8));
+                std::memcpy(dd + sb * 2, &Dh, 2);
+                std::memcpy(mm + sb * 2, &Mh, 2);
+            }
+        }
+        w.dev_stride = stride;
+        w.dev_qs = qs;
+        w.dev_d = d_off;
+        w.dev_m = m_off;
+        w.dev_kind = 7;
         return;
     }
 

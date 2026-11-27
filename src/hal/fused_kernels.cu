@@ -897,7 +897,7 @@ __global__ void gemv_quant_vec_kernel(const float *x, const float *sx16, const u
     if (r0 >= out) return;
 
     const int bpr = in >> 5;  // in % 32 == 0 guaranteed by repack guard
-    const bool has_m = (kind == 4 || kind == 6);
+    const bool has_m = (kind == 4 || kind == 6 || kind == 7);
 
     if (kind == 3 || kind == 4 || kind == 6) {
         // Q4_0/Q4_1 fast path: float4 x loads, two accumulators per row.
@@ -1007,6 +1007,20 @@ __global__ void gemv_quant_vec_kernel(const float *x, const float *sx16, const u
                 const uint32_t byte = (sel_u32(vv, jb >> 2) >> ((jb & 3) * 8)) & 0xFFu;
                 acc = fmaf((float)(int8_t)byte * d, x[base + j], acc);
             }
+        } else if (kind == 7) {  // Q5_K expanded: 32 x u8 (0..31), w = q*d + m
+            float a0 = 0.0f, a1 = 0.0f;
+#pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                const uint32_t byte = (sel_u32(v0, j >> 2) >> ((j & 3) * 8)) & 0xFFu;
+                a0 = fmaf((float)(int)byte * d + m, x[base + j], a0);
+            }
+#pragma unroll
+            for (int j = 16; j < 32; ++j) {
+                const int jj = j - 16;
+                const uint32_t byte = (sel_u32(v1, jj >> 2) >> ((jj & 3) * 8)) & 0xFFu;
+                a1 = fmaf((float)(int)byte * d + m, x[base + j], a1);
+            }
+            acc += a0 + a1;
         } else {  // Q4_0 / Q4_1: 16 bytes -> 32 weights
 #pragma unroll
             for (int j = 0; j < 16; ++j) {
@@ -1048,7 +1062,7 @@ __global__ void gemv_quant_vec_h_kernel(const __half *x, const float *sx16, cons
     if (r0 >= out) return;
 
     const int bpr = in >> 5;
-    const bool has_m = (kind == 4 || kind == 6);
+    const bool has_m = (kind == 4 || kind == 6 || kind == 7);
 
     if (kind == 3 || kind == 4 || kind == 6) {
         // Q4_0/Q4_1/Q4_K fast path, k-major lane mapping: each lane owns ONE
@@ -1164,6 +1178,20 @@ __global__ void gemv_quant_vec_h_kernel(const __half *x, const float *sx16, cons
                 const uint32_t byte = (sel_u32(vv, jb >> 2) >> ((jb & 3) * 8)) & 0xFFu;
                 acc = fmaf((float)(int8_t)byte * d, __half2float(x[base + j]), acc);
             }
+        } else if (kind == 7) {  // Q5_K expanded: 32 x u8 (0..31), w = q*d + m
+            float a0 = 0.0f, a1 = 0.0f;
+#pragma unroll
+            for (int j = 0; j < 16; ++j) {
+                const uint32_t byte = (sel_u32(v0, j >> 2) >> ((j & 3) * 8)) & 0xFFu;
+                a0 = fmaf((float)(int)byte * d + m, __half2float(x[base + j]), a0);
+            }
+#pragma unroll
+            for (int j = 16; j < 32; ++j) {
+                const int jj = j - 16;
+                const uint32_t byte = (sel_u32(v1, jj >> 2) >> ((jj & 3) * 8)) & 0xFFu;
+                a1 = fmaf((float)(int)byte * d + m, __half2float(x[base + j]), a1);
+            }
+            acc += a0 + a1;
         } else {  // Q4_0 / Q4_1: 16 bytes -> 32 weights
 #pragma unroll
             for (int j = 0; j < 16; ++j) {
@@ -2430,6 +2458,11 @@ __global__ void dequant_qw_f16_kernel(const uint8_t *__restrict__ w, __half *__r
         const int8_t q = (int8_t)wr[(size_t)b * qs + o];
         const float d = __half2float(*reinterpret_cast<const __half *>(wr + d_off + b * 2));
         v = (float)q * d;
+    } else if (kind == 7) {  // Q5_K expanded: 32 x u8 (0..31), w = q*d + m
+        const uint32_t q = wr[(size_t)b * qs + o];
+        const float d = __half2float(*reinterpret_cast<const __half *>(wr + d_off + b * 2));
+        const float m = __half2float(*reinterpret_cast<const __half *>(wr + m_off + b * 2));
+        v = (float)q * d + m;
     } else {  // 4-bit: 16 payload bytes -> 32 weights per block
         const int j = o & 15;
         const uint32_t byte = wr[(size_t)b * qs + j];

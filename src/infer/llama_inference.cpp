@@ -34,7 +34,9 @@
 
 #include "../blas/blas.h"
 #include "../common/serius_check.h"
+#include "../common/spin_pool.h"
 #include "../distributed/pipeline.h"
+#include "../io/gguf_loader.h"
 #ifdef SERIUS_USE_CUDA
 #include "../blas/matmul_cuda.h"
 #include "../hal/fused_kernels.h"
@@ -458,6 +460,35 @@ static void softmax_rows_inplace(const SoftmaxRowsArgs &args)
 
 // --- Internal Helper Functions for CPU Inference ---
 
+/// Dense [in][out] FP32 view of a projection weight for the batched (M>1)
+/// path: the FP32 Node copy when present, else the packed QuantWeight
+/// dequantized on the fly (SERIUS_GGUF_PACKED_ONLY releases the FP32
+/// copies). `scratch`/`packed_hf` are caller-owned buffers that must
+/// outlive the returned Tensor view.
+static core::Tensor proj_dense(const core::autograd::Node *proj, const quant::QuantWeight &qw, size_t in_dim,
+                               size_t out_dim, std::vector<float> &scratch, std::vector<float> &packed_hf)
+{
+    if (proj != nullptr && proj->data.size() == in_dim * out_dim) {
+        return core::Tensor(const_cast<float *>(proj->data.data()), proj->data.shape());
+    }
+    if (!io::quant_weight_dequantizable(qw) || qw.in != in_dim || qw.out != out_dim) {
+        return core::Tensor();
+    }
+    packed_hf.resize(in_dim * out_dim);
+    scratch.resize(in_dim * out_dim);
+    if (!io::dequantize_quant_weight_dense(qw, packed_hf.data())) {
+        return core::Tensor();
+    }
+    // packed_hf is [out][in] (GGUF order); transpose to the [in][out]
+    // layout the FP32 copies use (transpose_hf_to_cpp equivalent).
+    for (size_t k = 0; k < in_dim; ++k) {
+        for (size_t n = 0; n < out_dim; ++n) {
+            scratch[k * out_dim + n] = packed_hf[n * in_dim + k];
+        }
+    }
+    return core::Tensor(scratch.data(), {in_dim, out_dim});
+}
+
 /**
  * @brief Computes Q, K, and V projections and applies RoPE.
  */
@@ -485,9 +516,15 @@ static void compute_qkv_rope(const model::LLaMABlock *block, const Tensor &norme
         std::memcpy(key_buf.data(), qkv_tmp.data() + local_hidden_dim, local_kv_dim * sizeof(float));
         std::memcpy(value_buf.data(), qkv_tmp.data() + local_hidden_dim + local_kv_dim, local_kv_dim * sizeof(float));
     } else {
-        core::blas::matmul(normed_tensor, block->q_proj->data, query_buf);
-        core::blas::matmul(normed_tensor, block->k_proj->data, key_buf);
-        core::blas::matmul(normed_tensor, block->v_proj->data, value_buf);
+        thread_local std::vector<float> dq_scratch, dq_hf;
+        const size_t q_out = query_buf.shape()[1];
+        const size_t kv_out = key_buf.shape()[1];
+        core::blas::matmul(normed_tensor, proj_dense(block->q_proj.get(), block->q_w, hidden_dim, q_out, dq_scratch, dq_hf),
+                           query_buf);
+        core::blas::matmul(normed_tensor, proj_dense(block->k_proj.get(), block->k_w, hidden_dim, kv_out, dq_scratch, dq_hf),
+                           key_buf);
+        core::blas::matmul(normed_tensor, proj_dense(block->v_proj.get(), block->v_w, hidden_dim, kv_out, dq_scratch, dq_hf),
+                           value_buf);
     }
 
     // Q/K/V projection biases (Qwen2/Qwen2.5 have large ones; zero elsewhere).
@@ -967,11 +1004,24 @@ static void llama_attention_layer_cpu(const model::LLaMABlock *block, float *hid
     const size_t total_len = (cache_layer != nullptr) ? cache_layer->current_len : seq_len;
 
     double t_hd0 = prof ? prof::now() : 0.0;
-#pragma omp parallel for schedule(static) if (num_local_heads >= 2)
-    for (int h_idx = 0; h_idx < static_cast<int>(num_local_heads); ++h_idx) {
+    const int nh = static_cast<int>(num_local_heads);
+    auto run_head = [&](int h_idx) {
         compute_head_attention({h_idx, seq_len, pos_offset, total_len, local_hidden_dim, local_kv_dim, head_dim,
                                 num_rep, query_buf, key_buf, value_buf, cache_layer, attention_scale,
                                 attention_out.data(), layer_idx});
+    };
+    if (serius::SpinPool::enabled() && nh >= 2) {
+        // Fase 73e/D1: same pool as matvec_q — avoids OMP+spin oversubscription.
+        serius::SpinPool::instance().parallel_for(static_cast<size_t>(nh), 1, [&](size_t lo, size_t hi) {
+            for (size_t h = lo; h < hi; ++h) {
+                run_head(static_cast<int>(h));
+            }
+        });
+    } else {
+#pragma omp parallel for schedule(static) if (num_local_heads >= 2)
+        for (int h_idx = 0; h_idx < nh; ++h_idx) {
+            run_head(h_idx);
+        }
     }
     if (prof) {
         prof::acc().attn_hd += prof::now() - t_hd0;
@@ -986,7 +1036,10 @@ static void llama_attention_layer_cpu(const model::LLaMABlock *block, float *hid
             prof::acc().g_o += prof::now() - t0;
         }
     } else {
-        core::blas::matmul(attention_out, block->o_proj->data, attention_proj);
+        thread_local std::vector<float> dq_scratch, dq_hf;
+        core::blas::matmul(attention_out,
+                           proj_dense(block->o_proj.get(), block->o_w, local_hidden_dim, hidden_dim, dq_scratch, dq_hf),
+                           attention_proj);
     }
     if (topology.is_tensor_parallel()) {
         topology.tp_comm->all_reduce(attention_proj.data(), attention_proj.size(), distributed::ReduceOp::Sum);
@@ -1039,8 +1092,15 @@ static void llama_mlp_layer_cpu(const model::LLaMABlock *block, float *hidden_st
         std::memcpy(gate_buf.data(), gu_tmp.data(), intermediate_dim * sizeof(float));
         std::memcpy(up_buf.data(), gu_tmp.data() + intermediate_dim, intermediate_dim * sizeof(float));
     } else {
-        core::blas::matmul(normed_tensor, block->gate_proj->data, gate_buf);
-        core::blas::matmul(normed_tensor, block->up_proj->data, up_buf);
+        thread_local std::vector<float> dq_scratch, dq_hf;
+        core::blas::matmul(normed_tensor,
+                           proj_dense(block->gate_proj.get(), block->gate_w, hidden_dim, intermediate_dim, dq_scratch,
+                                      dq_hf),
+                           gate_buf);
+        core::blas::matmul(normed_tensor,
+                           proj_dense(block->up_proj.get(), block->up_w, hidden_dim, intermediate_dim, dq_scratch,
+                                      dq_hf),
+                           up_buf);
     }
     if (prof) {
         prof::acc().mlp_gu += prof::now() - t_rms1;
@@ -1081,7 +1141,11 @@ static void llama_mlp_layer_cpu(const model::LLaMABlock *block, float *hidden_st
             prof::acc().g_down += prof::now() - t0;
         }
     } else {
-        core::blas::matmul(gate_buf, block->down_proj->data, down_proj_out);
+        thread_local std::vector<float> dq_scratch, dq_hf;
+        core::blas::matmul(gate_buf,
+                           proj_dense(block->down_proj.get(), block->down_w, intermediate_dim, hidden_dim, dq_scratch,
+                                      dq_hf),
+                           down_proj_out);
     }
     if (topology.is_tensor_parallel()) {
         topology.tp_comm->all_reduce(down_proj_out.data(), down_proj_out.size(), distributed::ReduceOp::Sum);

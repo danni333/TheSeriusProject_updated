@@ -463,6 +463,20 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
     const size_t head_dim = hidden / cfg.num_attention_heads;
     const size_t kv_dim = cfg.num_key_value_heads * head_dim;
 
+    // SERIUS_GGUF_PACKED_ONLY=1: GGUF weights stay packed; dense FP32
+    // projection copies are skipped at load and released after quant
+    // setup. See the release block near the end of this function.
+    static const bool packed_only = [] {
+#if defined(_MSC_VER)
+        char buf[8];
+        size_t len = 0;
+        return getenv_s(&len, buf, sizeof(buf), "SERIUS_GGUF_PACKED_ONLY") == 0 && len > 0 && buf[0] == '1';
+#else
+        const char *e = std::getenv("SERIUS_GGUF_PACKED_ONLY");
+        return e != nullptr && e[0] == '1';
+#endif
+    }();
+
     // Pipeline parallelism: this rank owns global layers
     // [pp_start, pp_start + local layer count).
     const int pp_rank = topo.pp_rank;
@@ -505,6 +519,14 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
     std::vector<std::string> missing_required;
     auto require_tensor = [&](const std::string &name, float *dst, size_t rows, size_t cols, bool should_transpose,
                               bool allow_prefix = false) {
+        // Packed-only mode: the FP32 tensor was intentionally not loaded for
+        // quantized 2D weights — the packed QuantWeight covers them.
+        if (packed_only && name != "token_embd.weight" && name != "output.weight") {
+            auto qit = qmap.find(name);
+            if (qit != qmap.end() && io::quant_weight_dequantizable(qit->second)) {
+                return;
+            }
+        }
         if (!copy_tensor(name, dst, rows, cols, should_transpose, allow_prefix)) {
             missing_required.push_back(name);
         }
@@ -726,6 +748,56 @@ bool load_llama_weights_from_gguf_file(const std::string &gguf_path, model::LLaM
         }
         if (lq.valid()) {
             model->lm_head_q() = std::move(lq);
+        }
+    }
+
+    // SERIUS_GGUF_PACKED_ONLY=1: drop the dense FP32 copies of the big
+    // projection weights once their packed QuantWeight exists. Decode uses
+    // matvec_q; the batched/prefill path dequantizes on the fly. Embeddings,
+    // norms, biases and lm_head stay dense (needed every token). Cuts host
+    // RAM from ~4 B/param to roughly the packed size -- required for models
+    // that don't fit otherwise (e.g. 7B on 24 GB).
+    if (packed_only) {
+        size_t released = 0;
+        for (auto &blk_ptr : model->layers()) {
+            model::LLaMABlock *block = blk_ptr.get();
+            auto release_if_quant = [&](core::autograd::Node *param, const quant::QuantWeight &qw) {
+                if (param != nullptr && qw.valid() && io::quant_weight_dequantizable(qw) &&
+                    param->data.size() > 0) {
+                    param->data = core::Tensor();
+                    ++released;
+                }
+            };
+            release_if_quant(block->q_proj.get(), block->q_w);
+            release_if_quant(block->k_proj.get(), block->k_w);
+            release_if_quant(block->v_proj.get(), block->v_w);
+            release_if_quant(block->o_proj.get(), block->o_w);
+            release_if_quant(block->gate_proj.get(), block->gate_w);
+            release_if_quant(block->up_proj.get(), block->up_w);
+            release_if_quant(block->down_proj.get(), block->down_w);
+        }
+        std::cerr << "[Loader] packed-only: released " << released
+                  << " dense FP32 projection tensors (GGUF weights stay packed)\n";
+        // Safety net: every projection whose FP32 copy was skipped or
+        // released must have a usable packed QuantWeight — otherwise the
+        // model would silently run on missing weights.
+        for (auto &blk_ptr : model->layers()) {
+            model::LLaMABlock *block = blk_ptr.get();
+            auto missing_weight = [&](core::autograd::Node *param, const quant::QuantWeight &qw) {
+                return param != nullptr && param->data.size() == 0 && !qw.valid();
+            };
+            if (missing_weight(block->q_proj.get(), block->q_w) ||
+                missing_weight(block->k_proj.get(), block->k_w) ||
+                missing_weight(block->v_proj.get(), block->v_w) ||
+                missing_weight(block->o_proj.get(), block->o_w) ||
+                missing_weight(block->gate_proj.get(), block->gate_w) ||
+                missing_weight(block->up_proj.get(), block->up_w) ||
+                missing_weight(block->down_proj.get(), block->down_w)) {
+                std::cerr << "[Loader] packed-only: a projection has neither FP32 nor packed weights - "
+                             "refusing to load "
+                          << gguf_path << "\n";
+                return false;
+            }
         }
     }
 

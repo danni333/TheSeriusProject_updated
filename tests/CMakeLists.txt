@@ -35,6 +35,9 @@ if(SERIUS_USE_CUDA)
 
     add_executable(test_llama_inference_cuda test_llama_inference_cuda.cpp)
     target_link_libraries(test_llama_inference_cuda PRIVATE serius_core gtest_main)
+
+    add_executable(test_quant_gpu test_quant_gpu.cpp)
+    target_link_libraries(test_quant_gpu PRIVATE serius_core gtest_main)
 endif()
 
 add_executable(test_paged_kv test_paged_kv.cpp)
@@ -122,6 +125,9 @@ endif()
 
 add_executable(test_thread_pool test_thread_pool.cpp)
 target_link_libraries(test_thread_pool PRIVATE serius_core gtest_main)
+
+add_executable(test_spin_pool test_spin_pool.cpp)
+target_link_libraries(test_spin_pool PRIVATE serius_core gtest_main)
 
 add_executable(test_stability test_stability.cpp)
 target_link_libraries(test_stability PRIVATE serius_core gtest_main)
@@ -308,6 +314,12 @@ target_link_libraries(bench_mixed_precision PRIVATE serius_core)
 add_executable(bench_quant bench_quant.cpp)
 target_link_libraries(bench_quant PRIVATE serius_core)
 
+add_executable(bench_matvec_quant bench_matvec_quant.cpp)
+target_link_libraries(bench_matvec_quant PRIVATE serius_core)
+
+add_executable(bench_omp_region bench_omp_region.cpp)
+target_link_libraries(bench_omp_region PRIVATE serius_core)
+
 # Discovery
 gtest_discover_tests(test_tensor)
 gtest_discover_tests(test_autograd)
@@ -326,6 +338,7 @@ if(SERIUS_USE_CUDA)
     # via set_tests_properties at configure time.
     gtest_discover_tests(test_llama_inference_cuda
         PROPERTIES ENVIRONMENT "SERIUS_PREFILL_BATCH_CPU=1")
+    gtest_discover_tests(test_quant_gpu)
 endif()
 gtest_discover_tests(test_paged_kv)
 gtest_discover_tests(test_logger)

@@ -1616,6 +1616,28 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
             continue;
         }
 
+        // SERIUS_GGUF_PACKED_ONLY: for 2D weights that produced a packed
+        // QuantWeight, skip the dense FP32 copy entirely — this is where the
+        // ~4 B/param RAM saving actually happens (the model-side copies are
+        // released later by the loader and prefill dequantizes on the fly).
+        // token_embd/output.weight stay dense: embeddings are gathered every
+        // token and the lm_head fallback needs FP32.
+        static const bool packed_only = [] {
+#if defined(_MSC_VER)
+            char buf[8];
+            size_t len = 0;
+            return getenv_s(&len, buf, sizeof(buf), "SERIUS_GGUF_PACKED_ONLY") == 0 && len > 0 && buf[0] == '1';
+#else
+            const char *e = std::getenv("SERIUS_GGUF_PACKED_ONLY");
+            return e != nullptr && e[0] == '1';
+#endif
+        }();
+        if (packed_only && quant_out != nullptr && shape.size() == 2 &&
+            quant_out->count(info.name) != 0 && info.name != "token_embd.weight" &&
+            info.name != "output.weight") {
+            continue;
+        }
+
         core::Tensor tensor(shape, hal::DType::Float32);
         // Freshly allocated contiguous FP32 tensor: bulk copy instead of
         // per-element operator[], which pays a syncToHost() check per weight.
@@ -1624,6 +1646,78 @@ std::unordered_map<std::string, core::Tensor> load_all_tensors(
     }
 
     return result;
+}
+
+bool quant_weight_dequantizable(const quant::QuantWeight &w)
+{
+    if (!w.valid() || w.in == 0 || w.out == 0) {
+        return false;
+    }
+    switch (w.type) {
+        case quant::QuantType::Q4_0:
+        case quant::QuantType::Q4_1:
+        case quant::QuantType::Q8_0:
+            // 32-weight blocks must not straddle output rows.
+            return (w.in % 32) == 0;
+        case quant::QuantType::Q4_K:
+        case quant::QuantType::Q5_K:
+            // 256-weight superblocks must not straddle output rows.
+            return (w.in % 256) == 0;
+        default:
+            return false;
+    }
+}
+
+bool dequantize_quant_weight_dense(const quant::QuantWeight &w, float *out)
+{
+    if (out == nullptr || !quant_weight_dequantizable(w)) {
+        return false;
+    }
+    const size_t numel = w.in * w.out;
+    size_t need_bytes = 0;
+    switch (w.type) {
+        case quant::QuantType::Q4_0:
+            need_bytes = (numel / 32) * 18;
+            break;
+        case quant::QuantType::Q4_1:
+            need_bytes = (numel / 32) * 20;
+            break;
+        case quant::QuantType::Q8_0:
+            need_bytes = (numel / 32) * 34;
+            break;
+        case quant::QuantType::Q4_K:
+            need_bytes = (numel / 256) * 144;
+            break;
+        case quant::QuantType::Q5_K:
+            need_bytes = (numel / 256) * 176;
+            break;
+        default:
+            return false;
+    }
+    if (w.bytes.size() < need_bytes) {
+        return false;
+    }
+    const uint8_t *src = w.bytes.data();
+    switch (w.type) {
+        case quant::QuantType::Q4_0:
+            dequantize_q4_0(src, numel, out);
+            break;
+        case quant::QuantType::Q4_1:
+            dequantize_q4_1(src, numel, out);
+            break;
+        case quant::QuantType::Q8_0:
+            dequantize_q8_0(src, numel, out);
+            break;
+        case quant::QuantType::Q4_K:
+            dequantize_q4_k(src, numel, out);
+            break;
+        case quant::QuantType::Q5_K:
+            dequantize_q5_k(src, numel, out);
+            break;
+        default:
+            return false;
+    }
+    return true;
 }
 
 std::string gguf_architecture(const std::string &path)
