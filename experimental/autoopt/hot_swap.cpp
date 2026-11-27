@@ -125,7 +125,19 @@ bool HotSwapManager::rollback(const std::string &name)
         return false;  // Cannot rollback initial baseline version
     }
 
+    const size_t popped_version = it->second.size();
     it->second.pop_back();
+
+    // Free the library backing the popped version: hot_swap_from_library
+    // keys handles as name+"_v"+version, so the removed entry is
+    // name+"_v"+(popped_version). Without this the .so stays mapped forever
+    // and a later reswap would overwrite the map entry, leaking the handle.
+    const std::string lib_key = name + "_v" + std::to_string(popped_version);
+    auto lib_it = loaded_libraries_.find(lib_key);
+    if (lib_it != loaded_libraries_.end()) {
+        unload_library(lib_it->second);
+        loaded_libraries_.erase(lib_it);
+    }
     return true;
 }
 

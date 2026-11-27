@@ -1,7 +1,8 @@
 #include "state.h"
 
-#include <cmath>
 #include <algorithm>
+#include <cmath>
+#include <stdexcept>
 
 namespace serius {
 namespace quantum {
@@ -74,9 +75,21 @@ Matrix2x2 RZ(float theta)
 
 }  // namespace gates
 
+namespace {
+size_t checked_state_dim(size_t n_qubits)
+{
+    // Bound check must run during member init: 2^n amplitudes must fit in
+    // memory and n must stay < 64 (shift UB). This is a teaching simulator.
+    if (n_qubits == 0 || n_qubits > 20) {
+        throw std::invalid_argument("QuantumState: n_qubits must be in [1, 20]");
+    }
+    return size_t(1) << n_qubits;
+}
+}  // namespace
+
 QuantumState::QuantumState(size_t n_qubits)
     : n_qubits_(n_qubits),
-      amplitudes_(size_t(1) << n_qubits, Complex(0.0f, 0.0f))
+      amplitudes_(checked_state_dim(n_qubits), Complex(0.0f, 0.0f))
 {
     reset();
 }
@@ -108,6 +121,24 @@ void QuantumState::apply_gate(const Matrix2x2 &gate, size_t target_idx)
             amplitudes_[i1] = gate.m10 * a0 + gate.m11 * a1;
         }
     }
+    // Unitary gates preserve the norm in exact arithmetic; renormalize to
+    // absorb floating-point drift over long gate sequences.
+    normalize();
+}
+
+void QuantumState::normalize()
+{
+    float norm_sq = 0.0f;
+    for (const auto &a : amplitudes_) {
+        norm_sq += std::norm(a);
+    }
+    if (norm_sq <= 0.0f) {
+        return;
+    }
+    const float inv_norm = 1.0f / std::sqrt(norm_sq);
+    for (auto &a : amplitudes_) {
+        a *= inv_norm;
+    }
 }
 
 void QuantumState::apply_cnot(size_t control_idx, size_t target_idx)
@@ -131,7 +162,12 @@ void QuantumState::apply_cnot(size_t control_idx, size_t target_idx)
 
 void QuantumState::apply_cz(size_t control_idx, size_t target_idx)
 {
-    if (control_idx >= n_qubits_ || target_idx >= n_qubits_) return;
+    // control == target would collapse the mask to a single bit and silently
+    // apply a Z on that qubit instead of a two-qubit gate: reject like CNOT.
+    if (control_idx >= n_qubits_ || target_idx >= n_qubits_ ||
+        control_idx == target_idx) {
+        return;
+    }
 
     size_t total_dim = amplitudes_.size();
     size_t mask = (size_t(1) << control_idx) | (size_t(1) << target_idx);
@@ -165,6 +201,9 @@ int QuantumState::measure(size_t qubit_idx, float sample_rand)
         }
     }
 
+    // FP accumulation can push prob_1 slightly outside [0,1]; clamp so
+    // (1-prob_1) can't go negative and flip the outcome deterministically.
+    prob_1 = std::clamp(prob_1, 0.0f, 1.0f);
     float clamped_rand = std::max(0.0f, std::min(1.0f, sample_rand));
     int outcome = (clamped_rand < (1.0f - prob_1)) ? 0 : 1;
 

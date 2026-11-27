@@ -1,5 +1,8 @@
 #include "vision_encoder.h"
 
+#include <unordered_set>
+
+#include "autograd/engine.h"
 #include "autograd/ops.h"
 #include "common/serius_check.h"
 #include "init/weight_init.h"
@@ -27,6 +30,18 @@ struct VisionEncoder::Layer
         using namespace core::autograd::ops;
         Node *residual1 = add(input, attn.forward(norm1.forward(input)));
         return add(residual1, ffn.forward(norm2.forward(residual1)));
+    }
+
+    std::vector<Node *> parameters() const
+    {
+        std::vector<Node *> params = {norm1.gamma_, norm1.beta_, norm2.gamma_, norm2.beta_};
+        for (Node *p : attn.parameters()) {
+            params.push_back(p);
+        }
+        for (Node *p : ffn.parameters()) {
+            params.push_back(p);
+        }
+        return params;
     }
 };
 
@@ -77,6 +92,17 @@ Node *VisionEncoder::forward(Node *patch_tokens) const
     return matmul(hidden, proj_);
 }
 
+std::vector<Node *> VisionEncoder::parameters() const
+{
+    std::vector<Node *> params = {pos_embed_, proj_, patch_embed_->proj()};
+    for (const auto &layer : layers_) {
+        for (Node *p : layer->parameters()) {
+            params.push_back(p);
+        }
+    }
+    return params;
+}
+
 Tensor VisionEncoder::encode(const Tensor &image) const
 {
     Tensor chw = image;
@@ -86,7 +112,11 @@ Tensor VisionEncoder::encode(const Tensor &image) const
     }
     Node *embedded = patch_embed_->forward(chw);
     Node *out = forward(embedded);
-    return out->data.copy();
+    Tensor result = out->data.copy();
+    auto pv = parameters();
+    std::unordered_set<Node *> params(pv.begin(), pv.end());
+    core::autograd::free_graph(out, params);
+    return result;
 }
 
 }  // namespace vision

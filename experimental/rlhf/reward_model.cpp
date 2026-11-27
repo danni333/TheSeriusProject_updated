@@ -1,5 +1,6 @@
 #include "reward_model.h"
 
+#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -53,20 +54,6 @@ Node *forward_hidden(const model::LLaMAModel &transformer, const Tensor &tokens)
     // Final RMSNorm -> last hidden state
     hidden = rmsnorm(hidden, transformer.norm_weight(), transformer.config().rms_norm_eps);
     return hidden;
-}
-
-/// Delete every node reachable from \p root except the model's parameter
-/// nodes (owned by the transformer via unique_ptr and shared across calls).
-/// forward_hidden() builds a fresh autograd graph per call; without this the
-/// whole activation graph leaks on every score()/compute_logprobs() call.
-void free_graph(Node *root, const std::unordered_set<Node *> &params)
-{
-    if (!root) return;
-    for (Node *n : core::autograd::topological_sort(root)) {
-        if (n && params.find(n) == params.end()) {
-            delete n;
-        }
-    }
 }
 
 /// Collect the parameter Node pointers owned by the transformer so free_graph
@@ -125,7 +112,7 @@ RewardModel::~RewardModel() = default;
 
 float RewardModel::score(const Tensor &tokens) const
 {
-    if (tokens.size() == 0) {
+    if (tokens.size() == 0 || tokens.shape().empty() || tokens.shape()[0] == 0) {
         return 0.0f;
     }
     // tokens: (seq_len,) -> hidden states (seq_len, hidden_size)
@@ -143,7 +130,7 @@ float RewardModel::score(const Tensor &tokens) const
     }
     reward += impl_->reward_bias[0];
 
-    free_graph(hidden, impl_->params);
+    core::autograd::free_graph(hidden, impl_->params);
     return reward;
 }
 
@@ -186,7 +173,7 @@ std::vector<float> RewardModel::compute_logprobs(const Tensor &tokens) const
     }
 
     // logits_node's graph includes hidden and all block intermediates.
-    free_graph(logits_node, impl_->params);
+    core::autograd::free_graph(logits_node, impl_->params);
     return log_probs;
 }
 
@@ -196,8 +183,8 @@ RewardModel::GenerationResult RewardModel::generate_with_logprobs(const Tensor &
     GenerationResult result;
     result.log_probs.clear();
 
-    const size_t prompt_len = prompt_tokens.shape()[0];
-    if (prompt_len == 0) {
+    const size_t prompt_len = prompt_tokens.shape().empty() ? 0 : prompt_tokens.shape()[0];
+    if (prompt_len == 0 || prompt_tokens.size() < prompt_len) {
         result.tokens = Tensor({0});
         return result;
     }
@@ -224,8 +211,16 @@ RewardModel::GenerationResult RewardModel::generate_with_logprobs(const Tensor &
     for (size_t i = 0; i < prompt_len; ++i) { prompt_tensor[i] = static_cast<float>(tokens[i]); }
 
     Tensor logits = infer::llama_forward_inference(impl_->transformer, prompt_tensor, &cache);
-    const size_t log_rows = logits.shape().empty() ? 0 : logits.shape()[0];
+    // Logits must be a contiguous (rows, vocab_size) matrix: the last-row
+    // pointer arithmetic below is only valid under that layout.
+    if (logits.shape().size() != 2 || logits.shape()[1] != vocab_size) {
+        throw std::runtime_error("generate_with_logprobs: unexpected logits shape");
+    }
+    const size_t log_rows = logits.shape()[0];
     const float *last_row = logits.data() + (log_rows > 0 ? (log_rows - 1) * vocab_size : 0);
+    if (log_rows == 0) {
+        throw std::runtime_error("generate_with_logprobs: empty logits");
+    }
 
     for (int step = 0; step < max_new_tokens; ++step) {
         // argmax over the last-position logits
@@ -250,8 +245,12 @@ RewardModel::GenerationResult RewardModel::generate_with_logprobs(const Tensor &
 
         Tensor next_logits = infer::llama_forward_single_token(
             impl_->transformer, next_token, prompt_len + static_cast<size_t>(step), &cache);
-        const size_t nrows = next_logits.shape().empty() ? 0 : next_logits.shape()[0];
-        last_row = next_logits.data() + (nrows > 0 ? (nrows - 1) * vocab_size : 0);
+        if (next_logits.shape().size() != 2 || next_logits.shape()[1] != vocab_size ||
+            next_logits.shape()[0] == 0) {
+            throw std::runtime_error("generate_with_logprobs: unexpected logits shape");
+        }
+        const size_t nrows = next_logits.shape()[0];
+        last_row = next_logits.data() + (nrows - 1) * vocab_size;
         // next_logits must outlive this iteration: copy into a stable buffer.
         static thread_local std::vector<float> logits_copy;
         logits_copy.assign(last_row, last_row + vocab_size);

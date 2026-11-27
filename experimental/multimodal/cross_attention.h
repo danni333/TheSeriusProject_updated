@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 
 #include "autograd/node.h"
 #include "tensor/tensor.h"
@@ -26,6 +27,9 @@ class EncoderSelfAttention
     /// input: (seq, d_model) -> (seq, d_model)
     Node *forward(Node *input) const;
 
+    /// Parameter nodes owned by this module (excluded from graph cleanup).
+    std::vector<Node *> parameters() const { return {w_q_, w_k_, w_v_, w_o_}; }
+
    private:
     size_t d_model_;
     size_t n_heads_;
@@ -48,6 +52,9 @@ class CrossAttention
 
     /// text_hidden: (seq_text, d_model), context: (seq_ctx, d_model)
     Node *forward(Node *text_hidden, Node *context) const;
+
+    /// Parameter nodes owned by this module (excluded from graph cleanup).
+    std::vector<Node *> parameters() const { return {w_q_, w_k_, w_v_, w_o_}; }
 
    private:
     size_t d_model_;

@@ -52,11 +52,18 @@ std::string ReActEngine::run(const std::string &user_query,
             // precomputed mock results.
             if (tool_registry != nullptr && tool_registry->has_tool(call.name)) {
                 nlohmann::json args = nlohmann::json::parse(call.args_json, nullptr, false);
-                if (!args.is_object()) {
-                    args = nlohmann::json::object();
+                if (args.is_discarded()) {
+                    // Malformed args_json must not silently become {}: the
+                    // tool would run with missing parameters.
+                    observation = "Error: invalid JSON in tool arguments";
                 }
-                nlohmann::json result = tool_registry->execute(call.name, args);
-                observation = result.is_string() ? result.get<std::string>() : result.dump();
+                else {
+                    if (!args.is_object()) {
+                        args = nlohmann::json::object();
+                    }
+                    nlohmann::json result = tool_registry->execute(call.name, args);
+                    observation = result.is_string() ? result.get<std::string>() : result.dump();
+                }
                 found = true;
             }
 

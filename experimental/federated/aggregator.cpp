@@ -1,6 +1,7 @@
 #include "aggregator.h"
 
 #include <numeric>
+#include <stdexcept>
 
 namespace serius {
 namespace federated {
@@ -18,9 +19,14 @@ core::Tensor FederatedAggregator::aggregate()
 
     auto it = updates_.begin();
     core::Tensor sum = it->second;
+    const auto expected_shape = it->second.shape();
     size_t count = 1;
     ++it;
     for (; it != updates_.end(); ++it) {
+        if (it->second.shape() != expected_shape) {
+            throw std::invalid_argument(
+                "FederatedAggregator::aggregate: mismatched update shapes");
+        }
         sum = sum + it->second;
         ++count;
     }

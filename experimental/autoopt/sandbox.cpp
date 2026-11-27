@@ -84,9 +84,17 @@ std::string Sandbox::create_temp_dir() const
     // Create a unique temp directory
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(1000, 9999);
+    // 64 bits of entropy as hex: the old 4-digit suffix had only ~9k
+    // possibilities and allowed predictable temp-dir squatting.
+    std::uniform_int_distribution<int> nibble(0, 15);
+    constexpr char kHex[] = "0123456789abcdef";
+    std::string suffix;
+    suffix.reserve(16);
+    for (int i = 0; i < 16; ++i) {
+        suffix += kHex[nibble(gen)];
+    }
 
-    std::string temp_dir_name = "serius_sandbox_" + std::to_string(dis(gen));
+    std::string temp_dir_name = "serius_sandbox_" + suffix;
     fs::path temp_path = fs::temp_directory_path() / temp_dir_name;
 
     if (!fs::create_directory(temp_path)) {
@@ -248,6 +256,16 @@ VerificationResult Sandbox::verify(const KernelFn &reference,
         core::Tensor ref_out = reference(input);
         core::Tensor cand_out = candidate(input);
 
+        // The comparison below indexes raw float buffers: reject non-Float32
+        // or non-CPU tensors instead of silently reinterpreting bytes.
+        if (ref_out.dtype() != hal::DType::Float32 ||
+            cand_out.dtype() != hal::DType::Float32) {
+            res.passed = false;
+            return res;
+        }
+        ref_out.syncToHost();
+        cand_out.syncToHost();
+
         if (ref_out.size() != cand_out.size()) {
             res.passed = false;
             return res;
@@ -346,6 +364,11 @@ KernelFn Sandbox::load_kernel(const std::string &library_path)
     // Keep the module loaded for the process lifetime (no FreeLibrary/dlclose):
     // unloading would invalidate the code the returned KernelFn calls.
     return [fn](const core::Tensor &in) -> core::Tensor {
+        // The compiled kernel signature is float* in/out: reject other
+        // dtypes instead of reinterpreting the buffer.
+        if (in.dtype() != hal::DType::Float32) {
+            throw std::runtime_error("sandbox kernel: input must be Float32");
+        }
         core::Tensor in_c = in.contiguous();
         core::Tensor out(in_c.shape(), in_c.dtype());
         const size_t count = in_c.size();

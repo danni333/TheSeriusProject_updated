@@ -45,6 +45,9 @@ class AudioEncoder
     Tensor encode(const std::vector<float> &pcm) const;
     Tensor encode_mel(const Tensor &mel) const;
 
+    /// Parameter nodes owned by this module (excluded from graph cleanup).
+    std::vector<Node *> parameters() const;
+
    private:
     struct Layer;
 

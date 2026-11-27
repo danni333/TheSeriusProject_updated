@@ -1,8 +1,9 @@
 #pragma once
 
+#include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
-#include <functional>
 
 #include "tensor/tensor.h"
 #include "nlohmann/json.hpp"
@@ -67,7 +68,11 @@ public:
     void clear();
 
     /// Get number of documents.
-    size_t size() const { return documents_.size(); }
+    size_t size() const
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        return documents_.size();
+    }
 
 private:
     Config config_;
@@ -81,6 +86,9 @@ private:
     };
 
     std::vector<Document> documents_;
+    // Guards documents_: search/upsert/remove/get/clear/size are public and
+    // the client may be shared across server threads.
+    mutable std::mutex mu_;
 
     // Helper: calculate cosine similarity
     float cosine_similarity(const std::vector<float>& a,

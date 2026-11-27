@@ -1,6 +1,7 @@
 #include "circuit.h"
 
 #include <cmath>
+#include <stdexcept>
 
 namespace serius {
 namespace quantum {
@@ -47,9 +48,12 @@ std::vector<float> QuantumCircuit::parameter_shift_gradient(const std::vector<fl
                                                             const core::Tensor &cost_diag) const
 {
     size_t P = num_params();
+    if (params.size() != P) {
+        throw std::invalid_argument(
+            "parameter_shift_gradient: params.size() must equal num_params()");
+    }
     std::vector<float> gradients(P, 0.0f);
     std::vector<float> shifted = params;
-    shifted.resize(P, 0.0f);
 
     for (size_t i = 0; i < P; ++i) {
         float original = shifted[i];

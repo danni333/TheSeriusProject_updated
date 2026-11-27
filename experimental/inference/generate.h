@@ -50,8 +50,12 @@ struct Beam
 
 /// Generate using beam search.
 /// Returns beam_width candidate sequences sorted by score.
+/// @param length_penalty GNMT-style length normalization exponent: candidates
+///        are ranked by score / len^penalty instead of raw cumulative
+///        log-probability. 0.0 (default) keeps raw-score ranking.
 std::vector<Beam> beam_search(model::TransformerModel &model, const std::vector<int> &prompt_ids, int beam_width = 4,
-                              int max_new_tokens = 256, int eos_token_id = 2);
+                              int max_new_tokens = 256, int eos_token_id = 2,
+                              float length_penalty = 0.0f);
 
 }  // namespace inference
 }  // namespace serius

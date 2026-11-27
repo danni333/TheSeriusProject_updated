@@ -48,6 +48,9 @@ class VisionEncoder
 
     Node *forward(Node *patch_tokens) const;
 
+    /// Parameter nodes owned by this module (excluded from graph cleanup).
+    std::vector<Node *> parameters() const;
+
     PatchEmbed &patch_embed() { return *patch_embed_; }
 
    private:

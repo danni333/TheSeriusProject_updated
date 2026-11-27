@@ -59,6 +59,11 @@ class AutoRefactorer
     float min_speedup() const { return min_speedup_; }
     void set_min_speedup(float s) { min_speedup_ = s; }
 
+    /// Whether successful optimizations only record the commit message
+    /// (true, default) or also run `git commit` in the repo (false).
+    bool commit_dry_run() const { return commit_dry_run_; }
+    void set_commit_dry_run(bool dry_run) { commit_dry_run_ = dry_run; }
+
     const LLMClient &llm_client() const { return llm_client_; }
     LLMClient &llm_client() { return llm_client_; }
 
@@ -76,6 +81,7 @@ class AutoRefactorer
     GitManager &git_mgr_;
     LLMClient llm_client_;
     float min_speedup_;
+    bool commit_dry_run_ = true;
 };
 
 }  // namespace autoopt

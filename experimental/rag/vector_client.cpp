@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 
 namespace serius {
 namespace rag {
@@ -51,6 +52,7 @@ std::vector<SearchResult> VectorDBClient::search(
     const std::vector<float>& query_embedding,
     int top_k, float threshold)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     std::vector<SearchResult> results;
 
     // Calculate similarity for all documents
@@ -88,6 +90,7 @@ void VectorDBClient::upsert(const std::string& id,
                              const std::string& text,
                              const json& metadata)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     // Check if document already exists
     auto it = std::find_if(documents_.begin(), documents_.end(),
                           [&id](const Document& doc) { return doc.id == id; });
@@ -110,6 +113,7 @@ void VectorDBClient::upsert(const std::string& id,
 
 void VectorDBClient::remove(const std::string& id)
 {
+    std::lock_guard<std::mutex> lk(mu_);
     documents_.erase(
         std::remove_if(documents_.begin(), documents_.end(),
                       [&id](const Document& doc) { return doc.id == id; }),
@@ -118,6 +122,7 @@ void VectorDBClient::remove(const std::string& id)
 
 SearchResult VectorDBClient::get(const std::string& id) const
 {
+    std::lock_guard<std::mutex> lk(mu_);
     auto it = std::find_if(documents_.begin(), documents_.end(),
                           [&id](const Document& doc) { return doc.id == id; });
 
@@ -135,6 +140,7 @@ SearchResult VectorDBClient::get(const std::string& id) const
 
 void VectorDBClient::clear()
 {
+    std::lock_guard<std::mutex> lk(mu_);
     documents_.clear();
 }
 

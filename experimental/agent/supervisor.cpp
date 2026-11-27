@@ -1,6 +1,7 @@
 #include "supervisor.h"
 #include "specialist.h"
 
+#include <nlohmann/json.hpp>
 #include <sstream>
 
 namespace serius {
@@ -40,37 +41,31 @@ std::vector<Task> Supervisor::plan_tasks(const std::string &query)
     params.max_tokens = 512;
     std::string plan = core_model_.generate(prompt, params);
 
-    // Minimal JSON parsing: extract agent names and prompts.
-    // Look for "agent" and "prompt" keys.
-    size_t pos = 0;
+    // Parse the plan as JSON: hand-rolled quote scanning broke on escaped
+    // quotes, ':' or ';' inside values, and nested objects.
+    nlohmann::json plan_json;
+    try {
+        plan_json = nlohmann::json::parse(plan);
+    }
+    catch (...) {
+        return tasks;  // Unparseable plan -> no tasks
+    }
+    if (!plan_json.is_array()) {
+        return tasks;
+    }
+
     int task_id = 0;
-    while ((pos = plan.find("\"agent\"", pos)) != std::string::npos) {
+    for (const auto &item : plan_json) {
+        if (!item.is_object()) {
+            continue;
+        }
         Task t;
         t.id = std::to_string(task_id++);
-
-        // Extract agent name.
-        size_t colon = plan.find(':', pos);
-        size_t q1 = plan.find('"', colon + 1);
-        size_t q2 = plan.find('"', q1 + 1);
-        if (q1 != std::string::npos && q2 != std::string::npos) {
-            t.agent_name = plan.substr(q1 + 1, q2 - q1 - 1);
-        }
-
-        // Extract prompt.
-        size_t prompt_pos = plan.find("\"prompt\"", q2);
-        if (prompt_pos != std::string::npos) {
-            size_t pcolon = plan.find(':', prompt_pos);
-            size_t pq1 = plan.find('"', pcolon + 1);
-            size_t pq2 = plan.find('"', pq1 + 1);
-            if (pq1 != std::string::npos && pq2 != std::string::npos) {
-                t.prompt = plan.substr(pq1 + 1, pq2 - pq1 - 1);
-            }
-        }
-
+        t.agent_name = item.value("agent", "");
+        t.prompt = item.value("prompt", "");
         if (!t.agent_name.empty()) {
             tasks.push_back(std::move(t));
         }
-        pos = q2;
     }
 
     return tasks;

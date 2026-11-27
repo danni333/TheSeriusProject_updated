@@ -13,19 +13,20 @@ namespace inference {
 
 namespace {
 
-/// Delete every node reachable from \p root except the model's parameter
-/// nodes (owned by the model and shared across calls). forward() builds a
-/// fresh autograd graph per step; without this the whole activation graph
-/// leaks on every generated token.
-void free_graph(core::autograd::Node *root,
-                const std::unordered_set<core::autograd::Node *> &params)
+/// Validate that logits are a contiguous (rows, vocab) matrix and return a
+/// pointer to the last row. Throws on any other layout: the caller indexes
+/// it as flat row-major data.
+const float *last_logits_row(const core::Tensor &logits, size_t expected_rows,
+                             size_t &vocab_size)
 {
-    if (!root) return;
-    for (core::autograd::Node *n : core::autograd::topological_sort(root)) {
-        if (n && params.find(n) == params.end()) {
-            delete n;
-        }
+    const auto &shape = logits.shape();
+    if (shape.size() != 2 || shape[0] != expected_rows || shape[1] == 0 ||
+        !logits.is_contiguous()) {
+        throw std::runtime_error(
+            "generate: logits must be a contiguous (seq_len, vocab) matrix");
     }
+    vocab_size = shape[1];
+    return logits.data() + (expected_rows - 1) * vocab_size;
 }
 
 }  // namespace
@@ -69,11 +70,11 @@ GenerateResult generate(model::TransformerModel &model, const std::vector<int> &
         // Extract logits for the last token position
         // logits_node->data has shape (seq_len, vocab_size)
         const core::Tensor &logits_tensor = logits_node->data;
-        size_t vocab_size = logits_tensor.shape().back();
+        size_t vocab_size = 0;
+        const float *src = last_logits_row(logits_tensor, seq_len, vocab_size);
 
         // Get logits for the last position
         core::Tensor last_logits({vocab_size});
-        const float *src = logits_tensor.data() + (seq_len - 1) * vocab_size;
         float *dst = last_logits.data();
         for (size_t i = 0; i < vocab_size; i++) {
             dst[i] = src[i];
@@ -81,7 +82,7 @@ GenerateResult generate(model::TransformerModel &model, const std::vector<int> &
 
         // Free this step's autograd graph (params excluded) before the next
         // forward builds a fresh one.
-        free_graph(logits_node, params);
+        core::autograd::free_graph(logits_node, params);
 
         // Sample next token
         int next_token = sampler.sample(last_logits, result.token_ids);
@@ -108,7 +109,7 @@ GenerateResult generate(model::TransformerModel &model, const std::vector<int> &
 }
 
 std::vector<Beam> beam_search(model::TransformerModel &model, const std::vector<int> &prompt_ids, int beam_width,
-                              int max_new_tokens, int eos_token_id)
+                              int max_new_tokens, int eos_token_id, float length_penalty)
 {
     if (prompt_ids.empty()) {
         throw std::invalid_argument("beam_search: prompt_ids cannot be empty");
@@ -148,16 +149,16 @@ std::vector<Beam> beam_search(model::TransformerModel &model, const std::vector<
             core::autograd::Node *logits_node = model.forward(input_node);
 
             const core::Tensor &logits_tensor = logits_node->data;
-            size_t vocab_size = logits_tensor.shape().back();
+            size_t vocab_size = 0;
+            const float *src = last_logits_row(logits_tensor, seq_len, vocab_size);
 
             // Get logits for last position
             core::Tensor last_logits({vocab_size});
-            const float *src = logits_tensor.data() + (seq_len - 1) * vocab_size;
             float *dst = last_logits.data();
             for (size_t i = 0; i < vocab_size; i++) {
                 dst[i] = src[i];
             }
-            free_graph(logits_node, params);
+            core::autograd::free_graph(logits_node, params);
 
             // Compute log-softmax
             core::Tensor log_probs = Sampler::softmax(last_logits);
@@ -184,9 +185,17 @@ std::vector<Beam> beam_search(model::TransformerModel &model, const std::vector<
             }
         }
 
-        // Keep top beam_width candidates by score
+        // Keep top beam_width candidates. With length_penalty > 0 rank by
+        // GNMT-style normalized score so finished (shorter) beams aren't
+        // systematically disadvantaged by their smaller cumulative |logp|.
+        auto rank = [length_penalty](const Beam &b) {
+            if (length_penalty <= 0.0f || b.tokens.empty()) {
+                return b.score;
+            }
+            return b.score / std::pow(static_cast<float>(b.tokens.size()), length_penalty);
+        };
         std::sort(candidates.begin(), candidates.end(),
-                  [](const Beam &a, const Beam &b) { return a.score > b.score; });
+                  [&rank](const Beam &a, const Beam &b) { return rank(a) > rank(b); });
 
         if (static_cast<int>(candidates.size()) > beam_width) {
             candidates.resize(beam_width);

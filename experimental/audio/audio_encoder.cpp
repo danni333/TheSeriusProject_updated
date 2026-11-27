@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
+#include "autograd/engine.h"
 #include "autograd/ops.h"
 #include "common/serius_check.h"
 #include "init/weight_init.h"
@@ -30,6 +32,18 @@ struct AudioEncoder::Layer
         using namespace core::autograd::ops;
         Node *residual1 = add(input, attn.forward(norm1.forward(input)));
         return add(residual1, ffn.forward(norm2.forward(residual1)));
+    }
+
+    std::vector<Node *> parameters() const
+    {
+        std::vector<Node *> params = {norm1.gamma_, norm1.beta_, norm2.gamma_, norm2.beta_};
+        for (Node *p : attn.parameters()) {
+            params.push_back(p);
+        }
+        for (Node *p : ffn.parameters()) {
+            params.push_back(p);
+        }
+        return params;
     }
 };
 
@@ -103,6 +117,17 @@ Tensor AudioEncoder::conv1d(const Tensor &frames_by_mel) const
     return out;
 }
 
+std::vector<Node *> AudioEncoder::parameters() const
+{
+    std::vector<Node *> params = {conv_weight_, conv_bias_, proj_};
+    for (const auto &layer : layers_) {
+        for (Node *p : layer->parameters()) {
+            params.push_back(p);
+        }
+    }
+    return params;
+}
+
 Tensor AudioEncoder::encode_mel(const Tensor &mel) const
 {
     using namespace core::autograd::ops;
@@ -122,7 +147,10 @@ Tensor AudioEncoder::encode_mel(const Tensor &mel) const
         hidden = layer->forward(hidden);
     }
     Node *projected = matmul(hidden, proj_);
-    return projected->data.copy();
+    Tensor result = projected->data.copy();
+    std::unordered_set<Node *> params(parameters().begin(), parameters().end());
+    core::autograd::free_graph(projected, params);
+    return result;
 }
 
 Tensor AudioEncoder::encode(const std::vector<float> &pcm) const

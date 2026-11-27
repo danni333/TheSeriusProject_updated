@@ -3,6 +3,8 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <sstream>
 
@@ -33,7 +35,18 @@ bool split_url(const std::string &url, bool &ssl, std::string &host, int &port,
     const size_t colon = authority.rfind(':');
     if (colon != std::string::npos) {
         host = authority.substr(0, colon);
-        port = std::atoi(authority.substr(colon + 1).c_str());
+        const std::string port_str = authority.substr(colon + 1);
+        // Strict parse: atoi("80abc") silently yields 80. Require all digits.
+        if (port_str.empty() ||
+            !std::all_of(port_str.begin(), port_str.end(),
+                         [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            return false;
+        }
+        const long p = std::strtol(port_str.c_str(), nullptr, 10);
+        if (p <= 0 || p > 65535) {
+            return false;
+        }
+        port = static_cast<int>(p);
     } else {
         host = authority;
         port = ssl ? 443 : 80;
@@ -101,8 +114,10 @@ std::string LLMClient::extract_code_from_response(const std::string &response) c
         }
     }
 
-    // If no code blocks, return the whole response
-    return response;
+    // No code fence: returning the whole response would feed prose into the
+    // compiler (guaranteed wasted compile cycle, or a wrong block if the
+    // prose contains stray backticks). Empty signals extraction failure.
+    return "";
 }
 
 std::string LLMClient::http_post(const std::string &url, const std::string &json_body) const

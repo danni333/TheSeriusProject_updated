@@ -35,8 +35,22 @@ RefactorReport AutoRefactorer::optimize_hotspot(const std::string &kernel_name,
         return report;
     }
 
+    // When the sandbox produced a real shared library, the compiled artifact
+    // is the candidate: benchmarking the caller-supplied candidate_kernel
+    // instead would verify one function and install a different one. With a
+    // mock compile (no library_path) candidate_kernel is the only artifact.
+    KernelFn candidate = candidate_kernel;
+    if (!comp.library_path.empty()) {
+        candidate = Sandbox::load_kernel(comp.library_path);
+        if (!candidate) {
+            report.reason = "Compiled library does not export 'kernel_entry' "
+                            "with the expected C ABI signature";
+            return report;
+        }
+    }
+
     // Step 2 & 3: Verification and benchmark, then swap/commit on success.
-    return evaluate_candidate(kernel_name, candidate_kernel, test_inputs, std::move(report));
+    return evaluate_candidate(kernel_name, candidate, test_inputs, std::move(report));
 }
 
 RefactorReport AutoRefactorer::evaluate_candidate(const std::string &kernel_name,
@@ -67,7 +81,8 @@ RefactorReport AutoRefactorer::evaluate_candidate(const std::string &kernel_name
     }
 
     hot_swap_.hot_swap(kernel_name, candidate_kernel);
-    git_mgr_.commit_optimization(kernel_name, report.old_latency_ms, report.new_latency_ms, /*dry_run=*/true);
+    git_mgr_.commit_optimization(kernel_name, report.old_latency_ms, report.new_latency_ms,
+                                 commit_dry_run_);
 
     report.optimized = true;
     report.reason = "Optimization successful and hot-swapped";

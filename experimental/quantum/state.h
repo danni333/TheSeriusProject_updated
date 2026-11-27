@@ -69,6 +69,9 @@ class QuantumState
     std::vector<Complex> &amplitudes() { return amplitudes_; }
 
    private:
+    /// Renormalize amplitudes to unit norm (corrects FP drift after gates).
+    void normalize();
+
     size_t n_qubits_;
     std::vector<Complex> amplitudes_;
 };

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <stdexcept>
 #include <vector>
 
 namespace serius {
@@ -13,8 +14,11 @@ namespace rlhf {
 float kl_divergence(const std::vector<float> &log_probs_new,
                     const std::vector<float> &log_probs_ref)
 {
+    if (log_probs_new.size() != log_probs_ref.size()) {
+        throw std::invalid_argument("kl_divergence: log_probs size mismatch");
+    }
     float kl = 0.0f;
-    const size_t n = std::min(log_probs_new.size(), log_probs_ref.size());
+    const size_t n = log_probs_new.size();
     for (size_t i = 0; i < n; ++i) {
         const float p = std::exp(log_probs_new[i]);
         kl += p * (log_probs_new[i] - log_probs_ref[i]);
@@ -85,7 +89,10 @@ float ppo_loss(const std::vector<float> &log_probs_new,
                const std::vector<float> &log_probs_old,
                float advantage, float clip_eps)
 {
-    const size_t n = std::min(log_probs_new.size(), log_probs_old.size());
+    if (log_probs_new.size() != log_probs_old.size()) {
+        throw std::invalid_argument("ppo_loss: log_probs size mismatch");
+    }
+    const size_t n = log_probs_new.size();
     if (n == 0) {
         return 0.0f;
     }

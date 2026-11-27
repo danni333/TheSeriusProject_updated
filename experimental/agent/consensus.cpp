@@ -5,6 +5,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 
 namespace serius {
 namespace agent {
@@ -73,6 +74,11 @@ float DelphiConsensus::cosine_sim(const std::string &a, const std::string &b) co
         auto embed = [&](const std::string &s) -> const std::vector<float> & {
             auto it = embed_cache_.find(s);
             if (it == embed_cache_.end()) {
+                // Bounded cache: a long debate would otherwise grow this
+                // map forever (one entry per distinct response string).
+                if (embed_cache_.size() >= 4096) {
+                    embed_cache_.clear();
+                }
                 it = embed_cache_.emplace(s, embed_fn_(s)).first;
             }
             return it->second;
@@ -119,6 +125,11 @@ ConsensusResult DelphiConsensus::debate(const std::string &question)
     if (agents_.empty()) {
         result.final_answer = "";
         return result;
+    }
+    for (size_t i = 0; i < agents_.size(); ++i) {
+        if (!agents_[i]) {
+            throw std::invalid_argument("DelphiConsensus::debate: null agent registered");
+        }
     }
 
     std::vector<std::string> responses(agents_.size());
