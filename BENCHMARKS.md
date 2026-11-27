@@ -12,11 +12,12 @@ Misurazioni eseguite il 2026-11-22 con `serius generate` su:
 |---------|---------|------------------|------|
 | Qwen2.5-0.5B-Instruct Q4_K_M | CUDA + graph | **~84 tok/s** | 16 token in 0.19 s (run breve) |
 | Qwen2.5-0.5B-Instruct Q4_K_M | CUDA (eager) | ~44 tok/s | misura precedente, pre-graph |
-| Qwen2.5-0.5B-Instruct Q4_K_M | CPU (`--gpu cpu`) | **~2–8 tok/s** | alta varianza termica |
+| Qwen2.5-0.5B-Instruct Q4_K_M | CPU (`--gpu cpu`) | **~16–19 tok/s** | 2026-11-27, post-NTA prefetch + OMP=fisici |
 | Qwen2.5-0.5B-Instruct FP16 | CUDA (eager) | **~10 tok/s** | niente pesi quant → graph non eleggibile |
 | Qwen2.5-0.5B-Instruct Q4_K_M | CUDA + graph | **147.8 tok/s** | 64 token, misurato post-fix VRAM |
 | Qwen2.5-Coder-1.5B Q4_K_M | CUDA + graph | **91.7 tok/s** | 64 token, ~1.94 GiB VRAM — ora entra in GPU |
 | Qwen2.5-Coder-1.5B Q4_K_M | CPU (fallback) | **~1.3 tok/s** | solo se `--gpu cpu` forzato o VRAM piena |
+| SmolLM2-135M Q4_0 | CPU (`--gpu cpu`) | **~63–76 tok/s** | 2026-11-27, 300 token, post-NTA+OMP; alta varianza termica |
 | SmolLM2-135M Q4_0 | CUDA + graph | **~120 tok/s** | 16 token in 0.13 s |
 | SmolLM2-135M Q4_0 | CUDA (eager, `SERIUS_NO_GRAPH=1`) | ~27 tok/s | stesso modello senza graph |
 | SmolLM2-135M Q8_0 | CUDA + graph | **~66 tok/s** | 16 token in 0.24 s |

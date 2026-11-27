@@ -19,9 +19,9 @@ Nota: fix applicati dall'utente manualmente segnati come [user].
 | F7.16 | MPI count int-overflow guard (mpi_count) | src/distributed/mpi_comm.cpp | DONE |
 | F7.53 | CudaBackend::free pinned tracking + thread-safe singleton (F7.52) | src/hal/cuda_backend.{cu,h} | DONE |
 | F4.1 | embedding_lookup token_id validation → throw | src/transformer/model.cpp | DONE |
-| F4.13/14 | speculative decoding position + early-stop | src/infer/speculative.cpp | pending |
+| F4.13/14/15 | speculative decoding: verifica target alla posizione corretta (prefix senza x̂_i), nessun early-stop dopo rejection, acceptance_rate su drafted_tokens | src/infer/speculative.cpp + regression test | DONE |
 | F4.3 | KVCache rolling: ordered_seq_() gather in ordine cronologico dopo wrap (get_keys/get_values) | src/transformer/kv_cache.{h,cpp} | DONE |
-| F5.1 | free_graph() helper (topological_sort, params esclusi); input_node heap-allocated in generate_transformer/stream_transformer | src/server/server_generation.cpp | DONE |
+| F5.1 | free_graph() helper (topological_sort, params esclusi); input_node heap-allocated in generate_transformer/stream_transformer | src/autograd/engine.{h,cpp} (centralizzato 2026-11-27, usato da server_generation + rlhf) | DONE |
 | F5.2 | "stopped" flag in generate/stream llama+transformer; finish_reason stop/length propagato a server.cpp chat+completions | src/server/server_generation.cpp, src/server/server.cpp | DONE |
 | F5.3 | embeddings zero su modelli GPU-offloaded: rimosso dtype guard, item() handle F16/BF16+strides | src/server/server.cpp | DONE |
 | F5.17 | GGUF load fail → entry.llama reset (load_model returns false); dir load fail + weight files present → reject; config-only dirs inalterati | src/server/server.cpp | DONE |
@@ -43,4 +43,9 @@ Nota: fix applicati dall'utente manualmente segnati come [user].
 | F7.63 | embedding cache bounded 8192 | src/hub/embedder.cpp | done |
 | F7.46 | multipart upload in RAM | - | deferred (httplib limit) |
 | F7.34 | LoadLibrary under mutex | - | deferred-design |
-| F7b | experimental deep review (~30 file, F7b.29 PPO no-op) | experimental/ | open |
+| F7b | experimental deep review (~30 file) | experimental/ | done |
+| F7b.2-10,13-18,21-32 | experimental/ fixes (v. audit_findings.md) | experimental/ | done |
+| F7b.1 | Sandbox RCE design | experimental/autoopt/sandbox.h | documented |
+| F7b.29 | PPO train_step no-op | experimental/rlhf/ppo_trainer.cpp | deferred-design |
+| F7b.12/19/20 | euristiche/documented design | experimental/ | documented |
+| chat-EOS | /v1/chat/completions: build_chat_prompt inietta system turn di default "You are a helpful AI assistant." per modelli ChatML senza system message (allineato a CLI); senza, SmolLM2-135M collassa a <|im_end|> immediato → completion_tokens=0 | src/server/server_generation.cpp | done |

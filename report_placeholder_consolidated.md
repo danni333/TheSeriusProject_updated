@@ -36,6 +36,20 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 
 ---
 
+## Aggiornamento 2026-11-27 (sessione audit + performance)
+
+| Item | Stato |
+|------|-------|
+| Speculative decoding F4.13/14/15 | ✅ RISOLTO — verifica target alla posizione corretta (`p(·|seq,x̂_0..x̂_{i-1})`), niente early-stop dopo rejection, `acceptance_rate` su `drafted_tokens`; regression test 3/3 |
+| CUDA graph eligibility silenziosa | ✅ RISOLTO — `log_graph_ineligible_once()` in `llama_inference_cuda.cpp`: warn-once per (model,cache) con motivo (dtype/embed/lm_head/proiezioni/ctx>4096/hook/capture fail) |
+| `free_graph` duplicato server_generation | ✅ RISOLTO — usa `core::autograd::free_graph` centralizzato in `autograd/engine.{h,cpp}` |
+| `cmd_mcp` versione hardcoded | ✅ RISOLTO — usa `SERIUS_VERSION` |
+| ctest suite | ✅ 490/491 pass, 7 skip (modelli assenti), `test_cuda` richiede `ctest -C Release` |
+| CPU decode | ✅ NTA prefetch + OMP=core fisici: SmolLM2 Q4_0 ~63–76 tok/s, Qwen2.5-0.5B Q4_K_M ~16–19 tok/s a sistema scarico |
+| `.gitignore`, `src/inference/`, versione CMake | ✅ verificati — gia' a posto |
+
+Residuo reale: backend Vulkan/Metal (future work), continuous batching HTTP, parita' OpenAI residua (`stop`/`n>1`/`logprobs`/penalties/`response_format`), installer/documentazione, soak stress. Piano: `todo/piano_residuo_2026-11-27.md`.
+
 ## Sommario Esecutivo
 
 **Totale aree di miglioramento identificate: 270+**
@@ -268,6 +282,11 @@ Nuovi item scoperti dopo questo report (non elencati sopra): batched prefill era
 
 ## BUG CRITICO TROVATO TRAMITE TESTING MANUALE
 
+> **RISOLTO** (vedi tabella "Aggiornamento 2026-11-15"): root cause era
+> batched prefill (Tensor stale dopo matmul CUDA) + BOS/EOS errato per
+> Qwen — fix in `tensor.{h,cpp}`, `llama_inference.cpp`, `bpe.{h,cpp}`.
+> Sezione mantenuta come storico della diagnosi.
+
 ### Bug: CLI Chat - Risposte Incoerenti con Input
 
 **Test eseguito:**
@@ -318,21 +337,18 @@ Il modello genera risposte completamente incoerenti con l'input dell'utente. Pos
 
 ## Conclusione
 
-Il progetto TheSeriusProject ha **270+ aree di miglioramento** identificate. La maggior parte sono:
-- Backend hardware incompleti (Vulkan, Metal)
-- Hub/Search engine completamente stub
-- Hardcoded values ovunque
-- Implementazioni "For Now"/Simple/Simplified
+Aggiornamento 2026-11-27: la quasi totalità degli item e' risolta —
+Part 1 e Part 2 chiuse, Part 3 centralizzata in `common/defaults.h` +
+constexpr di modulo, audit F4.x completato (F4.13/14/15 inclusi).
 
-Nonostante questo, molte parti sono ben implementate:
-- Test suite di buona qualità
-- Thread safety corretta
-- Agent framework completo
-- World model completo
-- Attention specializzate complete
+Resta aperto:
+- **Backend Vulkan/Metal** — unici item "critici" non implementati
+  (decisi future work; focus CUDA/Intel).
+- **Server**: continuous batching HTTP, parita' OpenAI residua
+  (`stop` sequences, `n>1`, `logprobs`, penalties, `response_format`).
+- **Packaging**: installer Windows, changelog.
+- **Performance CPU**: decode ~63–76 tok/s su SmolLM2 Q4_0 post-NTA;
+  gap residuo vs llama.cpp e' strutturale (thread persistenti ggml-style,
+  item 1.3 opzionale).
 
-La roadmap di sviluppo dovrebbe priorizzare:
-1. Completare backend hardware
-2. Completare hub/search engine
-3. Parametrizzare hardcoded values
-4. Implementare funzionalità core incomplete
+Piano residuo dettagliato: `todo/piano_residuo_2026-11-27.md`.

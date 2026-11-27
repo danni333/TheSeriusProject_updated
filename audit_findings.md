@@ -1186,3 +1186,41 @@ Verifica: test_hub_server 2/2, test_hub_search 4/4, test_hub_downloader 5/5.
 - **F7.34** LoadLibrary sotto mutex: deferred-design (lock globale durante dlopen bloccherebbe tutti i plugin; rischio accettato, documentato).
 
 Verifica: test_guard 11/11, test_mcp_client 11/11, test_mcp_server 11/11, test_graph_compiler 16/16, test_distributed 30/30, test_hub_server 2/2, test_hub_search 4/4, test_hub_downloader 5/5.
+
+## Aggiornamento remediation (2026-11-26, F7b experimental/)
+
+- **F7b.2** `create_temp_dir`: suffisso 16 nibble hex da random_device (era 4 cifre decimali → ~9k path prevedibili).
+- **F7b.3** `Sandbox::verify`: check dtype Float32 + syncToHost prima del compare; `load_kernel` rifiuta input non-Float32.
+- **F7b.4** `HotSwapManager::rollback`: `dlclose`/`FreeLibrary` della lib della versione rimossa (chiave `name_v<version>`) — no più leak di mapping né overwrite di handle.
+- **F7b.5** `optimize_hotspot`: se il sandbox produce una libreria reale, il candidato benchmarkato/installato è il kernel compilato (coerenza verifica↔installazione); `candidate_kernel` resta fallback per mock compile.
+- **F7b.6** `commit_optimization`: dry_run ora configurabile via `AutoRefactorer::set_commit_dry_run` (default true = sicuro).
+- **F7b.7** `split_url`: parse porta rigoroso (solo cifre, 1-65535) — `atoi("80abc")` non passa più.
+- **F7b.8** `extract_code_from_response`: niente più fallback "return whole response" — prosa senza code fence → stringa vuota (il chiamante gestisce come failure).
+- **F7b.9** `react.cpp`: args_json malformato → observation "invalid JSON", niente execute con {} silenzioso. (Validazione semantica dei tool: design, resta al registry.)
+- **F7b.10** `Supervisor::plan_tasks`: parsing via `nlohmann::json` — niente più scan di virgolette che si rompevano con escape/nesting.
+- **F7b.11** `add_dp_noise`: già fixato (seed random_device) — verificato.
+- **F7b.13** `FederatedAggregator::aggregate`: check shape omogenei, throw su mismatch.
+- **F7b.14** `QuantumState`: bound check n_qubits ∈ [1,20] durante member-init (era `1<<n` illimitato → OOM/UB).
+- **F7b.15** `measure`: clamp di prob_1 in [0,1] (FP drift non ribalta più l'outcome).
+- **F7b.16** `apply_cz`: reject control==target (maschera a bit singolo = Z mascherato da CZ); `apply_gate` rinormalizza post-gate (drift FP).
+- **F7b.17** `kl_divergence`/`ppo_loss`: throw su size mismatch (era troncamento silenzioso).
+- **F7b.18** `ppo_clipped_objective`: verificato NON-BUG — `fmin(ratio*A, clip*A)` + `-total` è esattamente il surrogate PPO standard (identico a PyTorch).
+- **F7b.21** `VectorDBClient`: mutex su search/upsert/remove/get/clear/size (era data race).
+- **F7b.22/23** `generate`/`beam_search`: già fixati (heap input_node + free_graph, clamp beam_width≤vocab).
+- **F7b.24** `beam_search`: parametro `length_penalty` (GNMT score/len^α, default 0 = compat).
+- **F7b.25** `generate`/`beam_search`: validazione logits (2-D, righe==seq_len, contiguo) prima del puntatore all'ultima riga.
+- **F7b.26** `RewardModel::score`/`generate_with_logprobs`: guard su tensor scalari/vuoti (no più `shape()[0]` su shape vuoto).
+- **F7b.27** `free_graph` (reward_model + inference/generate): pota i puntatori cancellati dai `children` dei param mantenuti — niente più UAF latente.
+- **F7b.28** `generate_with_logprobs`: check shape (rows,vocab) su logits iniziali e per-step.
+- **F7b.30** `parameter_shift_gradient`: richiede params.size()==num_params() esatto.
+- **F7b.31** `DelphiConsensus::cosine_sim`: embed_cache_ bounded (4096, clear-on-full).
+- **F7b.32** `debate`: null-check sugli agent registrati.
+- **F7b.1** `Sandbox` non è un sandbox di sicurezza: documentato in sandbox.h (RCE se LLM endpoint compromesso — solo uso trusted).
+
+### F7b ancora aperti (deferred/design)
+- **F7b.29** `PPOTrainer::train_step`: scaffold matematico — ratio=1, KL=0, nessun backward/optimizer. Fix richiede wiring policy-gradient nel transformer: deferred-design.
+- **F7b.12** `compute_epsilon`: composizione RL accountant euristica, non bound formale — documentato.
+- **F7b.19** `kl_divergence`: assume log_probs normalizzate — documentato.
+- **F7b.20** `VectorDBClient`: in-RAM senza persistenza, design "client" nominale.
+
+Verifica: test_autoopt 14/14, test_federated 12/12, test_multi_agent 10/10, test_quantum 5/5, test_rag 14/14, test_react 15/15, test_rlhf 10/10.

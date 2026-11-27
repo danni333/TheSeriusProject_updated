@@ -112,6 +112,50 @@ da qui. Baseline misurata in `BENCHMARKS.md` (confronto diretto vs llama.cpp).
   restano più veloci in fp (18.9/11.5 vs ~15/7 GB/s). Candidato:
   abilitare int-dot Q8_0 di default (stessa classe di precisione del
   Q8_1 di llama.cpp) dopo verifica end-to-end tok/s.
+- **Verifica end-to-end int-dot (2026-11-26, i9-11900H, 64 token,
+  output identici)**: Qwen2.5-0.5B Q4_K_M `--gpu cpu` = 2.69 tok/s
+  baseline vs 2.77-2.87 con `SERIUS_INTDOT=1` (~parità, atteso: Q4_K
+  attention non ha kernel int-dot e le FFN sono requantizzate Q6_K→Q4_1).
+  SmolLM2-135M Q8_0 = baseline 17.2/13.7 tok/s vs INTDOT 17.9/21.1 —
+  **range sovrapposti, nessun guadagno e2e misurabile**: il 2.2x del
+  micro-bench Q8_0 non si traduce perché a 135M parametri la GEMV non
+  domina (lm_head 49k vocab + attention + sampler). Lasciato opt-in;
+  rivalutare solo se si misurerà un modello grande con GEMV >50% del
+  tempo (profiling `[prof]` MLP share).
+- **BUG LIMITE ARCHITETTURALE TROVATO (2026-11-26)**: `load_all_tensors`
+  (`gguf_loader.cpp`) dequantizza OGNI tensore a FP32 in
+  `core::Tensor` **anche quando produce anche un `QuantWeight` packed** —
+  i due vengono entrambi conservati (`hf_llama_loader.cpp` copia il fp32
+  nei buffer modello E popola le fused quant). Risultato: RAM =
+  ~4 byte/parametro + packed, indipendente dal quant. Qwen2.5-7B Q8_0
+  (8GB file) richiede ~38GB → segfault su 24GB RAM. Per testare modelli
+  grandi serve o (a) saltare la copia fp32 per i tensori con QuantWeight
+  (attenzione: il path prefill M>1 usa probabilmente i pesi fp32 —
+  serve GEMM packed o dequant-on-the-fly), o (b) modelli ~3B che
+  entrano nel budget (~12.4GB fp32 + ~3GB packed per 3B).
+  **RISOLTO (2026-11-27, opzione a)**: `SERIUS_GGUF_PACKED_ONLY=1` salta
+  la copia FP32 in `load_all_tensors` per i tensori 2D con QuantWeight
+  (tranne token_embd/output.weight, serviti densi) e rilascia le copie
+  FP32 del modello dopo il setup quant. Il path prefill dequantizza
+  on-the-fly via `proj_dense` (fallback in `llama_inference.cpp`), decode
+  usa `matvec_q` packed. Verifica: Qwen2.5-0.5B Q4_K_M logits
+  **identici** baseline vs packed-only; **Qwen2.5-7B Q8_0 (8GB) ora
+  carica e genera** (196 tensori rilasciati, ~143 tensori FP32 residui
+  = embd/lm_head/norm). Safety net: il loader rifiuta il modello se una
+  proiezione resta senza FP32 e senza QuantWeight valido.
+- **Test 3B (2026-11-26, Qwen2.5-3B-Instruct Q8_0, 32 token, 26
+  generati)**: ATTENZIONE — `matvec_quant.cpp` corrente abilita int-dot
+  **di default sulle CPU AVX512-VNNI** (`vnni_ok`), quindi la baseline
+  normale USA già il kernel VNNI. Misure: default/VNNI-intdot =
+  1.568/1.578 tok/s; `SERIUS_NO_INTDOT=1` (fp) = 1.413 tok/s →
+  **+11% e2e**, coerente col micro-bench (kernel VNNI q80 = 7.4 vs fp
+  6.7 GB/s, solo +10%). La run "0.79 tok/s" era contesa (subito dopo
+  il crash del 7B). `SERIUS_INTDOT=1 SERIUS_NO_VNNI=1`
+  (kernel madd_epi16) = **1.32 tok/s — PIÙ LENTO del default VNNI**
+  nonostante il micro-bench lo dia 2x: il ranking dei kernel in
+  isolamento non si traduce e2e (GEMV non è l'unico costo e i pattern
+  di accesso cambiano). Default VNNI-intdot attuale (+11% vs fp)
+  corretto; non invertire.
 - **Misure pulite a sistema scarico (2026-11-23 notte, prima del
   throttle termico)**: Qwen2.5-0.5B Q4_K_M `--gpu cpu` = **8.49 tok/s**
   AVX-512 default; `SERIUS_NO_AVX512=1` (AVX2) = 7.21; `SERIUS_INTDOT=1`
@@ -381,6 +425,40 @@ Conferme:
 numeri assumono sistema scarico — riverificare che il gain regga con
   carico (il NTA dovrebbe aiutare anche sotto contesa, ma non misurato).
 
+## Sessione 2026-11-27 — audit F4.13-15, CUDA graph logging, ctest verde
+
+- **Speculative decoding fixato** (`src/infer/speculative.cpp`):
+  - F4.13: verifica target ora usa `p(·|seq, x̂_0..x̂_{i-1})` (prefix senza
+    il token verificato) — prima si valutava la riga successiva e la
+    acceptance ratio non era esatta.
+  - F4.14: rimosso l'early-stop dopo rejection — `generate` produce i
+    `max_tokens` richiesti (corrected token + nuovo round).
+  - F4.15: `acceptance_rate = accepted/drafted_tokens` (nuovo campo
+    `Metrics::drafted_tokens`); prima `accepted/draft_steps` sovrastimava.
+  - Regression test `SpeculativeDecoder.ContinuesAfterRejection` — 3/3.
+- **CUDA graph eligibility logging** (`llama_inference_cuda.cpp`):
+  `log_graph_ineligible_once()` emette un warn per (model, cache) con il
+  motivo (dtype, embed/lm_head GPU, proiezioni packed, ctx>4096, hook,
+  capture fail) — prima il fallback eager era silenzioso.
+- **`ctest -j8` completo: 490/491 PASS**, 7 skip (richiedono modelli
+  reali), `test_cuda` "Not Run" = serve `ctest -C Release` col generator
+  VS (non è un fallimento). `KVCacheTest.RollingBufferOverwrite` torna
+  verde dopo i fix kv_cache.
+- **Riverifica NTA a sistema scarico** (build `build/`, Release):
+  SmolLM2-135M Q4_0 **~63–76 tok/s** decode CPU (era ~27.8 T0), 
+  Qwen2.5-0.5B Q4_K_M **~16–19 tok/s** (era ~14.7 T0). `BENCHMARKS.md`
+  aggiornato. Possibile contributo ulteriore dai kernel VNNI modificati
+  in parallelo.
+- **`server_generation.cpp`**: `free_graph` locale rimosso in favore di
+  `core::autograd::free_graph` (in `autograd/engine.{h,cpp}`) — era
+  ambiguo dopo l'aggiunta della versione condivisa.
+- **`cmd_mcp.cpp`**: `serius_info` usa `SERIUS_VERSION` invece di
+  hardcoded "0.1.0".
+- Piano residuo completo: `todo/piano_residuo_2026-11-27.md`.
+  Rimasti: continuous batching (3.1), soak stress (3.2), parita' OpenAI
+  residua (3.3), installer/docs (4.1), partial offload/prefill gap
+  (2.1/2.3 — lavoro utente), ggml-loop opzionale (1.3).
+
 ## Avvertenze operative
 
 - **Windows exe lock**: `serius.exe` in esecuzione blocca il link
@@ -403,8 +481,9 @@ numeri assumono sistema scarico — riverificare che il gain regga con
 - `--gpu-layers N` decode ≥ CPU-only sullo stesso modello (oggi ~0.25x —
   **bloccante**: una flag esposta che peggiora le cose non è vendibile).
 - Decode GPU eager ≥ 0.8x llama.cpp (oggi ~0.5x senza graph).
-- CPU decode ≥ 0.7x llama.cpp stesso HW (oggi ~0.35x a sistema scarico:
-  8.5 vs ~25-30 stimati — riverificare).
+- CPU decode ≥ 0.7x llama.cpp stesso HW (stime 2026-11-27 a sistema
+  scarico: SmolLM2 Q4_0 ~63–76 tok/s, Qwen2.5-0.5B Q4_K_M ~16–19 tok/s —
+  ratio vs llama.cpp stesso HW non ancora misurato).
 - Prefill ≥ 0.6x llama.cpp.
 - Server regge ≥4 richieste concorrenti con batching (oggi 1).
 - `serius serve` + installer funzionante su Windows pulito.
