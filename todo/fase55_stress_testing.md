@@ -204,9 +204,36 @@ serius stress --type chaos --server http://localhost:8080
   mock server httplib locale (`StressRunnerTest.*`) che coprono i 5 scenari
   del piano di verifica: ramp, soak, spike recovery, chaos, report.
 
-**Rimasto:**
+**Esecuzioni reali completate (2026-11-26/27, SmolLM2-135M Q4_0, GPU offload):**
 
-- Esecuzione reale contro `serius serve` con modello caricato (richiede
-  Fase 13 completata: le risposte HTTP sono ancora stub).
-- Soak test lungo (≥1h) per drift memoria reale; `test_soak_no_leak` attuale
-  verifica solo stabilità su mock della durata di 2s.
+- **Soak 4h** (`stress_results/soak_nightly.json`, orchestrata da
+  `scripts/soak_nightly.ps1` + Scheduled Task `SeriusSoakNightly`):
+  133.177 richieste, **0 errori**, 8,3M token, 576,8 tok/s medi
+  (597→577 tok/s, drift ~3%), p50 328ms / p99 584ms, VRAM costante
+  1,65 GB — nessun leak. Il leak detector segnala RAM ma è falso
+  positivo (ultimo campione catturato durante lo shutdown del server).
+- **Ramp 1→128** (`stress_results/ramp_fixed_1_128.json`): TPS aggregato
+  scala fino a ~38 tok/s a 8 utenti; a ≥16 utenti error rate ~100% —
+  tetto reale dovuto alla generazione serializzata su `inference_mutex_`
+  + timeout client 30s, non starvation HTTP.
+- **Chaos**: 3/3 probe passati — ha portato alla scoperta del bug KV cache
+  >4096 token (fix `ensure_kv_capacity`) e del context-length guard
+  (`prompt_exceeds_context` → HTTP 400).
+
+**Fix infrastrutturali nati dai test:**
+
+- `CPPHTTPLIB_THREAD_POOL_COUNT=64` (era ~7 slot)
+- `ServerConfig.health_port` + secondo `httplib::Server` per
+  `/health`+`/metrics` (`--health-port`, usato dallo stress via `--health-url`)
+- Retry su errore `accept()` in `Server::run()` (connessioni abortite
+  sotto carico non sono più fatali)
+- `canonical_url()` mappa `localhost`→`127.0.0.1` (localhost risolve a
+  ::1 IPv6 e il server bind solo IPv4)
+- Bug critico trovato grazie ai test: permutazione RoPE GGUF errata per
+  arch=llama (`hf_llama_loader.cpp`) — tutti i GGUF Llama/Mistral
+  producevano gibberish; fix verificato contro safetensors.
+
+**Rimasto (opzionale):**
+
+- Spike test e chaos esteso (rate-limit/auth non implementati — Fase 48).
+- SSE/streaming non stressato (il worker usa solo richieste non-stream).
